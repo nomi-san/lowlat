@@ -3,6 +3,212 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-16 - W3.5 built and checked: lifecycle and no monitor
+
+### Added
+- **The controller follows its driver** ([11 §1.8](11-drivers.md)): it closes its handle when
+  the system asks for the device back or says it went, and when a request is answered that the
+  driver's process ended; every call after answers that the driver is absent
+  (`LOWLAT_ERR_VDD_ABSENT`, [06 §3c](06-api.md)).
+- **The host's own display follows its driver**: plugged again on a new handle once the driver
+  is back, also while a stream waits for a display.
+- **A display listed under a GPU without the encoder is waited for** within the wait for a
+  display, rather than refused at once ([05 §2](05-host.md)).
+- **`wake_display`** (minor 28, `lowlat_host_config`, its last reserved byte) and `lowlatd
+  --wake-display`: a stream wakes the display it captures as it starts with one pointer move of
+  no distance; off by default.
+- Hardware tests: a handle followed away from its driver, ended and restarted; the host's own
+  display followed through its driver's end and restart.
+
+### Fixed
+- **A stream on the host's own display spun after its driver was updated**: the wait for a
+  picture from the driver had no bound before the first picture, so a stream built before the
+  new driver's first picture found no present at its start and was paced by the clock, which
+  followed every tick that took nothing with another at once; and a driver whose process ended
+  answered every wait at once. Both waits now run to the refresh ([05 §2](05-host.md)).
+
+### Measured
+- The driver's device restarted with a handle open and a monitor bound to it: through in 87 ms,
+  the handle answering absent, a new one plugging again 178 ms after. Updated twice under a
+  stream: installed with no reboot owed, the guest kept, about 0.9 s without pictures.
+- The driver's process ended under a stream: back in 143 ms, the host's display plugged again
+  214 ms after, pictures 0.6 s after, the guest kept. The host killed and started again: its
+  display gone with it and plugged again by the new host 30 ms after its start.
+- A guest arriving at the host's display asleep: nothing for 13 s with `wake_display` off, until
+  one pointer move standing in for its first input brought pictures within a quarter second; with
+  it on, pictures in the guest's second second, and the display held on past its timeout while
+  the guest watched with no input.
+- The host's display rendered on the integrated GPU and back under a stream: waited for 6 s and
+  taken again, the guest kept, where the build before ended the guest at once.
+- With a person and an established client on a laptop: the GPU's driver restarted, its rebuild
+  landing in the integrated GPU's listing and waiting it out, the session kept; with both panels'
+  cables out, the host killed and started again, the driver updated and the GPU's driver
+  restarted, each survived; the lock screen and the secure attention screen unlocked through the
+  guest; the machine put to sleep and woken to the lock screen on the host's display.
+
+### Found
+- **The lock screen and the secure attention screen are drawn on the primary display alone**: a
+  guest watching the host's own display beside a lit panel sees black while they are up
+  ([05 §2](05-host.md)); as the only display, the guest sees them.
+- An elevation prompt's dialog is drawn on the primary display alone too, the other displays
+  showing its dimmed backdrop; answered through the guest, its stream switched to the panel.
+
+## 2026-10-16 - W3.5 reviewed: lifecycle and no monitor
+
+### Decided
+- **The controller follows its driver**, for every user ([11 §1.8](11-drivers.md)): it closes its
+  handle when the driver is asked to be removed -- an open handle refuses the removal an update
+  needs, which then waits for a reboot -- and when a call finds the driver gone; every call after
+  answers that the driver is absent, and a new open is a new handle.
+- **The host's own display follows its driver**: opened and plugged again whenever it went, also
+  while a stream waits for a display, so an update, a restart or the driver's end costs the
+  guests a rebuild ([05 §2](05-host.md)).
+- **A display listed under a GPU without the encoder is waited for** within the wait for a
+  display, rather than refused at once.
+- **A setting wakes a sleeping display as a stream starts**, with one injected pointer move of no
+  distance, **off by default**: a guest's first input wakes it otherwise.
+- The logoff and the remote desktop connection are checked with the service (W2.5), each a change
+  of the console's session; the host's end and a new host's start are checked here.
+
+### Measured
+- The GPU's driver restarted three times under a monitor of the display driver: the system put
+  the monitor back on the same GPU by itself, under its new identity, 3.5 s after the old
+  swapchain was lost twice and 17.5 s once; for about 1.5 s meanwhile the display was listed
+  under the integrated GPU, where a rebuilding stream would have refused it.
+- A display asleep kept its output and lost its pictures, the swapchain taken away about five
+  seconds before the display was said to be off; the stream's request to keep it on did not wake
+  it, and one injected move of no distance woke it in 170 ms ([11 §1.8](11-drivers.md),
+  corrected).
+
+## 2026-10-16 - W3.4 built and checked: the pointer from the display driver
+
+### Added
+- **The pointer in the frame section** ([11 §1.7](11-drivers.md)): the display driver publishes
+  what the system says of its hardware cursor -- set up, visible, the shape's kind, size, pitch,
+  hotspot and number -- under a sequence lock of its own, and a new shape's pixels under another
+  before the state that names them, model-checked. The frame channel is at version 2.
+- **The host's own display reads its pointer from the driver** and is read straight from the
+  driver whenever the driver's frames can be taken, duplicated otherwise; its pointer's read
+  follows the desktop that takes the input ([05 §8.2](05-host.md)).
+- **A masked colour pointer that is a monochrome one in another form is drawn as one**, on both
+  Windows sources.
+- Hardware tests, as the system account: the pointer from both sources at once for each kind of
+  shape, hidden and shown, off the display and back; the desktop that takes the input, the
+  secure one by a person's Ctrl+Alt+Del; the host's own display's source as the system account
+  and as a user.
+
+### Measured
+- Each kind of pointer the same to the byte from the driver and the duplication; the text cursor
+  differs without the monochrome rule. The cursor's read 4 to 5 us at the median and 13 at p99
+  with the pointer swept about 920 times a second.
+
+### Found
+- The secure desktop keeps the hardware cursor: the pointer there is the driver's, visible.
+- A pointer over 256 is hidden on the duplication too, which keeps its last shape; the review
+  said the duplication stays visible ([05 §8.2](05-host.md), corrected).
+
+## 2026-10-16 - W3.4 reviewed: the pointer from the display driver
+
+### Decided
+- **The display driver publishes the pointer in the monitor's frame section**
+  ([11 §1.7](11-drivers.md)): whether a hardware cursor is set up and visible, and the shape
+  with its kind, size, row pitch, hotspot and the system's number for it, its pixels copied only
+  when that number moves; each part under a sequence lock of its own, model-checked. The frame
+  channel's version becomes 2.
+- **The host's own display reads its pointer from the driver** in place of the duplication's
+  frames, its position and show state as for any display, settled as before; the reading thread
+  follows the input desktop whenever that read fails, since the frames need none
+  ([05 §8.2](05-host.md)).
+- **A masked colour pointer made only of black, white, clear and inverting pixels is drawn as
+  the monochrome one it is**, since the system hands a display driver every monochrome pointer in
+  that form; both Windows sources then draw the text cursor alike.
+- **A pointer larger than 256 stays the system's to draw**: drawn into the pictures and
+  reported not visible, so a guest takes it over until it shrinks.
+- **The host's own display reads the direct frame when the driver answers**, the duplication
+  otherwise, as decided at W3.3's review.
+
+## 2026-10-16 - W3.3 built and checked: the direct frame
+
+### Added
+- **The frame page** ([11 §1.6](11-drivers.md)): one page per monitor, written once for the
+  display driver and its readers -- the swapchain's generation, size, refresh, fence and buffers,
+  and the latest picture -- under a sequence lock, every word an atomic, model-checked. The
+  control interface's request for a monitor's frames, answered to any caller the device admits;
+  the frame channel carries a version of its own, the control protocol staying at 2.
+- **The driver's half**: the page made at the first request and kept for the driver's life; per
+  swapchain each buffer shared once by an NT handle, read-only, and a fence of its device
+  signalled after each acquire; each acquired buffer kept until the next acquire, so a reader that
+  asks while the desktop is still is given the picture on the display.
+- **The host's half**: the page taken out of the driver's process, which is checked to be the
+  one that answered; the host's own display read straight from it as a second Windows source
+  ([05 §2](05-host.md)), its buffers opened on the stream's device once each, the latest picture
+  converted behind the driver's fence and converted again when the system may have written its
+  buffer meanwhile, its refresh read with each swapchain. Run offline until W3.4 gives it a
+  pointer.
+- Hardware tests, as the system account: the source converting and encoding at the display's
+  pace; a refresh changed alone settling the rate again; a late reader caught and a still
+  desktop's last picture kept; two readers at once; the driver's process ending or its device
+  restarting mid-stream; the comparison with the duplication.
+
+### Changed
+- The display driver's setup no longer asks a priority it never got: the setting chooses a shared
+  pool, and a driver with a process of its own has none ([11 §1.1](11-drivers.md)).
+
+### Measured
+- Composition to the conversion done, offline, the direct frame against the duplication, ms at
+  p50/p95/p99/max: 2560x1440 at 120, 0.608/0.767/0.820/1.326 against 0.661/0.833/0.870/0.924;
+  3840x2160 at 120, 0.841/0.997/1.053/1.277 against 0.943/1.139/1.189/1.462; 1920x1080 at 60
+  under a 120 Hz clock, 1.229/4.904/5.203/6.282 against 1.663/4.144/5.531/6.120.
+- The frame thread's acquire against the picture's display time, at 120 a second under one busy
+  loop per logical processor: at normal priority nineteen in twenty within 0.09 ms of the median;
+  raised through the system's multimedia scheduling, one in twenty 1.4 to 1.6 ms later, a fifth
+  late by up to 2 ms. It stays at normal priority ([11 §1.1](11-drivers.md)).
+- After a restart of the machine: the device restarted twenty times mid-stream, nothing stranded,
+  the output gone in 160 to 206 ms; the held picture's publication switched off, the first
+  picture on a still desktop did not come, and on, it came at once; two readers waiting together
+  each converted all 240 pictures, neither waiting more than 9.9 ms.
+
+### Found
+- A restart of the driver's device while a handle on it was open was refused, and left every later
+  restart, and so every update, waiting for a reboot ([11 §1.8](11-drivers.md)). A driver whose
+  process ends is started again about five times in a few minutes, not a sixth. *Corrected the
+  same day:* an update still restarted the device onto the new driver; only a restart asked of
+  the device alone waits for the reboot.
+- An update restarts the other virtual displays' devices too, and one held open by its own
+  software leaves the update waiting for a reboot, this driver restarted onto the new one all the
+  same ([11 §1.8](11-drivers.md)).
+
+## 2026-10-16 - W3.3 reviewed: the driver never waits for the host
+
+### Decided
+- **No hold** ([impl-plan-windows.md](impl-plan-windows.md) W3, [11 §1.6](11-drivers.md)): the
+  display driver acquires, signals, publishes and finishes each picture as it would with nobody
+  reading; the host converts the latest picture and checks after queuing that the buffer cannot
+  have been written again, else converts the latest instead and counts it. The release fence, the
+  bound and the claim are gone, and with them the driver's dependence on the host.
+- **The frames are limited by the handles** ([11 §1.2](11-drivers.md)): the answer to a request
+  for a monitor's frames is handle values in the driver's own process, usable only by a process
+  allowed to take handles from it, so the driver answers anyone the device admits.
+- **The duplication stays the host's path through W3.3**; the direct frame becomes the host's own
+  display's source at W3.4, once it has a pointer, and the gate's comparison decides whether it
+  stays. No configuration selects it.
+
+### Measured
+- On the development machine, a probe build of the driver and a reader as the system account in
+  another session: the system's buffer is eight-bit BGRA, read by a shader, shared by an NT handle
+  with no keyed mutex; three per swapchain, used in turn, at 2560x1440 at 120 and 1920x1080 at 60.
+  The buffers and the fence taken from the driver's process opened on the reader's own device;
+  1,790 pictures read in fifteen seconds, each the one published and none torn, with the wait on
+  the fence and without (on one GPU with the scheduling in its driver, the reads ran after the
+  composition either way). The driver's acquire to the reader seeing it 0.013 ms at the median,
+  to four pixels read back 0.39 ms. Read late on purpose, every picture intact up to 24 ms after
+  its acquire at 120 a second and none from 25 ms; at a 60 Hz mode none wrong up to 30 ms.
+
+### Corrected
+- [11 §1.1](11-drivers.md): the driver's process was said to be raised in priority. The setting
+  that asks for it chooses a shared pool meant for input drivers and does nothing for a driver
+  with a process of its own; the process runs at normal priority, measured.
+
 ## 2026-10-16 - W3.2 built: the host's own display, the pace at the compositor's clock
 
 ### Added

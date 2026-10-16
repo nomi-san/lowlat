@@ -406,11 +406,11 @@ pub struct lowlat_client_config {
     /// cleared when it is done with it.
     pub relay_username: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
     pub relay_password: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
-    /// Client-to-relay carrier (minor 28): 0 UDP (default), 1 TCP, 2 TLS.
+    /// Client-to-relay carrier (minor 29): 0 UDP (default), 1 TCP, 2 TLS.
     /// TCP/TLS requires the optional turn-stream build feature. The allocation
     /// and relay-to-host leg remain UDP. Read only when size reaches the field.
     pub relay_transport: u32,
-    /// TLS certificate identity (minor 28), NUL-terminated, without a port.
+    /// TLS certificate identity (minor 29), NUL-terminated, without a port.
     /// Required for TLS; never replaced with the resolved server address.
     pub relay_tls_server_name: [c_char; LOWLAT_SERVER_MAX],
 }
@@ -546,7 +546,7 @@ pub struct lowlat_client_status {
     /// otherwise, and again at each attempt's start.
     pub microphone: bool,
     pub microphone_reserved: [u8; 3],
-    /// Established relay carrier (minor 28): 0 UDP, 1 TCP, 2 TLS.
+    /// Established relay carrier (minor 29): 0 UDP, 1 TCP, 2 TLS.
     /// Meaningful only when relayed is true; zero while not established.
     pub relay_transport: u32,
 }

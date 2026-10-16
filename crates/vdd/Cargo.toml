@@ -24,12 +24,15 @@ lowlat-common.workspace = true
 # declarations the host's own devices are.
 lowlat-drivers.workspace = true
 lowlat-vdd-proto.workspace = true
-# The events a swapchain's worker waits on and the debugger stream the log
-# goes to.
+# The events a swapchain's worker waits on, the debugger stream the log goes
+# to, and the frame channel's page, its event and the clock its pictures are
+# stamped on.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
     "Win32_System_Threading",
 ] }
 

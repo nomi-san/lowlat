@@ -138,6 +138,8 @@ where
         }
     }
 }
+pub const DXGI_SHARED_RESOURCE_READ: u32 = 2147483648;
+pub const DXGI_SHARED_RESOURCE_WRITE: u32 = 1;
 pub const D3D11_SDK_VERSION: u32 = 7;
 pub type wchar_t = ::std::os::raw::c_ushort;
 pub type ULONG = ::std::os::raw::c_ulong;
@@ -1618,6 +1620,140 @@ pub const DXGI_ALPHA_MODE_STRAIGHT: DXGI_ALPHA_MODE = 2;
 pub const DXGI_ALPHA_MODE_IGNORE: DXGI_ALPHA_MODE = 3;
 pub const DXGI_ALPHA_MODE_FORCE_DWORD: DXGI_ALPHA_MODE = -1;
 pub type DXGI_ALPHA_MODE = ::std::os::raw::c_int;
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGISurface2 {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGISurface2"][::std::mem::size_of::<IDXGISurface2>() - 8usize];
+    ["Alignment of IDXGISurface2"][::std::mem::align_of::<IDXGISurface2>() - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIResource1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIResource1) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIResource1) -> ULONG>,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            Name: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            Name: *const GUID,
+            pUnknown: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            Name: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetParent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            riid: *const IID,
+            ppParent: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            riid: *const IID,
+            ppDevice: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetSharedHandle: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource1, pSharedHandle: *mut HANDLE) -> HRESULT,
+    >,
+    pub GetUsage: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource1, pUsage: *mut DXGI_USAGE) -> HRESULT,
+    >,
+    pub SetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource1, EvictionPriority: UINT) -> HRESULT,
+    >,
+    pub GetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource1, pEvictionPriority: *mut UINT) -> HRESULT,
+    >,
+    pub CreateSubresourceSurface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            index: UINT,
+            ppSurface: *mut *mut IDXGISurface2,
+        ) -> HRESULT,
+    >,
+    pub CreateSharedHandle: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource1,
+            pAttributes: *const SECURITY_ATTRIBUTES,
+            dwAccess: DWORD,
+            lpName: LPCWSTR,
+            pHandle: *mut HANDLE,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIResource1Vtbl"][::std::mem::size_of::<IDXGIResource1Vtbl>() - 112usize];
+    ["Alignment of IDXGIResource1Vtbl"][::std::mem::align_of::<IDXGIResource1Vtbl>() - 8usize];
+    ["Offset of field: IDXGIResource1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: IDXGIResource1Vtbl::AddRef"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, AddRef) - 8usize];
+    ["Offset of field: IDXGIResource1Vtbl::Release"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, Release) - 16usize];
+    ["Offset of field: IDXGIResource1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, SetPrivateData) - 24usize];
+    ["Offset of field: IDXGIResource1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, SetPrivateDataInterface) - 32usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetPrivateData) - 40usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetParent"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetParent) - 48usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetDevice) - 56usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetSharedHandle"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetSharedHandle) - 64usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetUsage"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetUsage) - 72usize];
+    ["Offset of field: IDXGIResource1Vtbl::SetEvictionPriority"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, SetEvictionPriority) - 80usize];
+    ["Offset of field: IDXGIResource1Vtbl::GetEvictionPriority"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, GetEvictionPriority) - 88usize];
+    ["Offset of field: IDXGIResource1Vtbl::CreateSubresourceSurface"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, CreateSubresourceSurface) - 96usize];
+    ["Offset of field: IDXGIResource1Vtbl::CreateSharedHandle"]
+        [::std::mem::offset_of!(IDXGIResource1Vtbl, CreateSharedHandle) - 104usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIResource1 {
+    pub lpVtbl: *mut IDXGIResource1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIResource1"][::std::mem::size_of::<IDXGIResource1>() - 8usize];
+    ["Alignment of IDXGIResource1"][::std::mem::align_of::<IDXGIResource1>() - 8usize];
+    ["Offset of field: IDXGIResource1::lpVtbl"]
+        [::std::mem::offset_of!(IDXGIResource1, lpVtbl) - 0usize];
+};
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct DXGI_MODE_DESC1 {

@@ -1256,6 +1256,15 @@ pub struct Config {
     /// whatever lights up later; asking for it by [`crate::display::VIRTUAL`]
     /// plugs it either way. Only Windows has one.
     pub virtual_fallback: bool,
+    /// Whether a stream wakes the display it captures as it starts.
+    ///
+    /// **Holding a display on does not wake one that slept**: asleep, it
+    /// gives no pictures until input wakes it (docs/05-host.md section 2), so
+    /// with this off a guest's first input does, and on, the stream does as
+    /// it starts, with one pointer move of no distance. **Off in the library's
+    /// defaults**, since a connection would light the desk's monitors by
+    /// itself. Settled when hosting starts; only Windows acts on it.
+    pub wake_display: bool,
     /// What the host's own display is asked to be when hosting starts: the
     /// first value of the live setting ([`Stream::set_own_display`]).
     pub own_display: OwnDisplay,
@@ -2154,7 +2163,7 @@ fn run(
         // can move the codec and the depth underneath it, and only the loop
         // knows which it is coding right now.
         publish_colour(shared, &config);
-        let exit = sys::build(shared, arrivals, &config, &mut roster);
+        let exit = sys::build(shared, arrivals, &config, &mut roster, &mut own);
         match exit {
             Exit::Stopped => return,
             // **A configuration the device refuses ends nobody.** Every bit a
@@ -2914,28 +2923,6 @@ fn requested(asked: &mpsc::Receiver<Option<String>>) -> Option<Option<String>> {
         last = Some(id);
     }
     last
-}
-
-/// Wait for something to scan out, and report what shape it is: its size, and
-/// how many times a second it presents.
-fn await_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
-    let began = lowlat_common::clock::Time::now();
-    let mut said = false;
-    loop {
-        if let Some(shape) = crate::display::Display::shape_of_display(wanted) {
-            return Some(shape);
-        }
-        if !said {
-            said = true;
-            lowlat_common::log_info!(
-                "stream: nothing is scanning out, waiting for a display to come back"
-            );
-        }
-        if lowlat_common::clock::elapsed_ms(began) >= DISPLAY_WAIT.as_secs_f64() * 1000.0 {
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
 }
 
 /// Resolve the pace against the display, and publish it where the loop reads
@@ -4795,6 +4782,7 @@ mod tests {
             output: None,
             display: false,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width: 320,
             height: 240,
@@ -4936,6 +4924,7 @@ mod tests {
                 output: None,
                 display: false,
                 virtual_fallback: false,
+                wake_display: false,
                 own_display: OwnDisplay::default(),
                 width: 320,
                 height: 240,
@@ -5223,6 +5212,7 @@ mod tests {
             output: None,
             display: false,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width: 320,
             height: 240,
@@ -6992,6 +6982,7 @@ mod tests {
             output: None,
             display: false,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,
@@ -7097,6 +7088,7 @@ mod tests {
             output,
             display,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width,
             height,
@@ -7280,6 +7272,7 @@ mod tests {
             output: None,
             display: false,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,
@@ -7312,6 +7305,7 @@ mod tests {
             output: None,
             display: false,
             virtual_fallback: false,
+            wake_display: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,

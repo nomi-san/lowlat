@@ -45,6 +45,9 @@ use windows_sys::Win32::System::StationsAndDesktops::{
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSOR_SUPPRESSED, CURSORINFO, GetCursorInfo,
 };
@@ -177,6 +180,36 @@ impl Drop for Awake {
         // SAFETY: as above; continuous alone clears what the hold set.
         unsafe { SetThreadExecutionState(ES_CONTINUOUS) };
     }
+}
+
+/// Wake the display with one pointer move of no distance. **Holding it on
+/// ([`Awake`]) does not wake one that slept**, which gives no pictures until
+/// input wakes it: measured, held asleep for eight seconds, woken by this in
+/// 170 ms. Answers whether the system took the move, which it does from the
+/// input desktop alone.
+pub fn wake() -> bool {
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    // SAFETY: one live input of the size stated.
+    let inserted = unsafe {
+        SendInput(
+            1,
+            &raw const input,
+            i32::try_from(size_of::<INPUT>()).unwrap_or(0),
+        )
+    };
+    inserted == 1
 }
 
 /// The desktop that receives input, which this thread is attached to.
@@ -692,9 +725,11 @@ pub fn age_ms(then: i64) -> f64 {
 /// its transparent ones clear; a monochrome one's black and white as they
 /// are and its inverting pixels black inside a light halo. **A picture
 /// cannot invert the screen beneath it**, which is what those pixels do, so
-/// each is drawn as something that reads on light and dark alike. Nothing
-/// for a shape larger than [`POINTER_LIMIT`] or a buffer shorter than it
-/// says.
+/// each is drawn as something that reads on light and dark alike. **A
+/// masked colour made only of black, white, clear and inverting pixels is
+/// a monochrome shape in another form** -- the system hands a display driver
+/// every monochrome pointer so -- and is drawn as one. Nothing for a shape
+/// larger than [`POINTER_LIMIT`] or a buffer shorter than it says.
 pub fn pointer_rgba(shape: &Shape, raw: &[u8], into: &mut Vec<u8>) -> Option<(u32, u32)> {
     let (width, height) = (shape.width, shape.height);
     if width == 0 || height == 0 || width > POINTER_LIMIT || height > POINTER_LIMIT {
@@ -703,6 +738,17 @@ pub fn pointer_rgba(shape: &Shape, raw: &[u8], into: &mut Vec<u8>) -> Option<(u3
     let (w, h) = (width as usize, height as usize);
     into.clear();
     into.resize(w * h * 4, 0);
+    if shape.kind == Kind::MaskedColour
+        && let Some(masks) = as_monochrome(shape, raw)
+    {
+        let masked = Shape {
+            kind: Kind::Monochrome,
+            pitch: u32::try_from(w.div_ceil(8)).ok()?,
+            ..*shape
+        };
+        monochrome(&masked, &masks, into)?;
+        return Some((width, height));
+    }
     match shape.kind {
         Kind::Colour | Kind::MaskedColour => {
             let pitch = (shape.pitch as usize).max(w * 4);
@@ -726,6 +772,39 @@ pub fn pointer_rgba(shape: &Shape, raw: &[u8], into: &mut Vec<u8>) -> Option<(u3
         Kind::Monochrome => monochrome(shape, raw, into)?,
     }
     Some((width, height))
+}
+
+/// The two masks of the monochrome shape a masked colour one is, when it is
+/// one: the AND mask's rows, then the XOR mask's, one bit a pixel from the
+/// high bit down. Each pixel is black (drawn, black), white (drawn, white),
+/// clear (inverting by black, which changes nothing) or inverting (by
+/// white); nothing for a shape with any other pixel.
+fn as_monochrome(shape: &Shape, raw: &[u8]) -> Option<Vec<u8>> {
+    let (w, h) = (shape.width as usize, shape.height as usize);
+    let pitch = (shape.pitch as usize).max(w * 4);
+    let row_bytes = w.div_ceil(8);
+    let mut masks = vec![0u8; row_bytes * h * 2];
+    for y in 0..h {
+        let row = raw.get(y * pitch..y * pitch + w * 4)?;
+        for (x, bgra) in row.chunks_exact(4).enumerate() {
+            let colour = (bgra[0], bgra[1], bgra[2]);
+            let (and, xor) = match (colour, bgra[3]) {
+                ((0, 0, 0), 0x00) => (false, false),
+                ((0xFF, 0xFF, 0xFF), 0x00) => (false, true),
+                ((0, 0, 0), 0xFF) => (true, false),
+                ((0xFF, 0xFF, 0xFF), 0xFF) => (true, true),
+                _ => return None,
+            };
+            let bit = 0x80u8 >> (x % 8);
+            if and {
+                *masks.get_mut(y * row_bytes + x / 8)? |= bit;
+            }
+            if xor {
+                *masks.get_mut((h + y) * row_bytes + x / 8)? |= bit;
+            }
+        }
+    }
+    Some(masks)
 }
 
 /// Light around an inverting pixel: strong within one pixel, faint within
@@ -849,6 +928,49 @@ mod tests {
         assert_eq!(pixel(&out, 4, 1, 0), [0x60, 0x60, 0x60, 0xE0]);
         assert_eq!(pixel(&out, 4, 2, 0)[3], 0);
         assert_eq!(pixel(&out, 4, 3, 0), [0, 0, 0, 0xFF]);
+    }
+
+    /// **A monochrome shape handed over as masked colour is drawn as the
+    /// monochrome one it is**: the system converts every monochrome pointer
+    /// so for a display driver -- AND 0 to opaque, XOR 0 black and XOR 1
+    /// white; AND 1 to inverting, by black (clear) or by white -- and the
+    /// text cursor must read the same from both sources, its inverting
+    /// pixels black in a light halo rather than grey.
+    #[test]
+    fn a_monochrome_shape_as_masked_colour_draws_as_monochrome() {
+        // The monochrome test's shape below: eight wide, five tall.
+        let and = [0b0011_1111u8, 0xFF, 0b1111_1111, 0xFF, 0xFF];
+        let xor = [0b0100_0000u8, 0x00, 0b0000_1000, 0x00, 0x00];
+        let mut masks = Vec::new();
+        masks.extend_from_slice(&and);
+        masks.extend_from_slice(&xor);
+        let mut monochrome = Vec::new();
+        pointer_rgba(&shape(Kind::Monochrome, 8, 5, 1), &masks, &mut monochrome)
+            .expect("a picture");
+        // The same shape as the system converts it, BGRA a pixel.
+        let mut raw = Vec::new();
+        for y in 0..5 {
+            for x in 0..8 {
+                let bit = |mask: &[u8; 5]| mask[y] & (0x80 >> x) != 0;
+                raw.extend_from_slice(match (bit(&and), bit(&xor)) {
+                    (false, false) => &[0, 0, 0, 0x00],
+                    (false, true) => &[0xFF, 0xFF, 0xFF, 0x00],
+                    (true, false) => &[0, 0, 0, 0xFF],
+                    (true, true) => &[0xFF, 0xFF, 0xFF, 0xFF],
+                });
+            }
+        }
+        let mut masked = Vec::new();
+        pointer_rgba(&shape(Kind::MaskedColour, 8, 5, 32), &raw, &mut masked).expect("a picture");
+        assert_eq!(masked, monochrome);
+        assert_eq!(pixel(&masked, 8, 4, 2), [0, 0, 0, 0xFF], "inverting: black");
+        assert_eq!(pixel(&masked, 8, 3, 2), HALO_NEAR, "in a light halo");
+        // One coloured inverting pixel and it is a masked colour shape again:
+        // that pixel grey, and no halo anywhere.
+        raw[(2 * 8 + 4) * 4..(2 * 8 + 4) * 4 + 4].copy_from_slice(&[0x40, 0x80, 0xC0, 0xFF]);
+        pointer_rgba(&shape(Kind::MaskedColour, 8, 5, 32), &raw, &mut masked).expect("a picture");
+        assert_eq!(pixel(&masked, 8, 4, 2), [0x60, 0x60, 0x60, 0xE0]);
+        assert_eq!(pixel(&masked, 8, 3, 2)[3], 0, "clear, no halo");
     }
 
     /// **The two masks of a monochrome shape**: AND clear is drawn, black or

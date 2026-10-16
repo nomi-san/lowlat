@@ -273,7 +273,14 @@ pub struct lowlat_host_config {
     /// since it changes the machine; `output` set to `virtual` plugs it
     /// either way. Settled when hosting starts.
     pub virtual_fallback: bool,
-    pub reserved2: [u8; 1],
+    /// Whether a stream wakes the display it captures as it starts, with one
+    /// pointer move of no distance (minor 28): holding a display on does not
+    /// wake one that slept, which gives no pictures until input wakes it.
+    /// **Default: off**, so a guest's first input wakes it and a connection
+    /// lights nothing at the desk by itself. Windows alone acts on it;
+    /// elsewhere it is accepted and does nothing. Settled when hosting
+    /// starts.
+    pub wake_display: bool,
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
     pub server_count: u32,
@@ -320,7 +327,7 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
         exclusive_pointer: false,
         pad_sink: lowlat_pad_sink::LOWLAT_PAD_SINK_DEVICE as u8,
         virtual_fallback: false,
-        reserved2: [0; 1],
+        wake_display: false,
         server_count: 0,
         servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
         video: lowlat_host_video_config {
@@ -735,6 +742,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
             quality,
             output: (!output.is_empty()).then(|| output.to_string()),
             virtual_fallback: cfg.virtual_fallback,
+            wake_display: cfg.wake_display,
             own_display,
         }),
     })
@@ -2856,7 +2864,7 @@ mod start_tests {
             exclusive_pointer: false,
             pad_sink: 0,
             virtual_fallback: false,
-            reserved2: [0; 1],
+            wake_display: false,
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
             video: video(),

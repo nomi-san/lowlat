@@ -6,7 +6,7 @@ Branch: `codex/turn-stream-transport`, based on upstream `feat/win-seams`
 `8674882319b24023547bbed77821c472566af69b`.
 
 This is work in progress. TCP/TLS relay is selectable with the optional
-`turn-stream` feature, in the Rust client and the size-gated minor-28 C SDK.
+`turn-stream` feature, in the Rust client and the size-gated minor-29 C SDK.
 No stock Parsec-host playback or end-to-end latency result is claimed.
 
 ## Implemented foundations
@@ -53,7 +53,7 @@ Implemented in the second stage:
 - Ten-second cancellable dial/handshake before the protocol clock starts.
   Pending-frame age and lack of physical write progress are bounded to five
   seconds; failure closes the transport rather than dropping a frame suffix.
-- Rust RelayTransport selection and append-only minor-28 C config/status fields,
+- Rust RelayTransport selection and append-only minor-29 C config/status fields,
   complete-field size gates, UDP defaults, and unsupported-mode rejection.
 - Windows/Linux TLS burst, untrusted CA, wrong-name, expired-certificate,
   teardown, EOF delivery and write-age tests, plus client-only SDK tests and

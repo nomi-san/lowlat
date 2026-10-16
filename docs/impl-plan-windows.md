@@ -518,6 +518,19 @@ once, here.
   period under the deadlines, a ceiling of 60 or 90 on that display took each picture 4.6 to
   6.2 ms after its composition at the median, against under a millisecond on a panel whose
   mode is its clock.
+  *Amended 2026-10-16, at W3.4's review:* **a masked colour pointer made only of black, white,
+  clear and inverting pixels is drawn as the monochrome one it is**, its inverting pixels black
+  in a light halo: the system hands a display driver every monochrome pointer in that form, so
+  without it the host's own display read from its driver would draw the text cursor dark grey
+  where the duplication draws it with a halo. The duplication, which reports such a pointer
+  monochrome, is unchanged.
+  *Amended 2026-10-16, at W3.5's review:* **keeping the display awake holds it on but does not
+  wake it.** A display that slept on its timeout before a guest arrived stays asleep under the
+  stream's request, measured, and gives no pictures -- the system takes a virtual display's
+  away while it sleeps -- until input wakes it: one injected pointer move of no distance woke it
+  in 170 ms. So **a setting wakes the display as a stream starts, with that move, off by
+  default**: a connection lights nothing at the desk by itself, and a guest's first input wakes
+  the display otherwise.
 - **The host is per-monitor DPI aware** (*added 2026-10-14, at W2.2's review*). On a thread
   that is not, the duplication call the host uses is refused outright, and every coordinate
   the system hands back is scaled at a display scale other than 100 percent (measured, at 125
@@ -792,6 +805,10 @@ once, here.
   *Added 2026-10-15, at W2.3's review:* the attention chord. The host asks the service, which
   makes the system's call for the secure screen, since the system takes it from a service alone;
   `lowlatd install` lets services make it and `uninstall` puts back the setting it found.
+  *Added 2026-10-16, at W3.5's review:* also a remote desktop connection to the machine, which
+  moves the console to another session as a logoff does; and with each, the host's own display
+  back with the new host -- the display side of both, which W3.5 checks as the host's end and a
+  new host's start.
 - [ ] **W2.6 a program left out of the sound** (*added 2026-10-15, at W2.4's review; not in the
   gate*): the system's capture of everything but one program's process tree, for a voice
   program whose sound would otherwise reach the guests it is talking to. Its setting through
@@ -837,8 +854,21 @@ decisions are recorded once, here; the design they add up to is [11](11-drivers.
   finishes the frame as soon as the signal is queued, then holds the buffer -- acquiring no
   other -- until the host's release fence passes. It reads the host's fence on the processor
   only and never waits for it on the device, so a host that dies cannot stall the display.
+  *Amended 2026-10-16, at W3.3's review:* **the driver never waits for the host.** A swapchain
+  hands the driver three buffers in turn, measured, and the system writes a buffer again only for
+  the third composition after it, so a picture stays intact for about three refreshes after the
+  driver acquires it -- 24 ms at 120 a second -- where the host converts within half a
+  millisecond. The driver acquires, signals, publishes and finishes, as it would with nobody
+  reading; the release fence and the hold are gone. The host converts the latest picture and,
+  after queuing the conversion, checks that the driver has not acquired as many newer pictures as
+  the swapchain has buffers less one; when it has, the buffer may have been written again, so the
+  latest is converted instead, and counted. A still desktop's last picture stays the driver's
+  until a newer one is acquired, so it is never written again while it is the latest.
 - **The hold is bounded well inside a frame period**, since a held buffer holds back the
   compositor. Past the bound the driver releases the buffer anyway and counts it.
+  *Replaced 2026-10-16, at W3.3's review:* nothing is held (above); the system's own cycle of
+  buffers keeps a picture intact while the host reads it, six times longer than the bound would
+  have.
 - **The driver converts nothing.** Formats, depth, full chroma and scaling stay the host's,
   so changing them never re-signs the driver. As everywhere, the display is standard dynamic
   range only, so every buffer is eight-bit BGRA.
@@ -882,6 +912,12 @@ decisions are recorded once, here; the design they add up to is [11](11-drivers.
   display asks no more than a person at the desk may do, and ownership keeps one user's monitors
   from another's requests -- while **the frames are never in it** ([06 §13](06-api.md)): the
   driver's frame interface admits the system account alone, checked when it is opened.
+  *Amended 2026-10-16, at W3.3's review:* what limits the frames is the handles. The answer to a
+  request for a monitor's frames is a set of handle values in the driver's own process, which only
+  a process allowed to take handles from it can use -- the system account, or an administrator
+  who turns on the debugging privilege, who could find them there unasked. So the driver answers
+  anyone the device admits, and nothing it does waits on whoever reads; a check at open would
+  have guarded only what the handles already guard.
 - **The host's display is configured like an output.** Whether a stream may plug it is settled
   at start; its name, `virtual`, and its size and refresh are live. Zero lets the host decide:
   the size an owner states as it joins an empty room, within the largest picture that guest
@@ -932,6 +968,14 @@ decisions are recorded once, here; the design they add up to is [11](11-drivers.
   ahead of it. A buffer's reference is released at the next acquire. If the system's buffer
   will not open in the host, or the hold costs more than it saves, the driver converts into
   targets of its own, then copies, by measurement.
+  *Amended 2026-10-16, at W3.3's review:* everything is the driver's -- the section, the buffers'
+  handles, the fence and an event set at each publish -- and the host takes them from the
+  driver's process, so nothing is ever placed in it. Per frame the driver acquires, notes the
+  time, signals the fence, publishes the latest picture -- its buffer, sequence and frame number
+  -- and finishes; nothing is claimed and nothing waits on the host, and with no hold there is
+  none to end at a monitor's departure. The host takes the latest picture, waits for the fence on
+  its device, converts, and checks the sequence after, as above. The buffer opens in the host as
+  it is: no keyed mutex, read across processes, measured.
 - **Signing.** In development the driver and its catalogue are signed with a test certificate
   the machine trusts: a user-mode driver needs neither test mode nor a signature from the
   system's vendor. Releases are signed by a signing service for open-source projects, from CI's
@@ -1093,18 +1137,220 @@ decisions are recorded once, here; the design they add up to is [11](11-drivers.
   arrived. Nothing lit cannot be made from software here -- the system refuses a desktop with no
   output, and disabling a monitor's device leaves its output lit -- hence the cable. A program
   leaving exclusive fullscreen takes the road a mode set from outside took, not checked again.
-- [ ] **W3.3 the direct frame**: the frame interface, the section, the shared buffers and
+- [x] **W3.3 the direct frame**: the frame interface, the section, the shared buffers and
   fences, the claim, the hold and its bound, a view per buffer, the frame's time; the Windows
   display's second source. Checked by the gate's comparison, run offline first, and by each part
   broken and seen to fail: no wait on the fence, no release, a claimed frame past the bound.
-- [ ] **W3.4 the pointer from the hardware cursor**: shape, hotspot and visibility from the
+  *Reviewed 2026-10-16, before its build* (the decisions above, amended): a probe answered what
+  the design rested on, on the development machine. The system's buffer is eight-bit BGRA, read
+  by a shader, shared by an NT handle and with no keyed mutex, so a D3D11 reader in another process
+  opens it as it is; a swapchain has three, used in turn, at 2560x1440 at 120 and 1920x1080 at 60
+  alike. A reader as the system account took the buffers and the fence out of the driver's process,
+  opened them on a device of its own on the GPU that renders them, and read 1,790 pictures in
+  fifteen seconds, each the one published and none torn, with the wait on the fence and without:
+  on one GPU with the scheduling in its driver, the reads ran after the composition either way, so
+  that the wait is needed cannot be shown here, and it stays. The driver's acquire to the reader
+  seeing the picture took 0.013 ms at the median, to four pixels read back 0.39 ms. Read late on
+  purpose, every picture was intact up to 24 ms after its acquire at 120 a second and none from
+  25 ms -- the buffer written again for the third composition after it -- and at a 60 Hz mode none
+  was wrong up to 30 ms. Hence no hold (above). **The duplication stays the host's path through
+  this step**: the direct source is built into the Windows display and run by the hardware tests
+  and the comparison, as the system account, and becomes the host's own display's source at W3.4.
+  Its checks become: the publication model-checked; the freshness check broken by a stalled
+  reader, which then converts a later picture; the driver's process killed and its device
+  restarted mid-stream, twenty times each, the host never stuck behind its wait on the fence; two
+  readers at once; a user's process given nothing it can use. No release, bound or claim exists to
+  break.
+  *Built 2026-10-16*, not ticked: three checks wait on a restart of the machine. The page is
+  written once for both sides, its layout and its sequence lock, model-checked over every
+  interleaving of a writer publishing twice and a reader, and shown to fail with the reader's
+  second look or the writer's release removed. The driver makes a monitor's page at the first
+  request for its frames and keeps it for its life; per swapchain it shares each buffer once and
+  signals a fence of its device after each acquire, then publishes. **It keeps each acquired
+  buffer until the next acquire**, so a page asked for while the desktop is still is given the
+  picture on the display -- missing at first, when a reader that asked after the desktop went
+  still waited for its next change. The request is answered to anyone the device admits: an
+  ordinary user's process was answered and refused the page, the system account given it. The
+  host's display reads the page as a second source, run by hardware tests and the comparison
+  alone (the decision above). Found at the build as well: **a reader's same picture is its own
+  last frame**, never the driver's mark of a repeat; and, by reading, **the refresh comes with
+  each swapchain**: taken once at the open, the rate stays at 120 after the monitor is put at 60,
+  as a test shows with the read taken out, where it now settles at 60 within a tenth of a
+  second. Checked on the development machine, as the
+  system account: the first picture at once on a still desktop; a reader stalled 30 ms after
+  queuing each conversion caught 20 times in 20 and converted again, and never on time; a reader
+  that stopped taking during a burst converting the still desktop's last picture; the driver's
+  process ended right after a publish five times, each conversion queued behind its fence
+  finished, the output gone in 85 to 97 ms and the driver back in 120 to 300 ms. **The comparison,
+  offline**, a load presenting on the display, interleaved blocks of 600, composition to the
+  conversion done in ms at p50/p95/p99/max: at 2560x1440 at 120 the duplication
+  0.661/0.833/0.870/0.924 and the direct frame 0.608/0.767/0.820/1.326; at 3840x2160 at 120,
+  0.943/1.139/1.189/1.462 and 0.841/0.997/1.053/1.277; at 1920x1080 at 60 under the 120 Hz clock,
+  1.663/4.144/5.531/6.120 and 1.229/4.904/5.203/6.282, both tails unexplained; none converted
+  again. The duplication's own copy delays the conversion's start by about 0.05 ms at 1440p and
+  0.1 at 4K. **Owed, after a restart of the machine**: the driver restarted twenty times
+  mid-stream -- the first restart, made while the test held a handle on the device, was refused
+  and left the device waiting for a reboot ([11 §1.8](11-drivers.md)) -- the still desktop's
+  picture broken on purpose in the driver, and the frame thread's priority measured with and
+  without under load. The 240 Hz leg is the gate's.
+  *Checked 2026-10-16, after a restart of the machine*, as the system account: the device
+  restarted twenty times mid-stream with the test's handle closed first, nothing stranded, the
+  output gone in 160 to 206 ms; the driver's process ended five times, not twenty -- the system
+  starts a driver whose process ends again no more often in a few minutes. The driver's
+  publication of the held picture switched off, the first picture on a still desktop did not
+  come within 150 ms, and on, it came at once. Two readers waiting on one page together at 120 a
+  second each converted all 240 pictures, neither waiting more than 9.9 ms; no break was built
+  for it. **The frame thread stays at normal priority** ([11 §1.1](11-drivers.md)): under one
+  busy loop per logical processor, raised through the system's multimedia scheduling it acquired
+  one picture in twenty 1.4 to 1.6 ms later than the median, where at normal priority nineteen in
+  twenty came within 0.09 ms. Found: an update restarts the other virtual displays' devices too,
+  and one held open by its own software leaves the update waiting for a reboot, this driver
+  restarted onto the new one all the same ([11 §1.8](11-drivers.md)).
+- [x] **W3.4 the pointer from the hardware cursor**: shape, hotspot and visibility from the
   driver, position and show state as in W2. Checked by each kind of shape, one larger than the
   wire's 256, and the visibility while the system draws the pointer itself.
-- [ ] **W3.5 lifecycle and no monitor**: a host killed mid-hold, the driver updated, the GPU's
+  *Amended 2026-10-16, at W3.3's review:* with its pointer, the host's own display reads the
+  direct frame whenever the driver answers, and duplicates it otherwise, so W3.5's checks and the
+  gate stream it; before this step its pictures would carry no pointer.
+  *Reviewed 2026-10-16, before its build.* **The driver publishes the pointer in the monitor's
+  frame section**, after the pictures' page ([11 §1.7](11-drivers.md)): whether a hardware cursor
+  is set up and whether it is visible, and the shape -- its kind, size, row pitch, hotspot and the
+  system's number for it -- with its pixels copied in only when that number moves; each part under
+  a sequence lock of its own, written by the monitor's worker when the system signals new cursor
+  data, model-checked as the pictures' part is. The frame channel's version becomes 2. The host's
+  own display reads it in place of the duplication's frames: the visibility and a new shape into
+  the pointer state W2 built, the position, the show state and the touch flag from the system as
+  for any display, settled as in W2. **The frames need no desktop, the pointer's read does**: the
+  reading thread follows the input desktop whenever that read fails, at the duplication's retry
+  pace, so the lock screen and an elevation prompt keep their pointer. The system hands the
+  driver two kinds of shape, alpha and masked colour, every monochrome pointer converted to the
+  latter, which is drawn as the monochrome one it is (W2's decisions, amended). **A pointer
+  larger than 256 stays the system's to draw**: drawn into the pictures and reported invisible,
+  so a guest is told it is drawn and takes it over until it shrinks, as for any pointer the
+  system draws; the duplication keeps its last shape, its pictures never carrying the pointer.
+  No hardware cursor -- the file's setting, or a setup the system refused -- is said as such:
+  the pointer is in the pictures. The cursor is read on the frame's own worker unless measured
+  to move the frame's acquire. The host's own display opens the direct frame when the driver
+  answers -- the host runs as the system account -- and the duplication otherwise; no
+  configuration selects it. Checked by: each kind of shape on both sources from the same pointer
+  -- an arrow, the text cursor, a coloured inverting pointer, a monochrome one of the test's own,
+  a hand -- drawn alike, and the monochrome rule broken once; a pointer over 256 reported hidden
+  with the picture carrying it; a pointer an application hides turning relative, and its showing
+  again carrying the position; the pointer leaving the display and coming back; the lock screen
+  and the secure attention screen keeping their pointer, broken by not following the desktop; a
+  pointer swept a thousand times a second against the frame's acquire; the host's own display
+  streaming direct as the system account and duplicating as a user, and back on direct after its
+  driver restarts; the publication model-checked; both bars.
+  *Built and checked 2026-10-16*, on the development machine, as the system account. **The
+  pointer reads the same from the driver as from the duplication**: the system's arrow, text
+  cursor and hand, a monochrome pointer of the test's own and one inverting in colour, each the
+  same picture to the byte with the same hotspot; with the monochrome rule taken out, the text
+  cursor and the monochrome pointer differed and the rest did not -- the duplication reports the
+  text cursor monochrome and the driver is handed it in masked colour, as the review read. Hidden
+  by an application the pointer turned relative on both, and shown again absolute at its place;
+  off the display nothing was said, and back on it the state was right. **The secure desktop
+  keeps the hardware cursor**: brought up by a person with Ctrl+Alt+Del, the reading thread
+  followed the input onto it and the driver's pointer was said there, not hidden; with the
+  following taken out, a desktop of the test's own taking the input left the pointer's change
+  unsaid. The host's own display opened on the direct frame as the system account and duplicated
+  as an ordinary user, said once why; opened again after its driver's device restarted, direct.
+  The cursor's read costs 4 to 5 us at the median, 13 at p99, about 920 a second with the
+  pointer swept, so a picture's acquire waits behind one at most that long -- one read in 48,000
+  took 1.7 ms -- and the read stays on the frame's worker; the acquire's own timing could not
+  show it, the compositor's clock sitting at a refresh's edge of the display's and splitting
+  its frames between two refreshes, swept or not. The publication model-checked, a reader
+  waiting for the state to name the shape; shown to fail with the state published before the
+  pixels. Found: **a pointer over 256 is hidden on the duplication too** -- it keeps its last
+  shape and reports the pointer not visible, the system drawing it (the review said otherwise,
+  corrected in [05 §8.2](05-host.md)); that the picture then carries it was not read back.
+- [x] **W3.5 lifecycle and no monitor**: a host killed mid-hold, the driver updated, the GPU's
   driver restarted, the display asleep, the lock screen, the secure attention screen and an
   elevation prompt, a logoff, a remote desktop connection, and a machine with no monitor.
   Checked by each once while streaming.
-
+  *Reviewed 2026-10-16, before its build.* Nothing has held a picture since W3.3's review, so the
+  first check is the host killed mid-stream and started again. **The logoff and the remote
+  desktop connection move to W2.5**: each is a change of the console's session, which only the
+  service follows, and for the display either is the host's end and a new host's start, checked
+  here; the boot with no monitor stays the gate's. Read in the code: the host keeps its
+  controller's handle for its life and never closes it when the driver is asked to be removed,
+  which an update needs -- an open handle refuses the removal, and the update then waits for a
+  reboot ([11 §1.8](11-drivers.md)); a handle left by a driver whose process ended is kept for
+  good, so the host's display never comes back; and a stream that lost the host's display waits
+  for one without plugging it again. So **the controller follows its driver**, for every user:
+  it closes its handle when the driver is asked to be removed or has gone, the monitors bound to
+  it going with it, and every call after answers that the driver is absent, a new open being a
+  new handle; and **the host's own display follows its driver**, opened and plugged again
+  whenever it went, also while the stream waits for a display, so an update, a restart or the
+  driver's end costs the guests a rebuild rather than the session. Probed on the development
+  machine: the GPU's driver restarted three times under a monitor of the driver, the system put
+  the monitor back on the GPU by itself, on the GPU's new identity, 3.5 s after the old swapchain
+  was lost twice and 17.5 s once -- the first restart since boot, the GPU itself back that late
+  -- so the driver names no GPU again. **But for about 1.5 s mid-restart the system lists the
+  display under the integrated GPU**, and the panels under its software renderer, where a stream
+  rebuilding -- it sees its device lost within a second -- refuses the display as one without its
+  encoder and ends the guests: **a display found under a GPU without the encoder is waited for**
+  within the display wait, as one that went, and refused only past it. **A display asleep keeps
+  its output and loses its pictures**: the system took the driver's swapchain away about five
+  seconds before saying the display was off, and gave one back as it woke; the stream's request
+  kept a display on past its timeout but did not wake one, and one injected pointer move of no
+  distance woke it, which a setting off by default does as a stream starts (W2's decisions,
+  amended). Checked by: the host killed mid-stream and started again; the driver updated
+  mid-stream, through with no reboot owed and the guest kept; the driver's process ended once;
+  the GPU's driver restarted, the guest kept; a guest arriving at a display asleep with the
+  setting off and on, and the display held awake while streaming; the lock screen and its unlock
+  typed through the guest, the secure attention screen and an elevation prompt; the host's end,
+  the update and the GPU's restart again with the panels' cables out; the machine asleep with the
+  host idle and its display plugged, and streaming after it wakes; both bars. The update's close
+  broken leaves the device waiting for a reboot, so it is broken only at the user's word.
+  *Built 2026-10-16*, not ticked: the checks that need a person at the machine wait for one.
+  **The controller follows its driver**: a notification on its handle closes it as the driver is
+  asked to be removed, and a request answered that the driver's process ended closes it too --
+  that answer comes within 2 ms of the end, measured, with no notification before it. **The
+  host's own display follows**, plugged again on a new handle, also while the stream waits for a
+  display, which waits out an output under a GPU without the encoder. `wake_display` in the
+  library's host configuration and `lowlatd --wake-display`, off by default. **Found live: the
+  stream spun after its driver was updated** -- the wait for the direct frame had no bound before
+  its first picture and answered at once once the driver's process had ended, so a stream built
+  before the new driver's first picture was paced by the clock and ticked every few
+  microseconds; both waits now run to the refresh ([05 §2](05-host.md)). Checked on the
+  development machine, the host as the system account and the library's demo as the guest: the
+  host killed mid-stream, its display gone with it and plugged again by the next host 30 ms
+  after its start; the driver updated mid-stream twice, installed with no reboot owed and the
+  guest kept, about 0.9 s without pictures; the driver's process ended mid-stream, the display
+  plugged again 0.2 s after and the guest kept; the device restarted with a handle open and a
+  monitor bound to it, through in 87 ms where it was refused before; the GPU's driver restarted
+  mid-stream, the host's display read again on its GPU 3 s after the stream saw its device lost --
+  the demo, decoding on the same GPU, did not survive its own device's loss; the host's display
+  rendered on the integrated GPU on purpose and back, the stream waiting 6 s and going on, where
+  the build before ended the guest at once; **the display asleep**, its swapchain taken away
+  with the output still listed: with the setting off a guest arriving got nothing for 13 s until
+  one pointer move standing in for its first input, then pictures within a quarter second; with
+  it on, the stream woke the display as it started and the guest had pictures in its second
+  second, and watched 90 s with no input past the 60 s timeout with the display held on; each new
+  check broken once where it can be without a reboot; both bars. **Owed**: a guest on another
+  machine through the GPU's restart and on the lock screen, its unlock typed through it, and the
+  secure attention screen; the host's end, the update and the GPU's restart with the panels'
+  cables out; the machine asleep with the host idle. **No elevation prompt could be raised on the
+  development machine** as it was set: its administrators elevated with no prompt, so none
+  reached the secure desktop.
+  *Checked with a person 2026-10-16*, an established client on a laptop over the LAN driving the
+  host's own display at the laptop's 2880x1800. The GPU's driver restarted with the panel lit:
+  the rebuild landed in the integrated GPU's listing, waited it out and went on in about 3 s, the
+  session kept. **The lock screen and the secure attention screen with the panel lit showed black
+  to the guest** -- the system draws them on the primary display alone, and the host's display
+  was a secondary; the stream followed the input onto them and back regardless ([05 §2](05-host.md)).
+  With both cables out, the host's display the only one: the host killed and started again, its
+  display plugged again by the next host and the guest connecting again; the driver updated, the
+  session kept; the GPU's driver restarted, the session kept through about two seconds without
+  pictures; the lock screen and the secure attention screen shown to the guest and unlocked by the
+  password typed through it; and **the machine put to sleep** by a person, woken to the lock screen
+  on the host's display, the stream reading it again on the GPU's new identity and the guest
+  connecting again -- its session had ended while the machine slept. A reset of the display stack
+  from the keyboard put the display's saved mode back, which the host put right in a tenth of a
+  second. **An elevation prompt**, once the person turned prompting on: the stream followed the
+  input onto it; the host's display beside the lit panel showed the prompt's dimmed backdrop, its
+  dialog drawn on the primary alone; the guest switched its stream to the panel, answered the
+  prompt through it, and switched back.
 **Gate:** after W2.5, on the development machine, with established clients on macOS and Android
 on the LAN and one on a Windows machine:
 
@@ -1126,11 +1372,55 @@ on the LAN and one on a Windows machine:
   and for the direct frame, with the hold's distribution and how often its bound fires; the
   direct frame becomes the host's path only at or below the duplication at every rate and
   percentile, else the duplication stays the path and the numbers are recorded;
+  *amended 2026-10-16, at W3.3's review:* with no hold, how often a picture is converted again for
+  coming too late in its place; for both sources, the blackout at the lock screen and at an
+  elevation prompt, from the switch to the first picture of the new desktop; the 240 Hz leg with
+  the host's display as the primary, unsaved and held, since the compositor's clock is the
+  primary's; and the GPU scheduling mode recorded, every measurement so far having had it in the
+  driver;
 - the test-signed package installing silently with no test mode; CI building the driver; both
   CI jobs and the Linux bar.
 
 ## Change log
 
+- 2026-10-16: W3.5 checked with a person and ticked: a guest on a laptop through the GPU's
+  restart, the lock screen and the secure attention screen, with both panels' cables out the host's
+  end, the update and the GPU's restart, and the machine's sleep; the secure screens black on the
+  host's display while it is a secondary; an elevation prompt answered through the guest, its
+  dialog drawn on the primary alone.
+- 2026-10-16: W3.5 built, not ticked: the controller follows its driver, the host's own display
+  follows it and the stream's wait plugs it again and waits out a display under a GPU without the
+  encoder; `wake_display`; the stream's spin after a driver update found live and fixed. Checked
+  with the demo as the guest; a guest on another machine, the cables and the machine's sleep owed.
+- 2026-10-16: W3.5 reviewed: the logoff and the remote desktop connection moved to W2.5; the
+  controller closes its handle when its driver is asked to be removed or goes, for every user;
+  the host's own display follows its driver, also while a stream waits for a display; a display
+  listed under a GPU without the encoder is waited for, as the system lists one there while a
+  GPU's driver restarts; a setting, off by default, wakes a sleeping display as a stream starts.
+- 2026-10-16: W3.4 built, checked and ticked: the pointer the same to the byte from the driver
+  as from the duplication, the text cursor by the monochrome rule; the secure desktop keeping
+  the hardware cursor, the pointer's read following the input onto it; the host's own display
+  direct as the system account and duplicated as a user; a pointer over 256 hidden on both
+  sources; the cursor's read 4 to 5 us, kept on the frame's worker.
+- 2026-10-16: W3.4 reviewed: the driver publishes the pointer in the monitor's frame section,
+  the channel's version 2; the pointer's read follows the input desktop; a masked colour pointer
+  that is a monochrome one in another form is drawn as one; a pointer over 256 stays the
+  system's to draw; the host's own display reads the direct frame when the driver answers.
+- 2026-10-16: W3.3 checked and ticked after a restart of the machine: the device restarted twenty
+  times mid-stream, the held picture's publication broken and caught, two readers at once both
+  served; the frame thread left at normal priority, since raised it took a fifth of its pictures
+  up to 2 ms late under load; an update restarts the other virtual displays' devices, and one
+  held open leaves the update waiting for a reboot.
+- 2026-10-16: W3.3 built: the frame page written once and model-checked; the driver's half -- a
+  page per monitor for its life, each buffer shared, the fence signalled, the last picture kept
+  -- and the host's display's second source, offline until W3.4; the comparison offline at 1440p
+  and 4K at 120 and 1080p at 60; a restart refused with a handle open leaves the device waiting
+  for a reboot; three checks owed after one.
+- 2026-10-16: W3.3 reviewed: the driver never waits for the host -- a probe found the system's
+  buffer shared with no keyed mutex and read across processes, three buffers in turn, and a
+  picture intact for about three refreshes, so the hold, the release fence and the claim go; the
+  frames limited by who can take handles from the driver's process; the duplication the host's
+  path until W3.4; the gate's comparison without a hold to measure.
 - 2026-10-16: W3.2 built and checked: the host's own display plugged, held, sized at an owner's
   join and named `virtual`; an output lit only with a monitor behind it, since the last cable
   pulled leaves its output on the desktop; the pace and the deadlines' refresh at the

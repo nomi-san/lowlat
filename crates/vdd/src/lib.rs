@@ -16,6 +16,7 @@
 mod driver;
 mod ffi;
 mod file;
+mod frames;
 mod log;
 mod monitor;
 mod swapchain;

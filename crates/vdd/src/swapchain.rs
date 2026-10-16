@@ -2,7 +2,8 @@
 //! pictures (docs/11-drivers.md sections 1.6 to 1.8).
 //!
 //! The worker sets the device first and does the rest after, takes every
-//! picture and finishes it at once, and deletes the swapchain on every way
+//! picture, shares and publishes it where its monitor's frames were asked for
+//! (`frames`), finishes it at once, and deletes the swapchain on every way
 //! out. **Its stop is immediate**: the system cannot depart a monitor while a
 //! picture is held, so the wait for the next picture also waits on the stop.
 //! A swapchain's deletion may call the unassignment back on another thread
@@ -19,6 +20,7 @@ use lowlat_common::{log_debug, log_info, log_warn};
 use lowlat_drivers::d3d11::{Com, D3d11, Luid, query};
 use lowlat_drivers::ffi::d3d11::{ID3D11Device, ID3D11DeviceContext, IUnknown};
 use lowlat_drivers::ffi::d3d11_guids::IID_IDXGIDevice;
+use lowlat_vdd_proto::frames::{self as channel, ShapeKind};
 use lowlat_vdd_proto::settings::Pointer;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
@@ -28,17 +30,15 @@ use windows_sys::Win32::System::Threading::{
 use crate::ffi::{
     DXGI_ERROR_ACCESS_LOST, E_PENDING, IDARG_IN_QUERY_HWCURSOR, IDARG_IN_SETSWAPCHAIN,
     IDARG_IN_SETUP_HWCURSOR, IDARG_IN_SWAPCHAINSETDEVICE, IDARG_OUT_QUERY_HWCURSOR,
-    IDARG_OUT_RELEASEANDACQUIREBUFFER, IDDCX_CURSOR_CAPS, IDDCX_MONITOR, IDDCX_MONITOR__,
-    IDDCX_SWAPCHAIN__, IDDCX_XOR_CURSOR_SUPPORT_FULL, NTSTATUS,
-    STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN, STATUS_SUCCESS,
-    idd_monitor_query_hardware_cursor, idd_monitor_setup_hardware_cursor,
+    IDARG_OUT_RELEASEANDACQUIREBUFFER, IDDCX_CURSOR_CAPS, IDDCX_CURSOR_SHAPE_TYPE_ALPHA,
+    IDDCX_CURSOR_SHAPE_TYPE_MASKED_COLOR, IDDCX_MONITOR, IDDCX_MONITOR__, IDDCX_SWAPCHAIN__,
+    IDDCX_XOR_CURSOR_SUPPORT_FULL, NTSTATUS, STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN,
+    STATUS_SUCCESS, idd_monitor_query_hardware_cursor, idd_monitor_setup_hardware_cursor,
     idd_swapchain_finished_processing_frame, idd_swapchain_release_and_acquire_buffer,
     idd_swapchain_set_device, nt_success, size_of, wdf_object_delete,
 };
+use crate::frames::{PointerShare, Sharing};
 use crate::monitor::{self, Handle, Stats, status_word};
-
-/// The largest pointer the wire carries a picture of, a side.
-const POINTER_LIMIT: u32 = 256;
 /// How long the worker waits for a picture before asking again, as the
 /// class's own sample does.
 const WAIT_MS: u32 = 17;
@@ -205,6 +205,18 @@ impl Run {
 
     fn frames(&self, mut cursor: Option<&mut Cursor>) {
         let slot = self.slot;
+        // Ends before the swapchain's deletion below: its handles close first.
+        let mut sharing = Sharing::new(
+            slot,
+            self.stats.render_luid.load(Ordering::Relaxed),
+            monitor::committed_refresh(slot),
+            &self.device,
+        );
+        // The last picture's surface and what it was, held until the next
+        // acquire -- as long as it stays the driver's -- so a page asked for
+        // while the desktop is still is given the picture on the display.
+        let mut held: Option<(Com<IUnknown>, u32, bool)> = None;
+        let mut said = PointerShare::new(slot);
         loop {
             let mut acquired = IDARG_OUT_RELEASEANDACQUIREBUFFER::default();
             // SAFETY: the swapchain this worker owns.
@@ -233,6 +245,16 @@ impl Run {
                     }
                     return;
                 }
+                // The pointer as last said, kept on the page -- no hardware
+                // cursor said as such, the pointer then in the pictures.
+                match cursor.as_deref() {
+                    Some(cursor) => said.keep(&cursor.said, cursor.pixels()),
+                    None => said.keep(&channel::Pointer::default(), &[]),
+                }
+                sharing.catch_up(
+                    held.as_ref()
+                        .map(|(surface, frame, protected)| (surface.as_ptr(), *frame, *protected)),
+                );
                 continue;
             }
             if hr == DXGI_ERROR_ACCESS_LOST {
@@ -246,10 +268,17 @@ impl Run {
                 return;
             }
             self.stats.frames.fetch_add(1, Ordering::Relaxed);
-            // The surface's reference is the driver's to release. The surface
-            // stays the driver's until the next acquire.
+            let frame = acquired.MetaData.PresentationFrameNumber;
+            let protected = acquired.MetaData.HwProtectedSurface != 0;
+            // The surface's reference is the driver's to release, and the
+            // surface stays the driver's until the next acquire: kept until
+            // then, the last one let go here.
             // SAFETY: the reference the acquire handed over.
-            drop(unsafe { Com::<IUnknown>::from_raw(acquired.MetaData.pSurface.cast()) });
+            let surface = unsafe { Com::<IUnknown>::from_raw(acquired.MetaData.pSurface.cast()) };
+            if let Some(surface) = &surface {
+                sharing.picture(surface.as_ptr(), frame, protected);
+            }
+            held = surface.map(|surface| (surface, frame, protected));
             // SAFETY: the swapchain this worker owns.
             let hr = unsafe { idd_swapchain_finished_processing_frame(self.swapchain.0) };
             if hr < 0 {
@@ -271,10 +300,15 @@ struct Cursor {
     event: Event,
     shape: Vec<u8>,
     last_shape: u32,
+    /// What the system last said, and how many bytes of `shape` its shape's
+    /// pixels take.
+    said: channel::Pointer,
+    bytes: usize,
 }
 
 impl Cursor {
-    /// After the swapchain's device is set, once per swapchain.
+    /// After the swapchain's device is set, once per swapchain; asked at once
+    /// for what the system shows, rather than left to the first change.
     fn setup(monitor: Handle<IDDCX_MONITOR__>, slot: usize) -> Option<Self> {
         let event = Event::new(false)?;
         let args = IDARG_IN_SETUP_HWCURSOR {
@@ -282,8 +316,8 @@ impl Cursor {
                 Size: size_of::<IDDCX_CURSOR_CAPS>(),
                 ColorXorCursorSupport: IDDCX_XOR_CURSOR_SUPPORT_FULL,
                 AlphaCursorSupport: 1,
-                MaxX: POINTER_LIMIT,
-                MaxY: POINTER_LIMIT,
+                MaxX: channel::POINTER_LIMIT,
+                MaxY: channel::POINTER_LIMIT,
             },
             hNewCursorDataAvailable: event.0.cast(),
         };
@@ -296,16 +330,31 @@ impl Cursor {
             );
             return None;
         }
-        let bytes = usize::try_from(POINTER_LIMIT * POINTER_LIMIT * 4).unwrap_or(0);
-        Some(Self {
+        let mut cursor = Self {
             monitor,
             slot,
             event,
-            shape: vec![0; bytes],
+            shape: vec![0; channel::SHAPE_BYTES],
             last_shape: 0,
-        })
+            said: channel::Pointer {
+                cursor: true,
+                ..channel::Pointer::default()
+            },
+            bytes: 0,
+        };
+        cursor.query();
+        Some(cursor)
     }
 
+    /// The pixels of the shape last said.
+    fn pixels(&self) -> &[u8] {
+        self.shape.get(..self.bytes).unwrap_or_default()
+    }
+
+    /// Ask the system what it shows now. **A shape is taken only when it
+    /// comes with one**: with the cursor hidden the system says nothing of
+    /// the shape, and the last number asked with stays the last one taken, so
+    /// a shape set meanwhile comes when the cursor shows again.
     fn query(&mut self) {
         let args = IDARG_IN_QUERY_HWCURSOR {
             LastShapeId: self.last_shape,
@@ -325,9 +374,33 @@ impl Cursor {
             );
             return;
         }
-        if out.IsCursorShapeUpdated != 0 {
-            let info = out.CursorShapeInfo;
+        self.said.visible = out.IsCursorVisible != 0;
+        let info = out.CursorShapeInfo;
+        let kind = match info.CursorType {
+            IDDCX_CURSOR_SHAPE_TYPE_MASKED_COLOR => Some(ShapeKind::MaskedColour),
+            IDDCX_CURSOR_SHAPE_TYPE_ALPHA => Some(ShapeKind::Alpha),
+            _ => None,
+        };
+        let bytes =
+            usize::try_from(u64::from(info.Pitch) * u64::from(info.Height)).unwrap_or(usize::MAX);
+        if out.IsCursorShapeUpdated != 0
+            && info.ShapeId != 0
+            && kind.is_some()
+            && bytes <= self.shape.len()
+        {
             self.last_shape = info.ShapeId;
+            self.bytes = bytes;
+            self.said = channel::Pointer {
+                cursor: true,
+                visible: self.said.visible,
+                shape: info.ShapeId,
+                kind,
+                width: info.Width,
+                height: info.Height,
+                pitch: info.Pitch,
+                hot_x: info.XHot,
+                hot_y: info.YHot,
+            };
             log_debug!(
                 "vdd: pointer shape, slot={} id={} type={} size={}x{} hot={},{} visible={}",
                 self.slot,

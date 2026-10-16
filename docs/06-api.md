@@ -296,6 +296,7 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 | `max_guests` | Advertised capacity, read when a guest asks for a seat. |
 | `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
 | `virtual_fallback` | Whether the host plugs its own display when nothing is lit (minor 27), checked at its start and again while it runs, and keeps it for as long as it runs. Lit is an output on the desktop with a monitor behind it: the last monitor's cable pulled leaves its output on the desktop with none, and that is nothing lit. **Off by default**, since it changes the machine; `lowlatd` turns it on. Windows alone has the display; elsewhere it is accepted and nothing is plugged. |
+| `wake_display` | Whether a stream wakes the display it captures as it starts, with one pointer move of no distance (minor 28). A stream holds its display on, but a display that slept before anybody arrived stays asleep under that and gives no pictures until input wakes it. **Off by default**, in `lowlatd` too (`--wake-display` turns it on): a guest's first input wakes the display, and a connection lights nothing at the desk by itself. Windows alone acts on it; elsewhere it is accepted and does nothing. |
 
 <a name="quality"></a>
 **`lowlat_quality` names where a host sits between delay and picture**, and it is the only
@@ -947,6 +948,12 @@ without it the open answers `LOWLAT_ERR_VDD_ABSENT`, and a driver of another ver
   alive by traffic.**
 - **A monitor is a slot**, 0 to 15, whose identity the system remembers its place and mode by; a
   plug may ask for one, or take the first free with `LOWLAT_VDD_SLOT_ANY`.
+- **A handle follows its driver** ([11](11-drivers.md) §1.8, *added 2026-10-16*): an open
+  handle would refuse the removal an update or a restart of the driver needs, so it is closed
+  when the driver is asked to be removed, and when a call finds the driver gone -- its process
+  ended. The monitors bound to it go with it, as they would with the driver, and every call on it
+  after answers `LOWLAT_ERR_VDD_ABSENT`; `lowlat_vdd_open` makes a new one once the driver is
+  back.
 - **These calls wait for the system**, the one exception to [§8](#8-threading-and-reentrancy):
   a plug returns once the monitor is active at its mode, a mode once it is current, an unplug
   once the monitor has gone -- within about three seconds, past which `LOWLAT_ERR_VDD_NOT_READY`
@@ -1472,7 +1479,7 @@ growing it moved that half, and a host application built against an earlier mino
 the size of what it is given. Taken deliberately rather than kept by a call of its own; the host
 half carries no promise before 1.0, as the client half never has.
 
-**Minor 28** adds optional native client-to-TURN TCP/TLS carriers. The `turn-stream` build
+**Minor 29** adds optional native client-to-TURN TCP/TLS carriers. The `turn-stream` build
 feature enables them; the default build remains UDP. `relay_transport` (0 UDP, 1 TCP, 2 TLS)
 and `relay_tls_server_name` are appended to `lowlat_client_config` and read only where the
 caller's size reaches each complete field. TLS requires a certificate identity without a
@@ -1480,6 +1487,11 @@ port. Older callers retain UDP. An unsupported carrier, a TLS request without it
 or a non-UDP carrier without a relay is refused. `relay_transport` is also appended to the
 client status, meaningful only for an established relayed path. All earlier fields keep
 their offsets. See [TURN stream integration](turn-stream-development.md).
+
+**Minor 28** (2026-10-16) is waking the display ([§3](#3-host)): `wake_display` in
+`lowlat_host_config`, taking its last reserved byte. Nothing moves, and a caller built against
+an earlier minor leaves it zero, off. The third half's handle now follows its driver
+([§3c](#3c-virtual-displays)): a behaviour, not a symbol.
 
 **Minor 26** (2026-10-15) is the third half, the virtual displays, on Windows
 ([§3c](#3c-virtual-displays)): `lowlat_vdd` and its ten calls, `lowlat_vdd_plug_info`,

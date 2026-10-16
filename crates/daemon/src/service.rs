@@ -712,6 +712,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // display of the host's own is what such a machine needs before
             // anybody connects. Only Windows has one.
             virtual_fallback: !flag_set("--no-virtual-fallback"),
+            // **Off unless asked**, as in the library: a display that slept
+            // is woken by a guest's first input, and a connection lights
+            // nothing at the desk by itself.
+            wake_display: flag_set("--wake-display"),
             own_display: lowlat_host::stream::OwnDisplay::default(),
         }),
     });

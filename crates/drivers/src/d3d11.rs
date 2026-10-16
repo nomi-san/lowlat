@@ -1007,6 +1007,78 @@ impl Device {
         unsafe { Com::from_raw(out.cast::<ID3D11Texture2D>()) }.ok_or(Error::Unavailable)
     }
 
+    /// A texture another process shared as an NT handle, opened on this
+    /// device. The handle stays the caller's to close; the texture holds what
+    /// it names for as long as it lives.
+    pub fn open_shared_nt(
+        &self,
+        handle: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> Result<Com<ID3D11Texture2D>> {
+        use std::os::windows::io::AsRawHandle;
+        let handle: HANDLE = handle.as_raw_handle();
+        let (device5, _) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        let mut out: *mut c_void = core::ptr::null_mut();
+        // SAFETY: a live device; the handle is a value the system checks, and
+        // the identifier and output are live.
+        let hr = unsafe {
+            vcall!(
+                device5.as_ptr(),
+                OpenSharedResource1,
+                handle,
+                &IID_ID3D11Texture2D,
+                &raw mut out
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a texture of the asked-for interface, whose reference is
+        // ours.
+        unsafe { Com::from_raw(out.cast::<ID3D11Texture2D>()) }.ok_or(Error::Unavailable)
+    }
+
+    /// A fence another process shared as an NT handle, opened on this device:
+    /// read and waited on here, raised by its maker. The handle stays the
+    /// caller's to close.
+    pub fn open_shared_fence(
+        &self,
+        handle: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> Result<Fence> {
+        use std::os::windows::io::AsRawHandle;
+        let handle: HANDLE = handle.as_raw_handle();
+        let (device5, _) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        let mut out: *mut c_void = core::ptr::null_mut();
+        // SAFETY: as above.
+        let hr = unsafe {
+            vcall!(
+                device5.as_ptr(),
+                OpenSharedFence,
+                handle,
+                &IID_ID3D11Fence,
+                &raw mut out
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a fence of the asked-for interface, whose reference is ours.
+        let fence =
+            unsafe { Com::from_raw(out.cast::<ID3D11Fence>()) }.ok_or(Error::Unavailable)?;
+        Ok(Fence { fence })
+    }
+
+    /// Have the device wait for `fence` to reach `value` before any work
+    /// queued after this. The opening thread's, as the context is. **Only a
+    /// value already signalled, or queued to be, by a device that will reach
+    /// it**: a wait for one never signalled holds every later piece of this
+    /// device's work behind it.
+    pub fn wait(&self, fence: &Fence, value: u64) -> Result<()> {
+        let (_, context4) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        // SAFETY: a live context on its own thread and a fence opened on this
+        // device.
+        let hr = unsafe { vcall!(context4.as_ptr(), Wait, fence.fence.as_ptr(), value) }
+            .ok_or(Error::MissingSymbol)?;
+        check(hr)
+    }
+
     /// A compute shader of this device's, from the compiler's bytecode.
     pub fn compute_shader(&self, code: &[u8]) -> Result<Com<ID3D11ComputeShader>> {
         let mut shader: *mut ID3D11ComputeShader = core::ptr::null_mut();

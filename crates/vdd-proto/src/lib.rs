@@ -1,7 +1,7 @@
 //! What the display driver and its controller share: the control interface's
-//! requests and replies, the monitors' identity and their modes, and the file
-//! kept monitors come back from
-//! ([docs/11-drivers.md](../../../docs/11-drivers.md)).
+//! requests and replies, the monitors' identity and their modes, the file
+//! kept monitors come back from, and the page each monitor's pictures are
+//! published in ([docs/11-drivers.md](../../../docs/11-drivers.md)).
 //!
 //! **No platform code and no allocation.** The driver is a library loaded into
 //! the system's user-mode driver host; the controller is the host's display
@@ -33,6 +33,7 @@ extern crate std;
 
 pub mod control;
 pub mod edid;
+pub mod frames;
 pub mod modes;
 pub mod settings;
 

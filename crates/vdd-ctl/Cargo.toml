@@ -18,8 +18,8 @@ lowlat-common.workspace = true
 # The GPUs a person may name in the file.
 lowlat-drivers.workspace = true
 lowlat-vdd-proto.workspace = true
-# The driver's interface and its requests, and the system's display
-# configuration.
+# The driver's interface and its requests, the system's display
+# configuration, and a monitor's frame page taken from the driver's process.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Devices_DeviceAndDriverInstallation",
@@ -28,6 +28,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
 ] }
 
 [lints]

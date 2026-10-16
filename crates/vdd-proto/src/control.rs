@@ -1,4 +1,5 @@
-//! The control interface: version, plug, unplug, replug, list and reload.
+//! The control interface: version, plug, unplug, replug, list and reload,
+//! and the request for a monitor's frame page.
 //!
 //! Every request and reply is a fixed sequence of little-endian words with its
 //! own length first, read and written field by field. A request comes from any
@@ -37,6 +38,8 @@ pub const IOCTL_LIST: u32 = code(4);
 pub const IOCTL_REPLUG: u32 = code(5);
 /// Takes nothing: read the file again (section 1.4).
 pub const IOCTL_RELOAD: u32 = code(6);
+/// Takes [`Frames`], answers [`FrameChannel`] (section 1.6).
+pub const IOCTL_FRAMES: u32 = code(7);
 
 /// Why a request was not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +313,71 @@ impl Replug {
     }
 }
 
+/// Ask for a monitor's frame page (section 1.6). **Answered to any caller the
+/// device admits**: the answer is handle values in the driver's own process,
+/// which only a process allowed to take handles from it can use (section 1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frames {
+    pub slot: u8,
+}
+
+impl Frames {
+    pub const LEN: usize = 8;
+
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, Refused> {
+        put_u32(out, 0, length(Self::LEN)).ok_or(Refused::Room)?;
+        put_u32(out, 4, u32::from(self.slot)).ok_or(Refused::Room)?;
+        Ok(Self::LEN)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Refused> {
+        sized(bytes, Self::LEN)?;
+        Ok(Self {
+            slot: get_slot(bytes, 4)?,
+        })
+    }
+}
+
+/// The driver's answer to [`Frames`]: the page's section, a handle value in
+/// the driver's process, and which process that is -- its identifier and the
+/// time it started, so a reader never takes handles from another that came
+/// to carry the same identifier -- with the frame channel's own version
+/// ([`crate::frames::VERSION`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameChannel {
+    pub version: u32,
+    pub process: u32,
+    pub size: u32,
+    /// When the process started, in the system's file-time units.
+    pub started: u64,
+    pub section: u64,
+}
+
+impl FrameChannel {
+    pub const LEN: usize = 32;
+
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, Refused> {
+        put_u32(out, 0, length(Self::LEN)).ok_or(Refused::Room)?;
+        put_u32(out, 4, self.version).ok_or(Refused::Room)?;
+        put_u32(out, 8, self.process).ok_or(Refused::Room)?;
+        put_u32(out, 12, self.size).ok_or(Refused::Room)?;
+        put_u64(out, 16, self.started).ok_or(Refused::Room)?;
+        put_u64(out, 24, self.section).ok_or(Refused::Room)?;
+        Ok(Self::LEN)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, Refused> {
+        sized(bytes, Self::LEN)?;
+        Ok(Self {
+            version: get_u32(bytes, 4).ok_or(Refused::Short)?,
+            process: get_u32(bytes, 8).ok_or(Refused::Short)?,
+            size: get_u32(bytes, 12).ok_or(Refused::Short)?,
+            started: get_u64(bytes, 16).ok_or(Refused::Short)?,
+            section: get_u64(bytes, 24).ok_or(Refused::Short)?,
+        })
+    }
+}
+
 /// One slot as [`IOCTL_LIST`] reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Entry {
@@ -422,6 +490,41 @@ mod tests {
         assert_eq!(IOCTL_LIST, 0x0022_E010);
         assert_eq!(IOCTL_REPLUG, 0x0022_E014);
         assert_eq!(IOCTL_RELOAD, 0x0022_E018);
+        assert_eq!(IOCTL_FRAMES, 0x0022_E01C);
+    }
+
+    #[test]
+    fn a_request_for_frames_and_its_answer_round_trip() {
+        let mut buf = [0u8; FrameChannel::LEN];
+        for slot in [0, 7, 15] {
+            let asked = Frames { slot };
+            assert_eq!(asked.encode(&mut buf), Ok(Frames::LEN));
+            assert_eq!(Frames::decode(buf.get(..Frames::LEN).unwrap()), Ok(asked));
+        }
+        // Past the last slot.
+        let mut past = [0u8; Frames::LEN];
+        Frames { slot: 0 }.encode(&mut past).unwrap();
+        past[4] = 16;
+        assert_eq!(Frames::decode(&past), Err(Refused::Range));
+
+        let answer = FrameChannel {
+            version: crate::frames::VERSION,
+            process: 10_484,
+            size: 4096,
+            started: 0x01dc_3e9a_1234_5678,
+            section: 0x650,
+        };
+        assert_eq!(answer.encode(&mut buf), Ok(FrameChannel::LEN));
+        assert_eq!(FrameChannel::decode(&buf), Ok(answer));
+        // Every field lands where the other side reads it: the time is not
+        // the section's word, nor the section the time's.
+        assert_eq!(buf[16..24], 0x01dc_3e9a_1234_5678u64.to_le_bytes());
+        assert_eq!(buf[24..32], 0x650u64.to_le_bytes());
+        assert_eq!(
+            FrameChannel::decode(&buf[..FrameChannel::LEN - 1]),
+            Err(Refused::Short)
+        );
+        assert_eq!(answer.encode(&mut buf[..8]), Err(Refused::Room));
     }
 
     fn plug(lifetime: Lifetime, restore: bool, slot: Option<u8>) -> Plug {

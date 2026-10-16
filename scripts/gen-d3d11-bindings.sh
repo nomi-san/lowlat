@@ -60,7 +60,7 @@ EOF
 # called themselves: opaque, so their own tables are not generated, and
 # allowlisted as well, since an opaque type nothing allowlists is not emitted.
 opaque=(
-    'IDXGI(Surface|SwapChain|SwapChain1|Adapter)'
+    'IDXGI(Surface|Surface2|SwapChain|SwapChain1|Adapter)'
     'ID3D11(DepthStencilState|BlendState|RasterizerState|Buffer|Texture1D|Texture3D)'
     'ID3D11(ShaderResourceView|RenderTargetView|DepthStencilView|UnorderedAccessView)'
     'ID3D11(Vertex|Hull|Domain|Geometry|Pixel|Compute)Shader'
@@ -87,11 +87,12 @@ bindgen "$work/d3d11.h" \
     --allowlist-type 'ID3D11(Device|DeviceContext|Texture2D|VideoDevice|VideoContext|VideoDecoder|VideoDecoderOutputView)' \
     --allowlist-type 'IDXGI(Factory1|Factory6|Adapter1)'     --allowlist-type 'DXGI_GPU_PREFERENCE' \
     `# The fence a picture's device work is known finished by, the device and` \
-    `# context that make and signal it, and a shared texture's handle; the` \
-    `# device's lock, for a runtime that calls into the context from threads` \
-    `# of its own.` \
+    `# context that make and signal it, and a shared texture's handle, in the` \
+    `# legacy form and as an NT handle with its access; the device's lock, for` \
+    `# a runtime that calls into the context from threads of its own.` \
     --allowlist-type 'ID3D11(Device5|DeviceContext4|Fence|Multithread)' \
-    --allowlist-type 'IDXGIResource' \
+    --allowlist-type 'IDXGIResource|IDXGIResource1' \
+    --allowlist-var 'DXGI_SHARED_RESOURCE_(READ|WRITE)' \
     `# The outputs an adapter drives and the duplication of one: its frames,` \
     `# the pointer's shape and position, and which way the output is turned.` \
     --allowlist-type 'IDXGIOutput|IDXGIOutput5|IDXGIOutputDuplication' \
@@ -134,6 +135,7 @@ interfaces = {
     "um/d3d11_3.h": ["ID3D11Fence", "ID3D11DeviceContext4"],
     "um/d3d11_4.h": ["ID3D11Device5", "ID3D11Multithread"],
     "shared/dxgi.h": ["IDXGIFactory1", "IDXGIAdapter1", "IDXGIDevice", "IDXGIResource"],
+    "shared/dxgi1_2.h": ["IDXGIResource1"],
     "shared/dxgi1_5.h": ["IDXGIOutput5"],
     "shared/dxgi1_6.h": ["IDXGIFactory6"],
 }

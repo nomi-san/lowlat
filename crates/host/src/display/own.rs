@@ -59,13 +59,24 @@ impl Own {
                 publish_own(None);
                 return self.plug(mode);
             }
+            // **The driver went, and the handle with it** -- updated,
+            // restarted, its process ended (docs/11-drivers.md section 1.8):
+            // a new handle, and the display plugged on it once the driver is
+            // back.
+            Err(Error::Absent) => {
+                lowlat_common::log_warn!(
+                    "display: the host's own display driver went, plugging the display again"
+                );
+                self.lost();
+                return self.plug(mode);
+            }
             Err(error) => {
                 self.refuse("the host's own display could not be read", error);
                 return false;
             }
         };
         if monitor.active && !monitor.name.is_empty() {
-            publish_own(Some(&monitor.name));
+            publish_own(Some((monitor.name.as_str(), slot)));
         }
         if monitor.active && monitor.mode == mode {
             return true;
@@ -78,7 +89,7 @@ impl Own {
                     if monitor.active { "shown" } else { "not shown" }
                 );
                 if !now.name.is_empty() {
-                    publish_own(Some(&now.name));
+                    publish_own(Some((now.name.as_str(), slot)));
                 }
                 self.refused = None;
                 true
@@ -123,7 +134,7 @@ impl Own {
                     );
                     self.slot = Some(slot);
                     if !monitor.name.is_empty() {
-                        publish_own(Some(&monitor.name));
+                        publish_own(Some((monitor.name.as_str(), slot)));
                     }
                     self.refused = None;
                     return true;
@@ -140,6 +151,11 @@ impl Own {
                     self.slot = Some(slot);
                     return false;
                 }
+                Err(Error::Absent) => {
+                    self.lost();
+                    self.refuse("the host's own display driver went", Error::Absent);
+                    return false;
+                }
                 Err(error) => {
                     self.refuse("the host's own display could not be plugged", error);
                     return false;
@@ -148,6 +164,15 @@ impl Own {
         }
         self.refuse("the host's own display has no free slot", Error::Full);
         false
+    }
+
+    /// The driver's handle followed its driver away, and the monitor bound to
+    /// it with it: nothing left to name, and a new handle at the next look.
+    fn lost(&mut self) {
+        self.controller = None;
+        if self.slot.take().is_some() {
+            publish_own(None);
+        }
     }
 
     /// Say why, once until something succeeds or the reason changes.
@@ -166,5 +191,78 @@ impl Drop for Own {
         if self.slot.is_some() {
             publish_own(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The host's own display follows its driver**: held, then the driver
+    /// ended under it -- its process, or with `LOWLAT_RESTART` naming the
+    /// device's instance, the device restarted by the system, which the
+    /// held handle must not refuse -- and held again until it is plugged
+    /// again, on a new handle, once the driver is back. Run as the system
+    /// account, which takes the driver's page, the driver installed.
+    #[test]
+    #[ignore = "ends or restarts the display driver; run as the system account"]
+    fn the_hosts_own_display_follows_its_driver() {
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+
+        let mode = Mode::new(1920, 1080, 60);
+        let process = |slot| {
+            lowlat_vdd_ctl::FramePage::open(slot)
+                .expect("the driver's page")
+                .process_id()
+        };
+        let mut own = Own::default();
+        assert!(own.hold(mode), "the display was not plugged");
+        let before = process(own.slot.expect("a slot"));
+        let began = Instant::now();
+        match std::env::var("LOWLAT_RESTART").ok() {
+            Some(instance) => {
+                let out = std::process::Command::new("pnputil")
+                    .args(["/restart-device", &instance])
+                    .output()
+                    .expect("pnputil");
+                let said = String::from_utf8_lossy(&out.stdout).to_string();
+                println!("pnputil after {:?}: {}", began.elapsed(), said.trim());
+                assert!(
+                    out.status.success() && !said.contains("pending"),
+                    "the restart was refused"
+                );
+            }
+            None => {
+                // SAFETY: an identifier the system checks; the handle closed
+                // once.
+                unsafe {
+                    let handle = OpenProcess(PROCESS_TERMINATE, 0, before);
+                    assert!(
+                        !handle.is_null(),
+                        "the driver's process could not be opened"
+                    );
+                    TerminateProcess(handle, 1);
+                    CloseHandle(handle);
+                }
+            }
+        }
+        while !(own.hold(mode) && own.plugged()) {
+            assert!(
+                began.elapsed() < Duration::from_secs(10),
+                "the display did not come back"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let back = began.elapsed();
+        let after = process(own.slot.expect("a slot"));
+        println!(
+            "the display back at slot {:?} after {back:?}, the driver's process {before} then {after}",
+            own.slot
+        );
+        assert_ne!(before, after, "the driver did not end");
     }
 }

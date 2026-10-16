@@ -1370,7 +1370,7 @@ thread, and nothing waits on the relay.
 
 That is the default UDP carrier. The optional `turn-stream` build feature uses a native
 TCP/TLS carrier instead, with the same endpoint, allocation engine and merged thread. Set
-`config::Relay::transport` to `Tcp` or `Tls { server_name }`; the C SDK's minor-28 extension
+`config::Relay::transport` to `Tcp` or `Tls { server_name }`; the C SDK's minor-29 extension
 uses `relay_transport` (0 UDP, 1 TCP, 2 TLS) and `relay_tls_server_name`. Older callers remain
 UDP, unsupported selections are refused, and application escalation policy is unchanged.
 The TLS name is a certificate identity without a port, independent of the resolved address.

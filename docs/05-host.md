@@ -52,6 +52,13 @@ Rules:
   restart also renumbers every output while the monitors stay, so an output asked for by name
   is followed by the monitor it showed. A program taking the display in exclusive fullscreen at
   another mode is a resolution change, and is followed both ways.
+  *Added 2026-10-16, at W3.5's review:* **a display listed under a GPU without the encoder is
+  waited for**, within the wait for a display, rather than refused at once: while a GPU's driver
+  restarts, Windows lists a virtual display under another GPU for about a second and a half, and
+  the panels under its software renderer, which is just when a stream that saw its device lost
+  rebuilds. And **the host's own display is plugged again while the stream waits** for a
+  display, so its driver updated, restarted or ended under a stream costs a rebuild rather than
+  the guests ([11 §1.8](11-drivers.md)).
 - The acquire timeout is one frame interval. A timeout is not an error; it means the screen
   did not change, and the correct response is to skip the iteration rather than to encode a
   duplicate.
@@ -98,6 +105,44 @@ Rules:
   mode's period there instead, a ceiling of 60 or 90 took each picture 4.6 to 6.2 ms after its
   composition at the median, where a panel whose mode is its clock takes it within a
   millisecond.
+- **The host's own display can be read straight from its driver** (*added 2026-10-16*,
+  [11 §1.6](11-drivers.md), [impl-plan-windows.md](impl-plan-windows.md) W3.3), the system's
+  own buffers converted as they are, with no duplication between: a second Windows source behind
+  the same names, the host's own display's from W3.4 and the duplication's until then. Its
+  present is a picture the driver published and this host has not taken; a refresh past the
+  deadline with none is a present of the same picture, as the duplication's wait has it, but only
+  once there is a picture to be the same as -- before the first, the wait is for it. A picture's
+  time is the driver's acquire. Its mode's refresh comes with each of the driver's swapchains and
+  is read with each picture, so a refresh changed alone settles the rate again, as the rule above
+  has it. **The latest picture is always taken**, and it is never the same
+  as the last unless its frame number is the last one taken: a still desktop's marker repeats the
+  frame number in another buffer and is the only way left to a picture taken too late. After the
+  conversion is queued the host checks that the driver has not acquired as many newer pictures as
+  the swapchain has buffers, less one -- the system writes a buffer again only then -- and
+  converts the latest instead when it has, counted.
+  *Corrected 2026-10-16, at W3.5's build:* **the refresh bounds the wait before the first
+  picture too.** Unbounded, a stream built while its display had no picture yet -- the host's own
+  display plugged again a moment before, after its driver was updated, or asleep -- found no
+  present in the start's probe, was paced by the clock alone, and spun there: a tick that took
+  nothing new is followed by another at once, which is right only where a wait paces the loop.
+  Measured on an update mid-stream, a report of 600 frames every 2 to 4 ms, the guest's pictures
+  falling from 18 a second to 6 and their latency from 1.5 ms to up to 9. And **a driver whose
+  process ended answers nothing**: its wait runs to the refresh, as a still desktop's does, until
+  the output's departure rebuilds the stream; answering at once spun the loop meanwhile.
+- **On Windows the lock screen and the secure attention screen are drawn on the primary display
+  alone** (*found 2026-10-16, at W3.5's checks*). A guest watching another display -- the host's
+  own beside a lit panel -- sees black while they are up, though the stream goes on, follows the
+  input onto them, and the guest's keys reach them; with the host's own display the only one, or
+  the primary, the guest sees them and unlocks the machine by typing. An elevation prompt is
+  drawn the same way, its dialog on the primary alone, though every other display shows its
+  dimmed backdrop rather than black.
+- **On Windows a display asleep is woken by input, not by the stream** (*added 2026-10-16, at
+  W3.5's review*). A stream holds the display on while it lives, but a display that slept before
+  a guest arrived stays asleep under that request and gives no pictures -- a virtual one loses
+  its driver's swapchain meanwhile, its output staying on the desktop, so nothing is rebuilt --
+  until input wakes it, measured. A guest's first input does; a setting, off by default, has the
+  stream wake it as it starts with one injected pointer move of no distance, which woke it in
+  170 ms.
 - **Dirty-rectangle awareness is deferred.** It is a real optimization for desktop work and it
   interacts with the reference chain in ways that need measurement first.
 
@@ -1026,6 +1071,7 @@ overlay is `hidden` ([§8.1](#81-three-states-never-conflated)):
 | Backend | intent (`relative`) | overlay (`hidden`) |
 |---|---|---|
 | Windows desktop duplication | the show state, or a pointer whose picture is one value throughout | the duplication's own visibility of the pointer, kept from the last frame that carried a pointer update |
+| Windows, the host's own display read from its driver | the show state, or a pointer whose picture is one value throughout | the driver's report of its hardware cursor: not visible -- drawn by the system, or not drawn at all -- and so with no hardware cursor |
 | X11 | cursor visibility notifications from the fixes extension | not built |
 | compositor-mediated | the cursor mode reported alongside the stream | not built |
 | scanout | no direct source; the session's ([07 §2.1](07-platforms.md)) | plane presence, debounced ([§8.4](#84-deriving-hidden-from-plane-presence)) |
@@ -1035,6 +1081,19 @@ collapse and the false-positive rate is highest. It is flagged in
 [07-platforms.md](07-platforms.md) as a backend selection input, not something to paper over
 here. *Corrected 2026-10-14:* what scanout lacks is intent; its plane is the overlay state,
 which a far side is meant to read as relative motion.
+
+*Added 2026-10-16, at W3.4's review:* **the host's own display read from its driver**
+([11 §1.7](11-drivers.md)) takes the shape and the hotspot from the driver as well, and a
+masked colour shape made only of black, white, clear and inverting pixels is drawn as the
+monochrome shape it is -- the system hands a driver every monochrome pointer in that form -- so
+both Windows sources draw the text cursor alike. Its position and show state are read as for any
+display, on the input desktop; the frames need no desktop, so the reading thread follows the
+input desktop itself whenever a read fails, at the duplication's retry pace. A pointer larger
+than the 256 the wire carries is drawn by the system into the pictures and reported not visible,
+so it reads as `hidden`; the duplication, whose pictures never carry the pointer, keeps the last
+shape it could send. *Corrected at the build, the same day:* the duplication of that display says
+the same, measured -- it keeps its last shape and reports the pointer not visible, the system
+drawing it -- so both sources send a guest to relative motion while the pointer is that large.
 
 ### §8.4 Deriving hidden from plane presence
 

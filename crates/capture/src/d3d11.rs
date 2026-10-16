@@ -201,24 +201,54 @@ impl Converter {
         source: *mut ID3D11Texture2D,
         target: &Target,
     ) -> Result<(), Error> {
-        if target.layout != self.layout {
-            return Err(Error::Unavailable);
-        }
         let key = source as usize;
         let view = match &self.source {
             Some((held, view)) if *held == key => view.as_ptr(),
             _ => {
                 self.source = None;
-                // SAFETY: plain data the call fills whole.
-                let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
-                // SAFETY: the caller's live texture; the output is a live local.
-                unsafe { vcall!(source, GetDesc, &raw mut desc) };
-                let view = device.shader_view(source, desc.Format)?;
+                let view = Self::view_of(device, source)?;
                 let raw = view.as_ptr();
                 self.source = Some((key, view));
                 raw
             }
         };
+        self.dispatch(device, view, target)
+    }
+
+    /// The view a source texture is read through, at its own format: for a
+    /// caller that keeps one per texture, a source that cycles through
+    /// several of its own.
+    pub fn view_of(
+        device: &Device,
+        source: *mut ID3D11Texture2D,
+    ) -> Result<Com<ID3D11ShaderResourceView>, Error> {
+        // SAFETY: plain data the call fills whole.
+        let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
+        // SAFETY: the caller's live texture; the output is a live local.
+        unsafe { vcall!(source, GetDesc, &raw mut desc) };
+        device.shader_view(source, desc.Format)
+    }
+
+    /// Queue the conversion of what `view` reads into `target`, as
+    /// [`Converter::convert`] does with a view of its own.
+    pub fn convert_view(
+        &self,
+        device: &Device,
+        view: &Com<ID3D11ShaderResourceView>,
+        target: &Target,
+    ) -> Result<(), Error> {
+        self.dispatch(device, view.as_ptr(), target)
+    }
+
+    fn dispatch(
+        &self,
+        device: &Device,
+        view: *mut ID3D11ShaderResourceView,
+        target: &Target,
+    ) -> Result<(), Error> {
+        if target.layout != self.layout {
+            return Err(Error::Unavailable);
+        }
         let targets: [*mut ID3D11UnorderedAccessView; 2] = target
             .views
             .each_ref()

@@ -64,14 +64,12 @@ ErrorControl=1
 ServiceBinary=%12%\WUDFRd.sys
 
 ; A host process of its own, never shared with another driver, so the process
-; the host takes handles from holds this driver alone; raised in priority,
-; since its wake lies on every picture's path.
+; the host takes handles from holds this driver alone.
 [LowlatVdd_Install.NT.Wdf]
 UmdfService=LowlatVdd,LowlatVdd_Umdf
 UmdfServiceOrder=LowlatVdd
 UmdfKernelModeClientPolicy=AllowKernelModeClients
 UmdfHostProcessSharing=ProcessSharingDisabled
-UmdfHostPriority=PriorityHigh
 
 [LowlatVdd_Umdf]
 UmdfLibraryVersion=$UMDFVERSION$

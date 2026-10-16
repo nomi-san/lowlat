@@ -882,12 +882,13 @@ After Gate B. The differences are contained:
   test certificate the machine trusts loads it with no test mode, and a release is signed from
   CI's build by a signing service for open-source projects. It is installed and removed with
   the service, and needs Windows 10 1903. Its control interface admits any interactive user, a
-  monitor bound to the handle that plugged it or kept until removed; its frame interface admits
-  the system account alone and never reaches the library's boundary. Kept monitors come back at
-  start from a file in a folder of its own under the program-data directory, which users may
-  write and the driver's account may read, beside the host's configuration that only the system
-  account and administrators read. An arrangement of displays that only the virtual one can
-  satisfy is never saved, or a later boot waits on the driver. The design is
+  monitor bound to the handle that plugged it or kept until removed; its frames reach only a
+  process that can take handles from the driver's own -- the system account (*amended
+  2026-10-16*, [11 §1.2](11-drivers.md)) -- and never the library's boundary. Kept monitors
+  come back at start from a file in a folder of its own under the program-data directory, which
+  users may write and the driver's account may read, beside the host's configuration that only
+  the system account and administrators read. An arrangement of displays that only the virtual
+  one can satisfy is never saved, or a later boot waits on the driver. The design is
   [11](11-drivers.md).
 
 None of this reaches the protocol core, the IO shell's logic, or the public API.

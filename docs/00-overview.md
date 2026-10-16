@@ -69,10 +69,12 @@ lowlat-drivers   the device interfaces reached at runtime: the generated binding
                  encode and decode, nothing above the seam
 lowlat-vdd-proto what the display driver and its controller share: the control
                  interface's requests and replies, each monitor's identity, the
-                 modes; no platform code, no allocation
+                 modes, the frame page and its sequence lock; no platform code,
+                 no allocation
 lowlat-vdd-ctl   the display driver's controller: plug, unplug, modes, the
-                 settings file; under the host's own display, the SDK's third
-                 half and lowlatd display
+                 settings file, a monitor's frame page taken from the driver;
+                 under the host's own display, the SDK's third half and
+                 lowlatd display
 lowlat-capture   frame trait plus synthetic source; real backends at Gate B
 lowlat-encode    NVENC, then FFmpeg software, then VAAPI
 lowlat-audio     sound capture, encode, and decode; no display stack, no vendor runtime

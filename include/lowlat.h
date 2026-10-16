@@ -49,7 +49,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 28
+#define LOWLAT_ABI_MINOR 29
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -1064,7 +1064,14 @@ typedef struct lowlat_host_config {
     /// since it changes the machine; `output` set to `virtual` plugs it
     /// either way. Settled when hosting starts.
     bool virtual_fallback;
-    uint8_t reserved2[1];
+    /// Whether a stream wakes the display it captures as it starts, with one
+    /// pointer move of no distance (minor 28): holding a display on does not
+    /// wake one that slept, which gives no pictures until input wakes it.
+    /// **Default: off**, so a guest's first input wakes it and a connection
+    /// lights nothing at the desk by itself. Windows alone acts on it;
+    /// elsewhere it is accepted and does nothing. Settled when hosting
+    /// starts.
+    bool wake_display;
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
     uint32_t server_count;
@@ -1776,11 +1783,11 @@ typedef struct lowlat_client_config {
     /// cleared when it is done with it.
     char relay_username[LOWLAT_RELAY_CREDENTIAL_MAX];
     char relay_password[LOWLAT_RELAY_CREDENTIAL_MAX];
-    /// Client-to-relay carrier (minor 28): 0 UDP (default), 1 TCP, 2 TLS.
+    /// Client-to-relay carrier (minor 29): 0 UDP (default), 1 TCP, 2 TLS.
     /// TCP/TLS requires the optional turn-stream build feature. The allocation
     /// and relay-to-host leg remain UDP. Read only when size reaches the field.
     uint32_t relay_transport;
-    /// TLS certificate identity (minor 28), NUL-terminated, without a port.
+    /// TLS certificate identity (minor 29), NUL-terminated, without a port.
     /// Required for TLS; never replaced with the resolved server address.
     char relay_tls_server_name[LOWLAT_SERVER_MAX];
 } lowlat_client_config;
@@ -1923,7 +1930,7 @@ typedef struct lowlat_client_status {
     /// otherwise, and again at each attempt's start.
     bool microphone;
     uint8_t microphone_reserved[3];
-    /// Established relay carrier (minor 28): 0 UDP, 1 TCP, 2 TLS.
+    /// Established relay carrier (minor 29): 0 UDP, 1 TCP, 2 TLS.
     /// Meaningful only when relayed is true; zero while not established.
     uint32_t relay_transport;
 } lowlat_client_status;

@@ -54,6 +54,7 @@ fn main() {
         // and no privilege, and is how the generator itself is checked.
         display: std::env::var("LOWLAT_SYNTH").is_err(),
         virtual_fallback: false,
+        wake_display: false,
         own_display: lowlat_host::stream::OwnDisplay::default(),
         width: 1920,
         height: 1080,

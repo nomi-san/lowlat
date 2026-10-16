@@ -890,6 +890,7 @@ dependencies = [
  "lowlat-inject",
  "lowlat-net",
  "lowlat-vdd-ctl",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1003,6 +1004,9 @@ dependencies = [
 [[package]]
 name = "lowlat-vdd-proto"
 version = "0.0.0"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "lowlatd"

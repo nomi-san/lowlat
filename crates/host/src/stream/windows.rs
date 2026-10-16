@@ -14,7 +14,7 @@ use lowlat_vdd_ctl::Mode;
 
 use super::{
     Backend, Codec, Config, DISPLAY_WAIT, Declared, Exit, FromDevice, Join, Roster, Shared,
-    await_display, encode_loop, own_refresh, own_size, settle_pace, start_bps,
+    encode_loop, own_refresh, own_size, settle_pace, start_bps,
 };
 use crate::display::own::FIRST_SIZE;
 use crate::display::{Capturable, Display, VIRTUAL};
@@ -55,6 +55,14 @@ impl Own {
         self.reconcile(shared, config, joining);
     }
 
+    /// One pass while a stream waits for its display: the same as nobody
+    /// seated, at the wait's own pace, so a display that went with its
+    /// driver is plugged again as soon as the driver is back.
+    fn waiting(&mut self, shared: &Shared, config: &Config) {
+        self.looked = Some(Time::now());
+        self.reconcile(shared, config, None);
+    }
+
     fn reconcile(&mut self, shared: &Shared, config: &Config, joining: Option<Declared>) {
         let named = config
             .output
@@ -90,6 +98,12 @@ impl Own {
 /// The vendor whose encoder this platform builds.
 const NVIDIA: u32 = 0x10de;
 
+/// Whether this platform builds an encoder on `adapter`: the vendor's, on a
+/// GPU that renders.
+fn encodes_on(adapter: &lowlat_drivers::d3d11::Adapter) -> bool {
+    adapter.vendor == NVIDIA && adapter.decodes_here()
+}
+
 /// Build the stream's device and encoder for `config` and run it until it
 /// exits: with a display, everything on the device of the output's own
 /// adapter; without one, the vendor's encoder on a device of its own and the
@@ -100,6 +114,7 @@ pub(super) fn build(
     arrivals: &mpsc::Receiver<Join>,
     config: &Config,
     roster: &mut Roster,
+    own: &mut Own,
 ) -> Exit {
     lowlat_common::log_info!(
         "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
@@ -120,7 +135,7 @@ pub(super) fn build(
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     }
     if config.display {
-        run_display(shared, arrivals, config.clone(), roster)
+        run_display(shared, arrivals, config.clone(), roster, own)
     } else {
         run_vendor(shared, arrivals, config.clone(), roster)
     }
@@ -204,34 +219,65 @@ fn run_display(
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
+    own: &mut Own,
 ) -> Exit {
+    let wanted = config.output.as_deref();
     // **A display that is asleep or switched off is waited for**, as on
     // Linux: somebody connecting to a machine nobody is at is most of what
-    // remote access is for.
-    let Some((width, height, refresh_hz)) = await_display(config.output.as_deref()) else {
-        lowlat_common::log_error!(
-            "stream: no output has been part of the desktop for {:.0}s, ending {} guest(s)",
-            DISPLAY_WAIT.as_secs_f64(),
-            roster.active.len()
-        );
-        return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+    // remote access is for. **So is the host's own display gone with its
+    // driver**, plugged again meanwhile, and **an output listed under a GPU
+    // without the encoder**: while a GPU's driver restarts, the system lists
+    // a virtual display under another GPU for about a second and a half,
+    // which is just when a stream that lost its device rebuilds
+    // (docs/05-host.md section 2).
+    let began = Time::now();
+    let mut said = None;
+    let (output, (width, height, refresh_hz)) = loop {
+        let found = Display::shape_of_display(wanted)
+            .and_then(|shape| Display::locate(wanted).map(|output| (output, shape)));
+        let elsewhere = match found {
+            Some((output, shape)) if encodes_on(&output.adapter) => break (output, shape),
+            Some((output, _)) => Some(output),
+            None => None,
+        };
+        if clock::elapsed_ms(began) >= DISPLAY_WAIT.as_secs_f64() * 1000.0 {
+            // **The encoder follows the output**, and only the vendor's is
+            // built here: an output another vendor's GPU renders is refused
+            // rather than copied across, which would measure the copy. A
+            // virtual display's output is listed under the GPU that renders
+            // it, so it is that GPU's like any other, and refused only where
+            // that GPU stays another vendor's.
+            if let Some(output) = elsewhere {
+                lowlat_common::log_error!(
+                    "stream: {} is on {}, which has no encoder this host builds",
+                    output.name,
+                    output.adapter.description
+                );
+                return Exit::Failed(status::ENCODER_UNAVAILABLE);
+            }
+            lowlat_common::log_error!(
+                "stream: no output has been part of the desktop for {:.0}s, ending {} guest(s)",
+                DISPLAY_WAIT.as_secs_f64(),
+                roster.active.len()
+            );
+            return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+        }
+        if said != Some(elsewhere.is_some()) {
+            said = Some(elsewhere.is_some());
+            match &elsewhere {
+                Some(output) => lowlat_common::log_info!(
+                    "stream: {} is on {}, waiting for it on a GPU with the encoder",
+                    output.name,
+                    output.adapter.description
+                ),
+                None => lowlat_common::log_info!(
+                    "stream: nothing is scanning out, waiting for a display to come back"
+                ),
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        own.waiting(shared, &config);
     };
-    let Some(output) = Display::locate(config.output.as_deref()) else {
-        return Exit::Rediscover("the output went before it could be opened");
-    };
-    // **The encoder follows the output**, and only the vendor's is built
-    // here: an output another vendor's GPU renders is refused rather than
-    // copied across, which would measure the copy. A virtual display's output
-    // is listed under the GPU that renders it, so it is that GPU's like any
-    // other, and refused only where that GPU is another vendor's.
-    if output.adapter.vendor != NVIDIA || !output.adapter.decodes_here() {
-        lowlat_common::log_error!(
-            "stream: {} is on {}, which has no encoder this host builds",
-            output.name,
-            output.adapter.description
-        );
-        return Exit::Failed(status::ENCODER_UNAVAILABLE);
-    }
     let Ok(d3d11) = lowlat_encode::d3d11::D3d11::load() else {
         lowlat_common::log_error!("stream: graphics libraries unavailable, nothing will encode");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
@@ -303,6 +349,11 @@ fn run_display(
             return Exit::Failed(status::CAPTURE_UNAVAILABLE);
         }
     };
+    // **Woken where asked**: the display is held on from here, which keeps
+    // it on but never wakes one that slept.
+    if config.wake_display {
+        desktop.wake();
+    }
     lowlat_common::log_info!(
         "stream: encoding {} on {} ({})",
         output.name,

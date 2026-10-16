@@ -809,6 +809,15 @@ pub(crate) fn committed(monitor: Handle<IDDCX_MONITOR__>, mode: Mode) {
     }
 }
 
+/// The refresh the system committed this slot's monitor to, zero before any.
+pub(crate) fn committed_refresh(index: usize) -> u32 {
+    lock()
+        .slots
+        .get(index)
+        .and_then(|slot| slot.committed)
+        .map_or(0, |mode| mode.refresh_hz)
+}
+
 /// The slot and the counters a swapchain for this monitor reports into.
 pub(crate) fn stats_for(monitor: Handle<IDDCX_MONITOR__>) -> Option<(usize, Arc<Stats>)> {
     let state = lock();

@@ -22,6 +22,7 @@
 mod device;
 mod display;
 mod file;
+mod frames;
 
 use std::time::{Duration, Instant};
 
@@ -29,10 +30,12 @@ pub use lowlat_vdd_proto::MAX_MONITORS;
 pub use lowlat_vdd_proto::control::Lifetime;
 use lowlat_vdd_proto::control::{Entry, Plug};
 pub use lowlat_vdd_proto::edid::Edid;
+pub use lowlat_vdd_proto::frames::{Picture, Pointer as HardwareCursor, ShapeKind, Snapshot};
 pub use lowlat_vdd_proto::modes::Mode;
 pub use lowlat_vdd_proto::settings::{Gpu, Pointer, Settings};
 
 use device::Device;
+pub use frames::{FramePage, Waited};
 
 /// How long a call waits for the system.
 pub const BOUND: Duration = Duration::from_secs(3);

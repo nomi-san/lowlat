@@ -5,8 +5,8 @@
 use lowlat_common::{log_info, log_warn};
 use lowlat_vdd_proto::CONTROL_INTERFACE;
 use lowlat_vdd_proto::control::{
-    IOCTL_LIST, IOCTL_PLUG, IOCTL_RELOAD, IOCTL_REPLUG, IOCTL_UNPLUG, IOCTL_VERSION, Plug, Refused,
-    Replug, Unplug, VERSION, Version,
+    Frames, IOCTL_FRAMES, IOCTL_LIST, IOCTL_PLUG, IOCTL_RELOAD, IOCTL_REPLUG, IOCTL_UNPLUG,
+    IOCTL_VERSION, Plug, Refused, Replug, Unplug, VERSION, Version,
 };
 use lowlat_vdd_proto::modes::{Mode, ModeList};
 
@@ -462,6 +462,19 @@ fn control(
             }
         }
         IOCTL_RELOAD => (monitor::reload(), 0),
+        // Asked by any caller the device admits: the answer is handle values
+        // in this process, which only a process allowed to take handles from
+        // it can use (docs/11-drivers.md section 1.2).
+        IOCTL_FRAMES => {
+            let frames = match read(request, Frames::decode) {
+                Ok(frames) => frames,
+                Err(status) => return (status, 0),
+            };
+            match crate::frames::request(usize::from(frames.slot)) {
+                Ok(channel) => reply(request, |out| channel.encode(out)),
+                Err(status) => (status, 0),
+            }
+        }
         IOCTL_LIST => {
             let list = monitor::list(owner);
             reply(request, |out| list.encode(out))

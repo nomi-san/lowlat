@@ -9,7 +9,7 @@ use lowlat_core::control::status;
 
 use super::{
     Backend, Codec, Config, DISPLAY_WAIT, Declared, ENCODE_DEPTH, Exit, FromDevice, Join, Roster,
-    Shared, await_display, encode_loop, settle_pace, start_bps,
+    Shared, encode_loop, settle_pace, start_bps,
 };
 
 /// The host's own display, which only Windows has: nothing to plug or hold.
@@ -28,6 +28,28 @@ impl Own {
     }
 }
 
+/// Wait for something to scan out, and report what shape it is: its size, and
+/// how many times a second it presents.
+fn await_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
+    let began = lowlat_common::clock::Time::now();
+    let mut said = false;
+    loop {
+        if let Some(shape) = crate::display::Display::shape_of_display(wanted) {
+            return Some(shape);
+        }
+        if !said {
+            said = true;
+            lowlat_common::log_info!(
+                "stream: nothing is scanning out, waiting for a display to come back"
+            );
+        }
+        if lowlat_common::clock::elapsed_ms(began) >= DISPLAY_WAIT.as_secs_f64() * 1000.0 {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 /// Build the stream's device and encoder for `config` and run it until it
 /// exits: the encoder that shares the capture's device where that is asked
 /// for and the device can serve it, else the one that serves the display's
@@ -37,6 +59,7 @@ pub(super) fn build(
     arrivals: &mpsc::Receiver<Join>,
     config: &Config,
     roster: &mut Roster,
+    _own: &mut Own,
 ) -> Exit {
     // **Resolved on every rebuild, not once.** A display can move to
     // another card while this is running, and the rebuild that follows it
