@@ -714,6 +714,13 @@ impl<'a> Relay<'a> {
                     .find(|permission| permission.target == ip && !permission.refused)
                 {
                     permission.expires_ms = Some(now_ms + PERMISSION_MS);
+                    if self.transport == Transport::Reliable {
+                        // ChannelBind has already granted the permission.
+                        // An older unanswered CreatePermission must not later
+                        // time out and declare that freshly granted path lost.
+                        permission.pending = None;
+                        permission.due_ms = now_ms + RENEW_MS;
+                    }
                 }
             }
             Some(STALE_NONCE) if response.challenge().is_some() => {}
@@ -1044,6 +1051,36 @@ mod tests {
             relay
                 .next_timer_ms(now + STREAM_TRANSACTION_MS)
                 .is_infinite()
+        );
+    }
+
+    #[test]
+    fn stream_channel_renewal_satisfies_an_unanswered_permission_renewal() {
+        let mut relay = stream_relay();
+        ready(&mut relay, 0.0);
+        relay.follow(host(20));
+        let binding = one(&mut relay, 0.0);
+        answer(&mut relay, &granted(&binding, None, &key()), 0.0);
+        let requests = drain(&mut relay, RENEW_MS);
+        assert!(
+            requests
+                .iter()
+                .any(|request| kind_of(request) == PERMISSION)
+        );
+        let binding = requests
+            .iter()
+            .find(|request| kind_of(request) == CHANNEL)
+            .unwrap();
+        answer(&mut relay, &granted(binding, None, &key()), RENEW_MS);
+        relay.poll(RENEW_MS + STREAM_TRANSACTION_MS);
+        assert_eq!(relay.state(), State::Ready(relayed_addr()));
+        assert!(relay.relayable(host(20)));
+        assert!(
+            relay
+                .permissions
+                .iter()
+                .flatten()
+                .all(|permission| permission.pending.is_none())
         );
     }
 

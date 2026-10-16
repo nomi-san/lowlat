@@ -30,6 +30,7 @@ jobs:
       - run: cargo clippy -p lowlat-client --lib --features turn-stream -- -D warnings
       - run: cargo check -p lowlat-sdk --no-default-features --features client,turn-stream
       - run: cargo test -p lowlat-sdk --no-default-features --features client,turn-stream --lib
+      - run: cargo test -p lowlat-sdk --no-default-features --features client --lib
       - run: cargo test -p lowlat-sdk --no-default-features --features client,turn-stream --test abi the_header_matches_the_definitions
       - run: cargo test -p lowlat-core
       - run: cargo test -p lowlat-net turn_stream

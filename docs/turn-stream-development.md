@@ -5,8 +5,9 @@ Fork: https://github.com/vampywiz17/lowlat
 Branch: `codex/turn-stream-transport`, based on upstream `feat/win-seams`
 `8674882319b24023547bbed77821c472566af69b`.
 
-This is work in progress. TCP/TLS relay is not yet a selectable client path.
-No stock-host/TURN interoperability or end-to-end latency result is claimed.
+This is work in progress. TCP/TLS relay is selectable with the optional
+`turn-stream` feature, in the Rust client and the size-gated minor-28 C SDK.
+No stock Parsec-host playback or end-to-end latency result is claimed.
 
 ## Implemented foundations
 
@@ -37,21 +38,46 @@ No stock-host/TURN interoperability or end-to-end latency result is claimed.
 
 ## Next integration boundary
 
-1. Selectable, feature-isolated TCP/TLS IO under the native shell, driven by
-   nonblocking socket readiness and the same application/teardown wake. Preserve
-   one merged network thread and keep the UDP offload/IOCP paths unchanged.
-2. TLS needs a retained server hostname, a validated trust chain, bounded
-   handshake buffers and cancellation while connecting/handshaking. The SDK's
-   current no-TLS-dependency rule needs an explicit optional-feature exception;
-   do not import an async runtime or the WebRTC/ICE stack for this.
-3. Client config and size-versioned SDK ABI expose transport selection with
-   old callers defaulting to UDP. Report the actual established transport.
-4. Bound reads/writes and queued age, preserve frame boundaries on backpressure,
-   and separate socket/TLS acceptance from delivery and its telemetry.
-5. Verify authenticated bidirectional BUD through isolated coturn UDP/TCP/TLS,
-   including blocked client UDP, renewal/nonce changes and teardown. Exercise
-   Windows and Linux, then a stock Parsec host. Only after that claim a usable
-   transport and prepare the full upstream contribution.
+Implemented in the second stage:
+
+- Nonblocking `mio` TCP and `rustls` TLS on the existing merged network thread;
+  no async runtime or extra network worker. The same wake cancels setup and
+  wakes application input. Direct/UDP retain their platform IO implementations.
+- TCP_NODELAY, bounded work per pass and explicit continuations for already
+  readable/writable work. Complete inbound messages are borrowed from owned
+  decoder storage without a second packet-sized copy.
+- TLS hostname and chain validation using public plus OS-installed roots.
+  Explicit private roots are available in the Rust transport API. TLS output
+  buffering is limited to 32 KiB, separate from the one pending TURN frame.
+  The framing/output allocation test does not claim rustls never allocates.
+- Ten-second cancellable dial/handshake before the protocol clock starts.
+  Pending-frame age and lack of physical write progress are bounded to five
+  seconds; failure closes the transport rather than dropping a frame suffix.
+- Rust RelayTransport selection and append-only minor-28 C config/status fields,
+  complete-field size gates, UDP defaults, and unsupported-mode rejection.
+- Windows/Linux TLS burst, untrusted CA, wrong-name, expired-certificate,
+  teardown, EOF delivery and write-age tests, plus client-only SDK tests and
+  a generated-header check.
+
+The isolated Linux coturn fixture has passed authenticated bidirectional BUD
+over UDP, TCP and TLS, with client UDP blocked for TCP/TLS. Each carrier survived
+65 seconds against a 60-second allocation cap, with the server configured for
+ten-second nonces, and delivered data after renewal. The extended fixture also
+checks fragmented opaque video/audio bodies; it is not codec playback. A stock
+Parsec-host live session, long permission/channel renewals and performance
+measurements remain follow-up work. See `scripts/test-turn-stream.sh`.
+
+Build the optional client SDK:
+
+```sh
+cargo build -p lowlat-sdk --no-default-features --features client,turn-stream --release
+```
+
+For the C API, fill the existing relay address/credentials, set `size` to the
+current structure size, choose `relay_transport`, and set `relay_tls_server_name`
+for TLS. In Rust, change `config::Relay::transport` from its Udp default. The
+application still chooses when to retry or escalate; no automatic ladder was
+added. TLS/443 is TURN, not HTTPS or an HTTP proxy tunnel.
 
 The codec, GPU decoder/renderer, BUD wire format, peer UDP allocation type,
 application retry policy and ParsecWebTurn WebRTC path are outside these changes.

@@ -114,7 +114,9 @@ That makes the transport and connectivity state machines fully deterministic, wh
 allows loss, reordering, and NAT topologies to be tested as reproducible unit tests rather
 than as soak runs.
 
-The SDK owns all of its threads and contains no async runtime, no TLS stack, and no JSON.
+The default SDK owns all of its threads and contains no async runtime, no TLS stack, and no JSON.
+The optional `turn-stream` feature adds native TCP/TLS TURN carriers without an async runtime;
+UDP remains the default. See [TURN stream integration](docs/turn-stream-development.md).
 Signaling lives outside it, so an application can bring its own. A browser is served on the
 same signaling over a second pipe, a data channel on the attempt socket, and
 [examples/web-client](examples/web-client) is the smallest page that streams from it.

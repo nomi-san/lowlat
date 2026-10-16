@@ -18,9 +18,9 @@ use lowlat_net::{
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-const SLOT: usize = 256;
+const SLOT: usize = lowlat_core::MAX_DATAGRAM;
 const SLOTS: usize = 64;
-const CHANNEL: u8 = 1;
+const CHANNEL: u8 = lowlat_core::control::CONTROL_CHANNEL;
 const KEY: [u8; 32] = [0x77; 32];
 const LEFT: (&str, &str) = ("aaaa", "passwordforaaaa");
 const RIGHT: (&str, &str) = ("bbbb", "passwordforbbbb");
@@ -59,18 +59,18 @@ impl Drop for BlockUdp {
 }
 
 struct Arena {
-    recv: Vec<u8>,
-    recv_meta: Vec<SlotMeta>,
-    send: Vec<u8>,
-    send_meta: Vec<SendSlot>,
+    recv: [Vec<u8>; 3],
+    recv_meta: [Vec<SlotMeta>; 3],
+    send: [Vec<u8>; 3],
+    send_meta: [Vec<SendSlot>; 3],
 }
 impl Arena {
     fn new() -> Self {
         Self {
-            recv: vec![0; SLOT * SLOTS],
-            recv_meta: vec![SlotMeta::default(); SLOTS],
-            send: vec![0; SLOT * SLOTS],
-            send_meta: vec![SendSlot::default(); SLOTS],
+            recv: std::array::from_fn(|_| vec![0; SLOT * SLOTS]),
+            recv_meta: std::array::from_fn(|_| vec![SlotMeta::default(); SLOTS]),
+            send: std::array::from_fn(|_| vec![0; SLOT * SLOTS]),
+            send_meta: std::array::from_fn(|_| vec![SendSlot::default(); SLOTS]),
         }
     }
     fn endpoint(
@@ -91,18 +91,30 @@ impl Arena {
             0.0,
         );
         let mut session = Session::new(Envelope::from_key(&KEY).unwrap(), 1, 0.0);
-        session
-            .attach_recv(
-                CHANNEL,
-                RecvRing::new(&mut self.recv, &mut self.recv_meta, SLOT).unwrap(),
-            )
-            .unwrap();
-        session
-            .attach_send(
-                CHANNEL,
-                SendRing::new(&mut self.send, &mut self.send_meta, SLOT, CHANNEL).unwrap(),
-            )
-            .unwrap();
+        for (channel, (bodies, meta)) in self
+            .recv
+            .iter_mut()
+            .zip(self.recv_meta.iter_mut())
+            .enumerate()
+        {
+            session
+                .attach_recv(
+                    u8::try_from(channel).unwrap(),
+                    RecvRing::new(bodies, meta, SLOT).unwrap(),
+                )
+                .unwrap();
+        }
+        for (channel, (bodies, meta)) in self
+            .send
+            .iter_mut()
+            .zip(self.send_meta.iter_mut())
+            .enumerate()
+        {
+            let channel = u8::try_from(channel).unwrap();
+            session
+                .attach_send(channel, SendRing::new(bodies, meta, SLOT, channel).unwrap())
+                .unwrap();
+        }
         match relay {
             Some(relay) => Endpoint::relayed(conn, session, relay),
             None => Endpoint::new(conn, session),
@@ -244,6 +256,47 @@ fn turn_stream_bud_coturn_udp_tcp_tls_bidirectional() {
         );
         assert_eq!(client.endpoint().path(), Some(host_address));
         assert!(offered);
+        // Synthetic opaque video/audio bodies, not codec playback. Exercise
+        // fragmentation, all native channel numbers and byte preservation.
+        let video: Vec<u8> = (0..32_768)
+            .map(|n| u8::try_from(n % 251).unwrap())
+            .collect();
+        let audio = [0x53; 1024];
+        host.endpoint()
+            .session()
+            .send_message(1, b"", &video)
+            .unwrap();
+        host.endpoint()
+            .session()
+            .send_message(2, b"", &audio)
+            .unwrap();
+        let mut media_output = vec![0; video.len()];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut video_ok, mut audio_ok) = (false, false);
+        while Instant::now() < deadline && (!video_ok || !audio_ok) {
+            client.turn(|_| {}).unwrap();
+            host.turn(|_| {}).unwrap();
+            if let Some(Ok(len)) = client
+                .endpoint()
+                .session()
+                .take_message(1, &mut media_output)
+            {
+                assert_eq!(&media_output[..len], video.as_slice());
+                video_ok = true;
+            }
+            if let Some(Ok(len)) = client
+                .endpoint()
+                .session()
+                .take_message(2, &mut media_output)
+            {
+                assert_eq!(&media_output[..len], audio.as_slice());
+                audio_ok = true;
+            }
+        }
+        assert!(
+            video_ok && audio_ok,
+            "carrier {mode} lost fragmented video/audio bodies"
+        );
         assert_eq!(
             host.endpoint().path(),
             client.endpoint().relay().and_then(Relay::relayed)

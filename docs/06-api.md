@@ -1472,6 +1472,15 @@ growing it moved that half, and a host application built against an earlier mino
 the size of what it is given. Taken deliberately rather than kept by a call of its own; the host
 half carries no promise before 1.0, as the client half never has.
 
+**Minor 28** adds optional native client-to-TURN TCP/TLS carriers. The `turn-stream` build
+feature enables them; the default build remains UDP. `relay_transport` (0 UDP, 1 TCP, 2 TLS)
+and `relay_tls_server_name` are appended to `lowlat_client_config` and read only where the
+caller's size reaches each complete field. TLS requires a certificate identity without a
+port. Older callers retain UDP. An unsupported carrier, a TLS request without its identity,
+or a non-UDP carrier without a relay is refused. `relay_transport` is also appended to the
+client status, meaningful only for an established relayed path. All earlier fields keep
+their offsets. See [TURN stream integration](turn-stream-development.md).
+
 **Minor 26** (2026-10-15) is the third half, the virtual displays, on Windows
 ([§3c](#3c-virtual-displays)): `lowlat_vdd` and its ten calls, `lowlat_vdd_plug_info`,
 `lowlat_vdd_monitor`, `lowlat_vdd_mode`, `lowlat_vdd_settings`, the `LOWLAT_VDD_*` constants,

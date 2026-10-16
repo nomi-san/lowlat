@@ -324,6 +324,9 @@ impl StreamIo {
                     self.received += 1;
                     return Ok(1);
                 }
+                if self.start < self.end {
+                    continue;
+                }
             }
             self.start = 0;
             self.end = 0;

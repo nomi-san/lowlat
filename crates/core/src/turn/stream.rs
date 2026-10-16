@@ -15,6 +15,7 @@ struct Shape {
     logical: usize,
     wire: usize,
     stun: bool,
+    reserved: bool,
 }
 
 fn shape(header: &[u8]) -> Result<Shape> {
@@ -29,13 +30,21 @@ fn shape(header: &[u8]) -> Result<Shape> {
             logical: 20 + length,
             wire: 20 + length,
             stun: true,
+            reserved: false,
         }),
-        // Reserved channel numbers are framed too. The TURN receiver decides
-        // whether a number is bound; dropping it must not lose stream sync.
-        1 => Ok(Shape {
+        // Reserved channel numbers must be discarded without losing stream
+        // boundaries (RFC 8656 section 12.6).
+        1..=3 => Ok(Shape {
             logical: 4 + length,
             wire: (4 + length).next_multiple_of(4),
             stun: false,
+            reserved: u16::from_be_bytes(
+                header
+                    .get(..2)
+                    .ok_or(Error::Malformed)?
+                    .try_into()
+                    .map_err(|_| Error::Malformed)?,
+            ) > super::LAST_CHANNEL,
         }),
         _ => Err(Error::Malformed),
     }
@@ -53,6 +62,9 @@ fn cookie(message: &[u8], frame: Shape) -> Result<()> {
 /// must have exactly its declared length; trailing bytes are never forwarded.
 pub fn encode(message: &[u8], output: &mut [u8]) -> Result<usize> {
     let frame = shape(message)?;
+    if frame.reserved {
+        return Err(Error::Malformed);
+    }
     if message.len() != frame.logical && message.len() != frame.wire {
         return Err(Error::BadLength);
     }
@@ -96,7 +108,8 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Decoder<B> {
     }
 
     /// Consume up to one complete frame. Returns the consumed input count and
-    /// its logical message, with stream padding removed, or None if incomplete.
+    /// its logical message, with padding removed, or None if incomplete or a
+    /// reserved channel was discarded. Always use the consumed input count.
     /// Feed the unconsumed suffix again after handling the returned message.
     pub fn push(&mut self, input: &[u8]) -> Result<(usize, Option<&[u8]>)> {
         self.last = None;
@@ -130,6 +143,16 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Decoder<B> {
             }
         }
         let frame = shape(self.storage.as_ref())?;
+        if frame.reserved {
+            // Skip without storing the body, even above the frame capacity.
+            let count = (frame.wire - self.used).min(input.len() - consumed);
+            self.used += count;
+            consumed += count;
+            if self.used == frame.wire {
+                self.used = 0;
+            }
+            return Ok((consumed, None));
+        }
         if frame.wire > self.storage.as_ref().len() {
             return Err(Error::BufferTooSmall);
         }
@@ -235,7 +258,7 @@ mod tests {
             decoder.push(&bytes[..end]).unwrap();
             assert!(decoder.finish().is_err());
         }
-        for bad in [&[0x80, 0, 0, 0][..], &[0, 0, 0, 1], &[0x40, 0, 0xFF, 0xFF]] {
+        for bad in [&[0, 0, 0, 1][..], &[0x40, 0, 0xFF, 0xFF]] {
             let mut storage = [0; 64];
             let mut decoder = Decoder::new(&mut storage).unwrap();
             assert!(decoder.push(bad).is_err());
@@ -255,6 +278,27 @@ mod tests {
         message.push(0);
         assert!(encode(&message, &mut [0; 64]).is_err());
         assert!(Decoder::new(&mut [0; 19]).is_err());
+    }
+
+    #[test]
+    fn reserved_channels_are_discarded_without_losing_stream_sync() {
+        for high in [0x50, 0x80, 0xFF] {
+            let mut storage = [0; 20];
+            let mut decoder = Decoder::new(&mut storage).unwrap();
+            let bytes = [high, 0, 0, 1, 9, 0, 0, 0, 0x40, 0, 0, 1, 7, 0, 0, 0];
+            assert_eq!(decoder.push(&bytes).unwrap(), (8, None));
+            assert_eq!(
+                decoder.push(&bytes[8..]).unwrap(),
+                (8, Some(&[0x40, 0, 0, 1, 7][..]))
+            );
+            assert!(encode(&bytes[..5], &mut [0; 20]).is_err());
+        }
+        let mut storage = [0; 20];
+        let mut decoder = Decoder::new(&mut storage).unwrap();
+        assert_eq!(decoder.push(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap(), (4, None));
+        let body = vec![0; 65_536];
+        assert_eq!(decoder.push(&body).unwrap(), (65_536, None));
+        assert!(decoder.finish().is_ok());
     }
 
     #[test]
