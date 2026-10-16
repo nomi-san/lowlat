@@ -8,7 +8,16 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Optional native relay carrier; no async runtime or WebRTC dependency.
+turn-stream = ["dep:mio", "dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+
 [dependencies]
+mio = { version = "1", features = ["net", "os-poll"], optional = true }
+rustls = { workspace = true, optional = true }
+webpki-roots = { version = "1", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 lowlat-common.workspace = true
 lowlat-core.workspace = true
 lowlat-crypto.workspace = true

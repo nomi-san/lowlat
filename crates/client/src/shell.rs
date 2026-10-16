@@ -100,7 +100,7 @@ fn attach_send<'a>(
     }
 }
 
-pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
+pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
     let Attached {
         socket,
         servers,
@@ -125,6 +125,14 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         packets,
         epoch,
     } = args;
+    if wake.prepare(|| running.stopping()).is_err() {
+        if !running.stopping() {
+            emit.send(Event::Ended {
+                outcome: Outcome::TransportFailed,
+            });
+        }
+        return;
+    }
     let mut conn = Conn::new(
         Credentials {
             local_ufrag: &ours.0,
@@ -199,12 +207,17 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         Some(relay) => Endpoint::relayed(
             conn,
             session,
-            Relay::new(
+            Relay::new_on(
                 relay.server,
                 &relay.username,
                 &relay.password,
                 relay_seed,
                 0.0,
+                if relay.transport == config::RelayTransport::Udp {
+                    lowlat_core::relay::Transport::Datagram
+                } else {
+                    lowlat_core::relay::Transport::Reliable
+                },
             ),
         ),
         None => Endpoint::new(conn, session),

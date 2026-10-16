@@ -1,4 +1,4 @@
-name: TURN stream foundations
+name: TURN stream validation
 
 on:
   push:
@@ -26,5 +26,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy -p lowlat-core -p lowlat-net --all-targets -- -D warnings
+      - run: cargo clippy -p lowlat-net --all-targets --features turn-stream -- -D warnings
+      - run: cargo clippy -p lowlat-client --lib --features turn-stream -- -D warnings
+      - run: cargo check -p lowlat-sdk --no-default-features --features client,turn-stream
       - run: cargo test -p lowlat-core
       - run: cargo test -p lowlat-net turn_stream
+      - run: cargo test -p lowlat-net --features turn-stream stream

@@ -73,23 +73,25 @@ pub fn encode(message: &[u8], output: &mut [u8]) -> Result<usize> {
 /// Incremental, bounded stream reader. Invalid input poisons the reader:
 /// scanning for another header in an untrusted byte stream is not recovery.
 #[derive(Debug)]
-pub struct Decoder<'a> {
-    storage: &'a mut [u8],
+pub struct Decoder<B> {
+    storage: B,
     used: usize,
     failed: bool,
+    last: Option<usize>,
 }
 
-impl<'a> Decoder<'a> {
+impl<B: AsRef<[u8]> + AsMut<[u8]>> Decoder<B> {
     /// Storage is a deliberate frame limit. At least a STUN header is needed;
     /// callers accepting every representable frame supply MAX_FRAME_LEN bytes.
-    pub fn new(storage: &'a mut [u8]) -> Result<Self> {
-        if storage.len() < 20 {
+    pub fn new(storage: B) -> Result<Self> {
+        if storage.as_ref().len() < 20 {
             return Err(Error::BufferTooSmall);
         }
         Ok(Self {
             storage,
             used: 0,
             failed: false,
+            last: None,
         })
     }
 
@@ -97,6 +99,7 @@ impl<'a> Decoder<'a> {
     /// its logical message, with stream padding removed, or None if incomplete.
     /// Feed the unconsumed suffix again after handling the returned message.
     pub fn push(&mut self, input: &[u8]) -> Result<(usize, Option<&[u8]>)> {
+        self.last = None;
         if self.failed {
             return Err(Error::Malformed);
         }
@@ -108,7 +111,14 @@ impl<'a> Decoder<'a> {
                 return Err(error);
             }
         };
-        Ok((consumed, frame.and_then(|len| self.storage.get(..len))))
+        self.last = frame;
+        Ok((consumed, self.last_frame()))
+    }
+
+    /// Last complete message, until the next push. Lets an IO shell retain the
+    /// owned storage and lend the message without another packet-sized copy.
+    pub fn last_frame(&self) -> Option<&[u8]> {
+        self.last.and_then(|len| self.storage.as_ref().get(..len))
     }
 
     fn advance(&mut self, input: &[u8]) -> Result<(usize, Option<usize>)> {
@@ -119,15 +129,15 @@ impl<'a> Decoder<'a> {
                 return Ok((consumed, None));
             }
         }
-        let frame = shape(self.storage)?;
-        if frame.wire > self.storage.len() {
+        let frame = shape(self.storage.as_ref())?;
+        if frame.wire > self.storage.as_ref().len() {
             return Err(Error::BufferTooSmall);
         }
         consumed += self.copy(input.get(consumed..).ok_or(Error::BadLength)?, frame.wire)?;
         if self.used != frame.wire {
             return Ok((consumed, None));
         }
-        cookie(self.storage, frame)?;
+        cookie(self.storage.as_ref(), frame)?;
         self.used = 0;
         Ok((consumed, Some(frame.logical)))
     }
@@ -135,6 +145,7 @@ impl<'a> Decoder<'a> {
     fn copy(&mut self, input: &[u8], target: usize) -> Result<usize> {
         let count = input.len().min(target.saturating_sub(self.used));
         self.storage
+            .as_mut()
             .get_mut(self.used..self.used + count)
             .ok_or(Error::BufferTooSmall)?
             .copy_from_slice(input.get(..count).ok_or(Error::BadLength)?);

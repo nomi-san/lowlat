@@ -593,6 +593,14 @@ impl Client {
         if transport == Transport::Web {
             return Err(Error::Transport);
         }
+        if !cfg!(feature = "turn-stream")
+            && config
+                .relay
+                .as_ref()
+                .is_some_and(|relay| relay.transport != crate::config::RelayTransport::Udp)
+        {
+            return Err(Error::Transport);
+        }
         // An attempt still leaving is still one: its threads are running.
         // Acquire, pairing with the Release that clears the mark once they
         // are joined.
@@ -734,7 +742,11 @@ impl Client {
             mapper.set_port(bound);
             mapper.refresh();
         }
-        let wake = Wake::new().map_err(|_| Error::Io)?;
+        let wake = match &attempt.config.relay {
+            Some(relay) => relay.wake(),
+            None => Wake::new(),
+        }
+        .map_err(|_| Error::Io)?;
         let shell_wake = wake.handle().map_err(|_| Error::Io)?;
 
         let (inject, arrivals) = mpsc::channel::<Arrival>();

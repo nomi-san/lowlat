@@ -29,6 +29,8 @@
 // The host candidates wait on the platform's interface walk.
 #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub mod addrs;
+#[cfg(all(feature = "turn-stream", any(target_os = "linux", windows)))]
+pub mod stream_io;
 pub mod turn_stream;
 pub mod web;
 
@@ -39,6 +41,8 @@ mod sys;
 #[path = "windows/mod.rs"]
 mod sys;
 
+#[cfg(any(target_os = "linux", windows))]
+mod carrier;
 #[cfg(any(target_os = "linux", windows))]
 pub mod guest;
 #[cfg(any(target_os = "linux", windows))]

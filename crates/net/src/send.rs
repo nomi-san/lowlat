@@ -296,8 +296,7 @@ impl Batch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::Io;
-    use crate::wake::Wake;
+    use crate::sys::{Io, Wake};
     use core::net::{IpAddr, Ipv6Addr};
 
     fn loopback_of(socket: &Socket) -> SocketAddr {

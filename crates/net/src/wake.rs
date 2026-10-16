@@ -17,7 +17,105 @@
 //! The mechanism is the platform's (`crate::sys`); the tests below are the
 //! contract every platform's meets.
 
-pub use crate::sys::{Wake, WakeHandle};
+use std::io;
+
+#[derive(Debug)]
+pub struct Wake {
+    pub(crate) kind: Kind,
+}
+
+#[derive(Debug)]
+pub(crate) enum Kind {
+    Datagram(crate::sys::Wake),
+    #[cfg(feature = "turn-stream")]
+    Stream(Box<crate::stream_io::StreamIo>),
+}
+
+#[derive(Debug)]
+pub struct WakeHandle {
+    kind: HandleKind,
+}
+
+#[derive(Debug)]
+enum HandleKind {
+    Datagram(crate::sys::WakeHandle),
+    #[cfg(feature = "turn-stream")]
+    Stream(std::sync::Arc<crate::stream_io::Notify>),
+}
+
+impl Wake {
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            kind: Kind::Datagram(crate::sys::Wake::new()?),
+        })
+    }
+
+    /// Prepare a nonblocking relay carrier. Connection/handshake progress is
+    /// driven later by prepare(), on the session thread, not the calling UI.
+    #[cfg(feature = "turn-stream")]
+    pub fn stream(
+        server: std::net::SocketAddr,
+        security: crate::stream_io::Security,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            kind: Kind::Stream(Box::new(crate::stream_io::StreamIo::start(
+                server, security,
+            )?)),
+        })
+    }
+
+    pub fn handle(&self) -> io::Result<WakeHandle> {
+        match &self.kind {
+            Kind::Datagram(wake) => Ok(WakeHandle::datagram(wake.handle()?)),
+            #[cfg(feature = "turn-stream")]
+            Kind::Stream(io) => Ok(WakeHandle::stream(io.notify())),
+        }
+    }
+
+    pub fn take(&self) -> io::Result<bool> {
+        match &self.kind {
+            Kind::Datagram(wake) => wake.take(),
+            #[cfg(feature = "turn-stream")]
+            Kind::Stream(io) => Ok(io.take_wake()),
+        }
+    }
+
+    /// Finish socket/TLS setup before starting the endpoint's protocol clock.
+    /// The same wake interrupts setup on teardown; no helper thread is used.
+    pub fn prepare(&mut self, stopping: impl Fn() -> bool) -> io::Result<()> {
+        match &mut self.kind {
+            Kind::Datagram(_) => {
+                let _ = stopping;
+                Ok(())
+            }
+            #[cfg(feature = "turn-stream")]
+            Kind::Stream(io) => io.prepare(stopping),
+        }
+    }
+}
+
+impl WakeHandle {
+    pub(crate) fn datagram(handle: crate::sys::WakeHandle) -> Self {
+        Self {
+            kind: HandleKind::Datagram(handle),
+        }
+    }
+
+    #[cfg(feature = "turn-stream")]
+    pub(crate) fn stream(notify: std::sync::Arc<crate::stream_io::Notify>) -> Self {
+        Self {
+            kind: HandleKind::Stream(notify),
+        }
+    }
+
+    pub fn notify(&self) -> io::Result<()> {
+        match &self.kind {
+            HandleKind::Datagram(handle) => handle.notify(),
+            #[cfg(feature = "turn-stream")]
+            HandleKind::Stream(notify) => notify.notify(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
