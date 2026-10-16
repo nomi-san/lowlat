@@ -2244,7 +2244,9 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 microphone_dropped: t.microphone_dropped.load(Ordering::Relaxed),
                 microphone: !t.microphone_off.load(Ordering::Relaxed),
                 microphone_reserved: [0; 3],
-                relay_transport: if t.path_relayed.load(Ordering::Relaxed) {
+                relay_transport: if t.state.load(Ordering::Relaxed) == 1
+                    && t.path_relayed.load(Ordering::Relaxed)
+                {
                     t.relay_transport.load(Ordering::Relaxed)
                 } else {
                     0
