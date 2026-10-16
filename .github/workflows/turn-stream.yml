@@ -5,11 +5,22 @@ on:
     branches: [codex/turn-stream-transport]
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - deny.toml
       - crates/core/**
       - crates/net/**
       - .github/workflows/turn-stream.yml
 
 jobs:
+  dependencies:
+    name: licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+
   transport:
     strategy:
       fail-fast: false
