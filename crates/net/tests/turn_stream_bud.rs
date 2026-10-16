@@ -92,7 +92,12 @@ fn turn_stream_bud_coturn_udp_tcp_tls_bidirectional() {
     for mode in 0..3 {
         let mut address = server;
         if mode == 2 {
-            address.set_port(5349);
+            address.set_port(
+                std::env::var("LOWLAT_TEST_TURN_TLS_PORT")
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            );
         }
         let mut wake = match mode {
             0 => Wake::new().unwrap(),
@@ -179,6 +184,14 @@ fn turn_stream_bud_coturn_udp_tcp_tls_bidirectional() {
                 right = Some(output[..len].to_vec());
             }
         }
+        eprintln!(
+            "fixture carrier {mode}: relay={:?} client_path={:?} host_path={:?} client_io={:?} host_io={:?}",
+            client.endpoint().relay().unwrap().state(),
+            client.endpoint().path(),
+            host.endpoint().path(),
+            client.stats(),
+            host.stats()
+        );
         assert_eq!(
             left.as_deref(),
             Some(b"right:authenticated BUD".as_slice()),
