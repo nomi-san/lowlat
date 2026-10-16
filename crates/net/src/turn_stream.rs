@@ -15,6 +15,16 @@ use lowlat_core::turn::stream::{MAX_FRAME_LEN, encode};
 /// or repeatedly interrupts, leaving time for receive processing and deadlines.
 const WRITE_CALLS_PER_PASS: usize = 64;
 
+/// Why a writable pass ended. A fairness yield is not socket backpressure:
+/// an edge-triggered caller must schedule another pass instead of waiting for
+/// an edge that might never arrive on an already writable socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    Complete,
+    Blocked,
+    Yielded,
+}
+
 /// One pending, bounded TURN frame. Allocated once, never per queued message.
 #[derive(Debug)]
 pub struct Output {
@@ -62,16 +72,16 @@ impl Output {
     }
 
     /// Try progress on a nonblocking writer, after writable readiness (or on
-    /// enqueue). Returns true once no frame remains, false on backpressure or
-    /// the fairness limit. The caller must keep writable interest while false.
+    /// enqueue). Blocked requires writable interest; Yielded requires another
+    /// scheduled pass, interleaved with receive processing and deadlines.
     /// No blocking flush, sleep or retry-until-ready loop is used here.
-    pub fn write_ready(&mut self, writer: &mut impl Write) -> io::Result<bool> {
+    pub fn write_ready(&mut self, writer: &mut impl Write) -> io::Result<Progress> {
         self.check_live()?;
         for _ in 0..WRITE_CALLS_PER_PASS {
             if self.pending() == 0 {
                 self.used = 0;
                 self.written = 0;
-                return Ok(true);
+                return Ok(Progress::Complete);
             }
             let bytes = self.storage.get(self.written..self.used).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Invalid TURN write offset")
@@ -81,11 +91,17 @@ impl Output {
                 Ok(count) if count <= bytes.len() => self.written += count,
                 Ok(_) => return self.fail(io::ErrorKind::InvalidData.into()),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    return Ok(Progress::Blocked);
+                }
                 Err(error) => return self.fail(error),
             }
         }
-        Ok(self.pending() == 0)
+        Ok(if self.pending() == 0 {
+            Progress::Complete
+        } else {
+            Progress::Yielded
+        })
     }
 
     fn check_live(&self) -> io::Result<()> {
@@ -99,7 +115,7 @@ impl Output {
         }
     }
 
-    fn fail(&mut self, error: io::Error) -> io::Result<bool> {
+    fn fail(&mut self, error: io::Error) -> io::Result<Progress> {
         self.failed = true;
         Err(error)
     }
@@ -148,16 +164,16 @@ mod tests {
             .into(),
             ..Writer::default()
         };
-        assert!(!output.write_ready(&mut writer).unwrap());
+        assert_eq!(output.write_ready(&mut writer).unwrap(), Progress::Blocked);
         assert_eq!(output.pending(), 5);
         assert_eq!(
             output.queue(MESSAGE).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        assert!(output.write_ready(&mut writer).unwrap());
+        assert_eq!(output.write_ready(&mut writer).unwrap(), Progress::Complete);
         assert_eq!(writer.bytes, WIRE);
         output.queue(MESSAGE).unwrap();
-        assert!(output.write_ready(&mut writer).unwrap());
+        assert_eq!(output.write_ready(&mut writer).unwrap(), Progress::Complete);
         assert_eq!(writer.bytes, [WIRE, WIRE].concat());
     }
 
@@ -187,9 +203,9 @@ mod tests {
                 .collect(),
             ..Writer::default()
         };
-        assert!(!output.write_ready(&mut writer).unwrap());
+        assert_eq!(output.write_ready(&mut writer).unwrap(), Progress::Yielded);
         assert_eq!(writer.calls, WRITE_CALLS_PER_PASS);
-        assert!(output.write_ready(&mut writer).unwrap());
+        assert_eq!(output.write_ready(&mut writer).unwrap(), Progress::Complete);
         assert_eq!(writer.bytes, WIRE);
     }
 
