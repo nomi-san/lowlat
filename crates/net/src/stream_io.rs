@@ -602,6 +602,12 @@ mod tests {
         while io.terminal.is_none() {
             assert!(Instant::now() < deadline);
             assert_eq!(io.drain().unwrap(), 0);
+            // EOF may arrive after the data's readiness edge. Wait for it,
+            // retaining this pass's received count so the driver has not yet
+            // consumed its frame. Polling drain alone loses that new edge.
+            if io.terminal.is_none() {
+                io.poll_once(Duration::from_millis(20)).unwrap();
+            }
         }
         assert_eq!(
             io.wait(0.0).unwrap_err().kind(),
