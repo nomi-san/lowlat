@@ -88,7 +88,7 @@ serde_json = "1"
 # Exactly one TLS provider, chosen here rather than left to feature unification
 # to decide, which resolves to none and panics at the first connection.
 rusty-opus = "1.0.1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
