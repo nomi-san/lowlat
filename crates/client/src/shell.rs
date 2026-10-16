@@ -133,6 +133,14 @@ pub(crate) fn run(args: Attached, mut wake: Wake, running: &Running) {
         }
         return;
     }
+    telemetry.relay_transport.store(
+        match relay.as_ref().map(|relay| &relay.transport) {
+            Some(config::RelayTransport::Tcp) => 1,
+            Some(config::RelayTransport::Tls { .. }) => 2,
+            _ => 0,
+        },
+        Ordering::Relaxed,
+    );
     let mut conn = Conn::new(
         Credentials {
             local_ufrag: &ours.0,

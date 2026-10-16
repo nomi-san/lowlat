@@ -720,6 +720,7 @@ impl Client {
         // attempt's.
         self.telemetry.relayed.store(0, Ordering::Relaxed);
         self.telemetry.path_relayed.store(false, Ordering::Relaxed);
+        self.telemetry.relay_transport.store(0, Ordering::Relaxed);
 
         // A probe on the port gives way: stopped, and the port given back.
         if let Some(probing) = self.probing.take() {

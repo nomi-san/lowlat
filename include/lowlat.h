@@ -49,7 +49,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 27
+#define LOWLAT_ABI_MINOR 28
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -1776,6 +1776,13 @@ typedef struct lowlat_client_config {
     /// cleared when it is done with it.
     char relay_username[LOWLAT_RELAY_CREDENTIAL_MAX];
     char relay_password[LOWLAT_RELAY_CREDENTIAL_MAX];
+    /// Client-to-relay carrier (minor 28): 0 UDP (default), 1 TCP, 2 TLS.
+    /// TCP/TLS requires the optional turn-stream build feature. The allocation
+    /// and relay-to-host leg remain UDP. Read only when size reaches the field.
+    uint32_t relay_transport;
+    /// TLS certificate identity (minor 28), NUL-terminated, without a port.
+    /// Required for TLS; never replaced with the resolved server address.
+    char relay_tls_server_name[LOWLAT_SERVER_MAX];
 } lowlat_client_config;
 
 /// A whole pad at one moment, for `lowlat_client_send_pad_state`. Sticks
@@ -1916,6 +1923,9 @@ typedef struct lowlat_client_status {
     /// otherwise, and again at each attempt's start.
     bool microphone;
     uint8_t microphone_reserved[3];
+    /// Established relay carrier (minor 28): 0 UDP, 1 TCP, 2 TLS.
+    /// Meaningful only when relayed is true; zero while not established.
+    uint32_t relay_transport;
 } lowlat_client_status;
 
 /// What a probe of the translation in front of a client's port asks

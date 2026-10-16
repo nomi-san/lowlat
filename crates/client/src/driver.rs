@@ -300,6 +300,9 @@ pub struct Telemetry {
     pub relayed: AtomicU64,
     /// Whether the path goes through the relay.
     pub path_relayed: AtomicBool,
+    /// Actual prepared client-to-relay carrier: UDP=0, TCP=1, TLS=2.
+    /// Only meaningful after a relayed path is established.
+    pub relay_transport: AtomicU32,
     /// The microphone: closed by the host's `"0"` and open otherwise, as at
     /// each attempt's start; frames sent, and frames dropped because the ring
     /// to the session thread was full.
