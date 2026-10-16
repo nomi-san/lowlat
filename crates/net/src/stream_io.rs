@@ -398,3 +398,179 @@ impl Write for PlainWriter<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::{ServerConfig, ServerConnection, StreamOwned, pki_types::PrivatePkcs8KeyDer};
+    use std::net::{TcpListener, TcpStream as Blocking};
+
+    const WIRE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3, 0];
+    const MESSAGE: &[u8] = &[0x40, 0, 0, 3, 1, 2, 3];
+
+    fn fixture(expired: bool) -> (Arc<ServerConfig>, RootCertStore) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["relay.test".into()]).unwrap();
+        if expired {
+            params.not_before = rcgen::date_time_ymd(2019, 1, 1);
+            params.not_after = rcgen::date_time_ymd(2020, 1, 1);
+        }
+        let cert = params.self_signed(&key).unwrap().der().clone();
+        let private = PrivatePkcs8KeyDer::from(key.serialize_der());
+        let config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert.clone()], private.into())
+                .unwrap();
+        let mut roots = RootCertStore::empty();
+        roots.add(cert).unwrap();
+        (Arc::new(config), roots)
+    }
+
+    fn bounded(socket: &Blocking) {
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        socket.set_nodelay(true).unwrap();
+    }
+
+    fn echo(socket: &mut (impl Read + Write), count: usize) {
+        let mut input = [0; 8];
+        socket.read_exact(&mut input).unwrap();
+        assert_eq!(input, WIRE);
+        for _ in 0..count {
+            socket.write_all(WIRE).unwrap();
+        }
+        socket.flush().unwrap();
+        // Stay open until the client's last frame is consumed, avoiding a
+        // test that relies on TCP FIN racing its final plaintext read.
+        socket.read_exact(&mut input).unwrap();
+        assert_eq!(input, WIRE);
+    }
+
+    fn roundtrip(tls: bool, count: usize) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (server, roots) = fixture(false);
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            bounded(&socket);
+            if tls {
+                let connection = ServerConnection::new(server).unwrap();
+                echo(&mut StreamOwned::new(connection, socket), count);
+            } else {
+                echo(&mut socket, count);
+            }
+        });
+        let security = if tls {
+            Security::Tls(Tls::with_roots("relay.test", roots).unwrap())
+        } else {
+            Security::Tcp
+        };
+        let mut io = StreamIo::start(address, security).unwrap();
+        io.prepare(|| false).unwrap();
+        io.queue(MESSAGE, address).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut received = 0;
+        while received < count {
+            assert!(Instant::now() < deadline, "stream stopped making progress");
+            let _ = io.wait(20.0).unwrap();
+            while io.drain().unwrap() != 0 {
+                let (from, local, message) = io.frame().unwrap();
+                assert_eq!(from, address);
+                assert!(local.is_some());
+                assert_eq!(message, MESSAGE);
+                received += 1;
+            }
+        }
+        io.queue(MESSAGE, address).unwrap();
+        while io.output.pending() != 0 || io.tls.as_ref().is_some_and(|tls| tls.wants_write()) {
+            assert!(Instant::now() < deadline);
+            let _ = io.wait(20.0).unwrap();
+        }
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn stream_tcp_burst_crosses_fairness_boundaries() {
+        roundtrip(false, 130);
+    }
+
+    #[test]
+    fn stream_tls_verified_burst_crosses_fairness_boundaries() {
+        roundtrip(true, 130);
+    }
+
+    #[test]
+    fn stream_tls_rejects_untrusted_wrong_name_and_expired_servers() {
+        for kind in 0..3 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (server, roots) = fixture(kind == 2);
+            let peer = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                bounded(&socket);
+                let mut stream = StreamOwned::new(ServerConnection::new(server).unwrap(), socket);
+                let mut input = [0];
+                assert!(stream.read_exact(&mut input).is_err());
+            });
+            let roots = if kind == 0 {
+                RootCertStore::empty()
+            } else {
+                roots
+            };
+            let name = if kind == 1 {
+                "different.test"
+            } else {
+                "relay.test"
+            };
+            let mut io = StreamIo::start(
+                address,
+                Security::Tls(Tls::with_roots(name, roots).unwrap()),
+            )
+            .unwrap();
+            assert!(io.prepare(|| false).is_err());
+            drop(io);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stream_handshake_teardown_wakes_without_waiting_for_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let (_, roots) = fixture(false);
+        let mut io = StreamIo::start(
+            address,
+            Security::Tls(Tls::with_roots("relay.test", roots).unwrap()),
+        )
+        .unwrap();
+        let notify = io.notify();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let theirs = Arc::clone(&stopping);
+        let thread = std::thread::spawn(move || io.prepare(|| theirs.load(Ordering::Acquire)));
+        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let started = Instant::now();
+        stopping.store(true, Ordering::Release);
+        notify.notify().unwrap();
+        assert_eq!(
+            thread.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        release_tx.send(()).unwrap();
+        peer.join().unwrap();
+    }
+}

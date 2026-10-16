@@ -50,6 +50,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }
 lowlat-common = { workspace = true, features = ["alloc-counter"] }
 
 # The churn test's counts on Windows: open handles, the process's threads and

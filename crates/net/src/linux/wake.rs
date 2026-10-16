@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 /// The consumer's end: owned by the loop, taken once per pass.
 #[derive(Debug)]
-pub struct Wake {
+pub(crate) struct Wake {
     fd: OwnedFd,
 }
 
@@ -15,13 +15,13 @@ pub struct Wake {
 /// stays single and explicit and nothing on the send path touches an atomic
 /// refcount.
 #[derive(Debug)]
-pub struct WakeHandle {
+pub(crate) struct WakeHandle {
     fd: OwnedFd,
 }
 
 impl Wake {
     /// Create the wake descriptor.
-    pub fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         // SAFETY: eventfd with a zero initial count and constant flags; the
         // descriptor is handed straight to OwnedFd, which closes it on drop.
         let raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -35,7 +35,7 @@ impl Wake {
     }
 
     /// A producer's end, for a thread that will enqueue work.
-    pub fn handle(&self) -> io::Result<WakeHandle> {
+    pub(crate) fn handle(&self) -> io::Result<WakeHandle> {
         Ok(WakeHandle {
             fd: self.fd.try_clone()?,
         })
@@ -46,7 +46,7 @@ impl Wake {
     /// **Call this before pulling the application rings**, never after. See the
     /// module note: the reverse order drops the token for an item that has not
     /// been read yet.
-    pub fn take(&self) -> io::Result<bool> {
+    pub(crate) fn take(&self) -> io::Result<bool> {
         let mut count: u64 = 0;
         // SAFETY: an eventfd read writes exactly eight bytes into the buffer,
         // which is what is passed.
@@ -77,7 +77,7 @@ impl Wake {
 
 impl WakeHandle {
     /// Wake the loop. Safe to call from any thread, at any time.
-    pub fn notify(&self) -> io::Result<()> {
+    pub(crate) fn notify(&self) -> io::Result<()> {
         let count: u64 = 1;
         // SAFETY: an eventfd write reads exactly eight bytes from the buffer,
         // which is what is passed.
