@@ -77,8 +77,9 @@ ash = "0.38"
 khronos-egl = { version = "6", features = ["dynamic"] }
 libloading = "0.8"
 
-# Signaling only. lowlat-kessel is the one crate permitted an async runtime, a
-# TLS stack and a JSON parser; nothing inside the FFI boundary links it.
+# Signaling owns the async runtime and JSON parser. Native relay TLS is an
+# explicit optional lowlat-net/turn-stream feature, driven without a runtime;
+# the default FFI build still does not link that TLS carrier.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

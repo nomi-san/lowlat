@@ -19,6 +19,7 @@ const WAKE: Token = Token(1);
 const SETUP: Duration = Duration::from_secs(10);
 const PASSES: usize = 64;
 const TLS_BUFFER: usize = 32 * 1024;
+const WRITE_STALL: Duration = Duration::from_secs(5);
 
 /// Explicit trust and server identity. No permissive verifier is exposed.
 #[derive(Debug, Clone)]
@@ -93,6 +94,9 @@ pub(crate) struct StreamIo {
     end: usize,
     received: usize,
     output: Output,
+    pending_at: Option<Instant>,
+    write_progress: Instant,
+    terminal: Option<io::Error>,
 }
 
 impl StreamIo {
@@ -136,6 +140,9 @@ impl StreamIo {
             end: 0,
             received: 0,
             output: Output::new(crate::RECV_SLOT + 3)?,
+            pending_at: None,
+            write_progress: Instant::now(),
+            terminal: None,
         })
     }
 
@@ -224,6 +231,18 @@ impl StreamIo {
     }
 
     pub(crate) fn wait(&mut self, timeout_ms: f64) -> io::Result<crate::shell::Ready> {
+        if let Some(error) = self.terminal.take() {
+            return Err(error);
+        }
+        if self
+            .pending_at
+            .is_some_and(|at| at.elapsed() >= WRITE_STALL)
+            || ((self.output.pending() != 0
+                || self.tls.as_ref().is_some_and(|tls| tls.wants_write()))
+                && self.write_progress.elapsed() >= WRITE_STALL)
+        {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         self.received = 0;
         let immediate = self.continuation
             || self.start < self.end
@@ -273,6 +292,22 @@ impl StreamIo {
     }
 
     pub(crate) fn drain(&mut self) -> io::Result<usize> {
+        if self.terminal.is_some() {
+            return Ok(0);
+        }
+        match self.drain_inner() {
+            // Let the driver see authenticated messages already received in
+            // this pass (including a peer departure) before reporting EOF.
+            Err(error) if self.received != 0 => {
+                self.terminal = Some(error);
+                self.continuation = true;
+                Ok(0)
+            }
+            result => result,
+        }
+    }
+
+    fn drain_inner(&mut self) -> io::Result<usize> {
         if self.received >= PASSES {
             self.continuation = true;
             return Ok(0);
@@ -337,7 +372,13 @@ impl StreamIo {
         if to != self.server {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let idle =
+            self.output.pending() == 0 && self.tls.as_ref().is_none_or(|tls| !tls.wants_write());
         self.output.queue(message)?;
+        self.pending_at = Some(Instant::now());
+        if idle {
+            self.write_progress = Instant::now();
+        }
         self.flush()
     }
     pub(crate) fn continue_soon(&mut self) {
@@ -350,6 +391,9 @@ impl StreamIo {
         }
         if let Some(tls) = &mut self.tls {
             let progress = self.output.write_ready(&mut PlainWriter(tls))?;
+            if progress == Progress::Complete {
+                self.pending_at = None;
+            }
             if progress == Progress::Yielded {
                 self.continuation = true;
             }
@@ -360,7 +404,9 @@ impl StreamIo {
                 }
                 match tls.write_tls(&mut self.socket) {
                     Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                    Ok(_) => {}
+                    Ok(_) => {
+                        self.write_progress = Instant::now();
+                    }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         self.writable = false;
                         return Ok(());
@@ -371,10 +417,17 @@ impl StreamIo {
             }
             self.continuation = true;
         } else {
+            let before = self.output.pending();
             match self.output.write_ready(&mut self.socket)? {
                 Progress::Blocked => self.writable = false,
                 Progress::Yielded => self.continuation = true,
                 Progress::Complete => {}
+            }
+            if self.output.pending() < before {
+                self.write_progress = Instant::now();
+            }
+            if self.output.pending() == 0 {
+                self.pending_at = None;
             }
         }
         Ok(())
@@ -499,6 +552,48 @@ mod tests {
     #[test]
     fn stream_tcp_burst_crosses_fairness_boundaries() {
         roundtrip(false, 130);
+    }
+
+    #[test]
+    fn stream_output_age_is_bounded_without_discarding_a_partial_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut io = StreamIo::start(listener.local_addr().unwrap(), Security::Tcp).unwrap();
+        io.prepare(|| false).unwrap();
+        io.output.queue(MESSAGE).unwrap();
+        io.pending_at = Some(Instant::now() - WRITE_STALL);
+        assert_eq!(io.wait(0.0).unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(io.output.pending(), WIRE.len());
+    }
+
+    #[test]
+    fn stream_eof_after_a_frame_is_deferred_until_the_driver_can_process_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            bounded(&socket);
+            socket.write_all(WIRE).unwrap();
+        });
+        let mut io = StreamIo::start(address, Security::Tcp).unwrap();
+        io.prepare(|| false).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(Instant::now() < deadline);
+            io.wait(20.0).unwrap();
+            if io.drain().unwrap() != 0 {
+                break;
+            }
+        }
+        assert_eq!(io.frame().unwrap().2, MESSAGE);
+        while io.terminal.is_none() {
+            assert!(Instant::now() < deadline);
+            assert_eq!(io.drain().unwrap(), 0);
+        }
+        assert_eq!(
+            io.wait(0.0).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        peer.join().unwrap();
     }
 
     #[test]
