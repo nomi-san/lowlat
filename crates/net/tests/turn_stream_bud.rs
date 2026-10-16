@@ -18,7 +18,8 @@ use lowlat_net::{
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-const SLOT: usize = lowlat_core::MAX_DATAGRAM;
+// SendRing capacity is the fragment body, not the encrypted UDP wire ceiling.
+const SLOT: usize = lowlat_core::DEFAULT_BODY;
 const SLOTS: usize = 64;
 const CHANNEL: u8 = lowlat_core::control::CONTROL_CHANNEL;
 const KEY: [u8; 32] = [0x77; 32];
