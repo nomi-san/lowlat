@@ -1,0 +1,55 @@
+name: TURN stream validation
+
+on:
+  push:
+    branches: [codex/turn-stream-transport]
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - deny.toml
+      - crates/core/**
+      - crates/net/**
+      - .github/workflows/turn-stream.yml
+
+jobs:
+  dependencies:
+    name: licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+
+  transport:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p lowlat-core -p lowlat-net --all-targets -- -D warnings
+      - run: cargo clippy -p lowlat-net --all-targets --features turn-stream -- -D warnings
+      - run: cargo clippy -p lowlat-client --lib --features turn-stream -- -D warnings
+      - run: cargo check -p lowlat-sdk --no-default-features --features client,turn-stream
+      - run: cargo test -p lowlat-sdk --no-default-features --features client,turn-stream --lib
+      - run: cargo test -p lowlat-sdk --no-default-features --features client --lib
+      - run: cargo test -p lowlat-sdk --no-default-features --features client,turn-stream --test abi the_header_matches_the_definitions
+      - run: cargo test -p lowlat-core
+      - run: cargo test -p lowlat-net turn_stream
+      - run: cargo test -p lowlat-net --features turn-stream stream
+      - run: cargo test -p lowlat-net --features turn-stream --lib
+      - name: Install isolated TURN fixture
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y coturn openssl
+      - name: Authenticated BUD through coturn UDP, TCP and TLS
+        if: runner.os == 'Linux'
+        run: bash scripts/test-turn-stream.sh

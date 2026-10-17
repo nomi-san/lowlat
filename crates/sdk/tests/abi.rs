@@ -845,7 +845,7 @@ fn the_header_declares_no_name_without_the_prefix() {
 /// is written out from the fields rather than taken from `size_of`, because
 /// taking it from `size_of` would agree with any layout at all. The host
 /// half's, so Linux's.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "host"))]
 #[test]
 fn the_status_struct_is_the_size_its_fields_come_to() {
     use lowlat::abi::{LOWLAT_OUTPUT_MAX, lowlat_host_status};

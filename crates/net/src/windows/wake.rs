@@ -57,19 +57,19 @@ impl Drop for Shared {
 
 /// The consumer's end: owned by the loop, taken once per pass.
 #[derive(Debug)]
-pub struct Wake {
+pub(crate) struct Wake {
     shared: Arc<Shared>,
 }
 
 /// A producer's end: one per sending thread.
 #[derive(Debug)]
-pub struct WakeHandle {
+pub(crate) struct WakeHandle {
     shared: Arc<Shared>,
 }
 
 impl Wake {
     /// Create the port the loop will wait on.
-    pub fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         // SAFETY: a new port with no handle associated; one thread consumes it.
         let port =
             unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, core::ptr::null_mut(), 0, 1) };
@@ -85,7 +85,7 @@ impl Wake {
     }
 
     /// A producer's end, for a thread that will enqueue work.
-    pub fn handle(&self) -> io::Result<WakeHandle> {
+    pub(crate) fn handle(&self) -> io::Result<WakeHandle> {
         Ok(WakeHandle {
             shared: Arc::clone(&self.shared),
         })
@@ -96,7 +96,7 @@ impl Wake {
     /// **Call this before pulling the application rings**, never after. See
     /// the portable module: the reverse order drops the token for an item that
     /// has not been read yet.
-    pub fn take(&self) -> io::Result<bool> {
+    pub(crate) fn take(&self) -> io::Result<bool> {
         // AcqRel, pairing with the producer's swap: a take that finds the flag
         // set happens after the notify that set it, and so after everything
         // the producer enqueued before notifying.
@@ -111,7 +111,7 @@ impl Wake {
 
 impl WakeHandle {
     /// Wake the loop. Safe to call from any thread, at any time.
-    pub fn notify(&self) -> io::Result<()> {
+    pub(crate) fn notify(&self) -> io::Result<()> {
         // Only the notify that arms the flag posts. One already armed means
         // an entry is on its way to the loop or already taken by its wait,
         // and the loop has not yet consumed it; either way it will look.

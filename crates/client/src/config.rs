@@ -241,16 +241,50 @@ impl Video {
 #[derive(Clone)]
 pub struct Relay {
     pub server: SocketAddr,
+    pub transport: RelayTransport,
     pub username: Zeroizing<String>,
     pub password: Zeroizing<String>,
+}
+
+/// Client-to-TURN carrier. The TURN allocation and host leg remain UDP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RelayTransport {
+    #[default]
+    Udp,
+    Tcp,
+    /// Original DNS name (or certificate IP identity), never the resolved IP
+    /// substituted for a hostname. Requires the optional turn-stream feature.
+    Tls {
+        server_name: String,
+    },
 }
 
 impl Relay {
     pub fn new(server: SocketAddr, username: &str, password: &str) -> Self {
         Self {
             server,
+            transport: RelayTransport::Udp,
             username: Zeroizing::new(username.to_owned()),
             password: Zeroizing::new(password.to_owned()),
+        }
+    }
+
+    pub(crate) fn wake(&self) -> std::io::Result<lowlat_net::Wake> {
+        match &self.transport {
+            RelayTransport::Udp => lowlat_net::Wake::new(),
+            #[cfg(feature = "turn-stream")]
+            RelayTransport::Tcp => {
+                lowlat_net::Wake::stream(self.server, lowlat_net::stream_io::Security::Tcp)
+            }
+            #[cfg(feature = "turn-stream")]
+            RelayTransport::Tls { server_name } => lowlat_net::Wake::stream(
+                self.server,
+                lowlat_net::stream_io::Security::Tls(lowlat_net::stream_io::Tls::system(
+                    server_name,
+                )?),
+            ),
+            #[cfg(not(feature = "turn-stream"))]
+            _ => Err(std::io::ErrorKind::Unsupported.into()),
         }
     }
 }
@@ -259,6 +293,7 @@ impl fmt::Debug for Relay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Relay")
             .field("server", &self.server)
+            .field("transport", &self.transport)
             .finish_non_exhaustive()
     }
 }

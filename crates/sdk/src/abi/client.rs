@@ -406,6 +406,13 @@ pub struct lowlat_client_config {
     /// cleared when it is done with it.
     pub relay_username: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
     pub relay_password: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
+    /// Client-to-relay carrier (minor 29): 0 UDP (default), 1 TCP, 2 TLS.
+    /// TCP/TLS requires the optional turn-stream build feature. The allocation
+    /// and relay-to-host leg remain UDP. Read only when size reaches the field.
+    pub relay_transport: u32,
+    /// TLS certificate identity (minor 29), NUL-terminated, without a port.
+    /// Required for TLS; never replaced with the resolved server address.
+    pub relay_tls_server_name: [c_char; LOWLAT_SERVER_MAX],
 }
 
 /// The longest relay username or password this boundary carries.
@@ -539,6 +546,9 @@ pub struct lowlat_client_status {
     /// otherwise, and again at each attempt's start.
     pub microphone: bool,
     pub microphone_reserved: [u8; 3],
+    /// Established relay carrier (minor 29): 0 UDP, 1 TCP, 2 TLS.
+    /// Meaningful only when relayed is true; zero while not established.
+    pub relay_transport: u32,
 }
 
 /// The status's size before the relay's fields were appended: the least a
@@ -1165,11 +1175,25 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
                 .copied()?;
             let username = taken(&cfg.relay_username).filter(|text| !text.is_empty())?;
             let password = taken(&cfg.relay_password).filter(|text| !text.is_empty())?;
-            Some(::lowlat_client::config::Relay::new(
-                server, username, password,
-            ))
+            let mut relay = ::lowlat_client::config::Relay::new(server, username, password);
+            relay.transport = match cfg.relay_transport {
+                0 => ::lowlat_client::config::RelayTransport::Udp,
+                1 if cfg!(feature = "turn-stream") => ::lowlat_client::config::RelayTransport::Tcp,
+                2 if cfg!(feature = "turn-stream") => {
+                    ::lowlat_client::config::RelayTransport::Tls {
+                        server_name: taken(&cfg.relay_tls_server_name)
+                            .filter(|name| !name.is_empty())?
+                            .to_owned(),
+                    }
+                }
+                _ => return None,
+            };
+            Some(relay)
         }
     };
+    if relay.is_none() && cfg.relay_transport != 0 {
+        return None;
+    }
     Some(::lowlat_client::Config {
         video: video_of(&cfg.video),
         raw_audio: cfg.raw_audio,
@@ -1288,6 +1312,18 @@ pub unsafe extern "C" fn lowlat_client_new_attempt(
                     (&raw mut copy).cast::<u8>(),
                     size.min(core::mem::size_of::<lowlat_client_config>()),
                 );
+                if size
+                    < core::mem::offset_of!(lowlat_client_config, relay_transport)
+                        + core::mem::size_of::<u32>()
+                {
+                    copy.relay_transport = 0;
+                }
+                if size
+                    < core::mem::offset_of!(lowlat_client_config, relay_tls_server_name)
+                        + LOWLAT_SERVER_MAX
+                {
+                    copy.relay_tls_server_name.fill(0);
+                }
                 let config = configured(&copy);
                 zeroize::Zeroize::zeroize(&mut copy.relay_username);
                 zeroize::Zeroize::zeroize(&mut copy.relay_password);
@@ -2208,6 +2244,13 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 microphone_dropped: t.microphone_dropped.load(Ordering::Relaxed),
                 microphone: !t.microphone_off.load(Ordering::Relaxed),
                 microphone_reserved: [0; 3],
+                relay_transport: if t.state.load(Ordering::Relaxed) == 1
+                    && t.path_relayed.load(Ordering::Relaxed)
+                {
+                    t.relay_transport.load(Ordering::Relaxed)
+                } else {
+                    0
+                },
             };
             if let Some(relayed) =
                 ::lowlat_client::driver::unpack_relayed(t.relayed.load(Ordering::Relaxed))
@@ -3621,6 +3664,7 @@ mod tests {
             microphone_dropped: 7,
             microphone: false,
             microphone_reserved: [0; 3],
+            relay_transport: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
@@ -3994,6 +4038,8 @@ mod tests {
             relay: [0; LOWLAT_SERVER_MAX],
             relay_username: [0; LOWLAT_RELAY_CREDENTIAL_MAX],
             relay_password: [0; LOWLAT_RELAY_CREDENTIAL_MAX],
+            relay_transport: 0,
+            relay_tls_server_name: [0; LOWLAT_SERVER_MAX],
         };
         let mut ours = lowlat_credentials {
             size: core::mem::size_of::<lowlat_credentials>() as u32,
@@ -4108,6 +4154,41 @@ mod tests {
         );
         put(&mut cfg.relay_password, "password");
         assert_eq!(attempt(&cfg), LOWLAT_OK);
+        cfg.relay_transport = 999;
+        cfg.size = core::mem::offset_of!(lowlat_client_config, relay_transport) as u32;
+        assert_eq!(attempt(&cfg), LOWLAT_OK, "old caller must retain UDP");
+        cfg.size += 1;
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_OK,
+            "partial extension must not be read"
+        );
+        cfg.size = core::mem::size_of::<lowlat_client_config>() as u32;
+        assert_eq!(attempt(&cfg), LOWLAT_ERR_INVALID_ARGUMENT);
+        cfg.relay_transport = 1;
+        assert_eq!(
+            attempt(&cfg),
+            if cfg!(feature = "turn-stream") {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_INVALID_ARGUMENT
+            }
+        );
+        cfg.relay_transport = 2;
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "TLS needs identity"
+        );
+        put(&mut cfg.relay_tls_server_name, "relay.test");
+        assert_eq!(
+            attempt(&cfg),
+            if cfg!(feature = "turn-stream") {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_INVALID_ARGUMENT
+            }
+        );
         unsafe { lowlat_client_destroy(handle) };
     }
 

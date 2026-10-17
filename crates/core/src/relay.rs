@@ -56,6 +56,18 @@ pub const ALLOCATE_RESEND_MS: f64 = 500.0;
 /// The re-send of any other unanswered request.
 pub const RESEND_MS: f64 = 2_000.0;
 
+/// RFC 8489 section 6.2.2's default reliable-transport transaction timeout.
+pub const STREAM_TRANSACTION_MS: f64 = 39_500.0;
+
+/// Reliability of the client-to-TURN carrier, not the relayed peer's UDP leg.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Transport {
+    #[default]
+    Datagram,
+    /// TCP or TLS over TCP. TURN requests are sent once; TCP recovers loss.
+    Reliable,
+}
+
 /// Addresses permitted: the relay's own machine, then the host's.
 pub const MAX_PERMISSIONS: usize = 8;
 
@@ -123,9 +135,12 @@ fn step(
     ids: &mut Ids,
     first_wait_ms: f64,
     backoff: bool,
+    transport: Transport,
 ) -> Option<TransactionId> {
     match pending {
-        Some(request) if now_ms - request.sent_ms >= request.wait_ms => {
+        Some(request)
+            if transport == Transport::Datagram && now_ms - request.sent_ms >= request.wait_ms =>
+        {
             request.sent_ms = now_ms;
             if backoff {
                 request.wait_ms *= 2.0;
@@ -138,7 +153,11 @@ fn step(
             *pending = Some(Pending {
                 tid,
                 sent_ms: now_ms,
-                wait_ms: first_wait_ms,
+                wait_ms: if transport == Transport::Reliable {
+                    STREAM_TRANSACTION_MS
+                } else {
+                    first_wait_ms
+                },
             });
             Some(tid)
         }
@@ -216,6 +235,7 @@ enum Ask {
 /// The relay one attempt allocates, and everything kept alive through it.
 pub struct Relay<'a> {
     server: SocketAddr,
+    transport: Transport,
     username: &'a str,
     password: &'a str,
     ids: Ids,
@@ -271,8 +291,29 @@ impl<'a> Relay<'a> {
         seed: [u8; 16],
         now_ms: f64,
     ) -> Self {
+        Self::new_on(
+            server,
+            username,
+            password,
+            seed,
+            now_ms,
+            Transport::Datagram,
+        )
+    }
+
+    /// Choose the client-to-relay carrier before the first transaction.
+    /// This adds no IO or TLS to the core and never changes the peer UDP leg.
+    pub fn new_on(
+        server: SocketAddr,
+        username: &'a str,
+        password: &'a str,
+        seed: [u8; 16],
+        now_ms: f64,
+        transport: Transport,
+    ) -> Self {
         Self {
             server: stun::canonical(server),
+            transport,
             username,
             password,
             ids: Ids { seed, counter: 0 },
@@ -467,6 +508,7 @@ impl<'a> Relay<'a> {
                 &mut self.ids,
                 ALLOCATE_RESEND_MS,
                 true,
+                self.transport,
             )?;
             return Some((Ask::Allocate, tid));
         }
@@ -477,6 +519,7 @@ impl<'a> Relay<'a> {
             &mut self.ids,
             RESEND_MS,
             false,
+            self.transport,
         ) {
             return Some((Ask::Refresh(LIFETIME_S), tid));
         }
@@ -491,6 +534,7 @@ impl<'a> Relay<'a> {
                 &mut self.ids,
                 RESEND_MS,
                 false,
+                self.transport,
             ) {
                 return Some((Ask::Permission(lease.target), tid));
             }
@@ -509,6 +553,7 @@ impl<'a> Relay<'a> {
                 &mut self.ids,
                 RESEND_MS,
                 false,
+                self.transport,
             ) {
                 return Some((Ask::Channel(number, lease.target), tid));
             }
@@ -669,6 +714,13 @@ impl<'a> Relay<'a> {
                     .find(|permission| permission.target == ip && !permission.refused)
                 {
                     permission.expires_ms = Some(now_ms + PERMISSION_MS);
+                    if self.transport == Transport::Reliable {
+                        // ChannelBind has already granted the permission.
+                        // An older unanswered CreatePermission must not later
+                        // time out and declare that freshly granted path lost.
+                        permission.pending = None;
+                        permission.due_ms = now_ms + RENEW_MS;
+                    }
                 }
             }
             Some(STALE_NONCE) if response.challenge().is_some() => {}
@@ -716,6 +768,9 @@ impl<'a> Relay<'a> {
 
     /// Housekeeping: setup's deadline, and anything renewed too late.
     pub(crate) fn poll(&mut self, now_ms: f64) {
+        if self.transport == Transport::Reliable {
+            self.expire_transactions(now_ms);
+        }
         match self.state {
             State::Setup if now_ms - self.started_ms >= SETUP_DEADLINE_MS => {
                 self.fail(Failure::Unreachable);
@@ -724,6 +779,46 @@ impl<'a> Relay<'a> {
                 self.fail(Failure::Lost);
             }
             _ => {}
+        }
+    }
+
+    /// A reliable carrier does not retransmit requests. Expiry still clears
+    /// pending work, otherwise its past deadline would hot-poll forever.
+    /// An unused peer's permission or a channel timeout need not kill media:
+    /// channels can fall back to indications while the path remains permitted.
+    fn expire_transactions(&mut self, now_ms: f64) {
+        fn expired(pending: &mut Option<Pending>, now_ms: f64) -> bool {
+            if pending.is_some_and(|p| now_ms - p.sent_ms >= p.wait_ms) {
+                *pending = None;
+                true
+            } else {
+                false
+            }
+        }
+        if expired(&mut self.allocating, now_ms) {
+            self.fail(Failure::Unreachable);
+            return;
+        }
+        if expired(&mut self.refreshing, now_ms) {
+            self.fail(Failure::Lost);
+            return;
+        }
+        let mut path_failed = false;
+        for lease in self.permissions.iter_mut().flatten() {
+            if expired(&mut lease.pending, now_ms) {
+                lease.refused = true;
+                path_failed |= self
+                    .destination
+                    .is_some_and(|peer| peer.ip() == lease.target);
+            }
+        }
+        for lease in self.channels.iter_mut().flatten() {
+            if expired(&mut lease.pending, now_ms) {
+                lease.refused = true;
+            }
+        }
+        if path_failed {
+            self.fail(Failure::Lost);
         }
     }
 
@@ -889,6 +984,104 @@ mod tests {
         let permission = allocate(relay, Some(600), now);
         answer(relay, &granted(&permission, None, &key()), now);
         assert_eq!(relay.state(), State::Ready(relayed_addr()));
+    }
+
+    fn stream_relay() -> Relay<'static> {
+        Relay::new_on(server(), USER, PASS, [0x3C; 16], 0.0, Transport::Reliable)
+    }
+
+    #[test]
+    fn stream_allocation_is_not_retransmitted_and_setup_still_expires() {
+        let mut relay = stream_relay();
+        let _ = one(&mut relay, 0.0);
+        for now in [500.0, 1_000.0, 2_000.0, SETUP_DEADLINE_MS - 1.0] {
+            relay.poll(now);
+            assert!(drain(&mut relay, now).is_empty());
+            assert_eq!(relay.state(), State::Setup);
+        }
+        relay.poll(SETUP_DEADLINE_MS);
+        assert_eq!(relay.state(), State::Failed(Failure::Unreachable));
+    }
+
+    #[test]
+    fn stream_auth_and_stale_nonce_create_new_transactions() {
+        let mut relay = stream_relay();
+        ready(&mut relay, 0.0);
+        assert_eq!(relay.state(), State::Ready(relayed_addr()));
+        relay.permit(host(30).ip());
+        let first = one(&mut relay, 100.0);
+        answer(
+            &mut relay,
+            &challenge(&first, 438, REALM, b"rotated"),
+            200.0,
+        );
+        let second = one(&mut relay, 200.0);
+        assert_ne!(tid_of(&first), tid_of(&second));
+        assert_eq!(nonce_of(&second).as_deref(), Some(b"rotated".as_slice()));
+        answer(&mut relay, &granted(&second, None, &key()), 300.0);
+        assert!(relay.relayable(host(30)));
+    }
+
+    #[test]
+    fn stream_permission_timeout_does_not_sink_an_unused_peer_or_hot_poll() {
+        let mut relay = stream_relay();
+        ready(&mut relay, 0.0);
+        relay.permit(host(30).ip());
+        let _ = one(&mut relay, 100.0);
+        assert!(drain(&mut relay, 100.0 + RESEND_MS).is_empty());
+        let deadline = 100.0 + STREAM_TRANSACTION_MS;
+        relay.poll(deadline);
+        assert_eq!(relay.state(), State::Ready(relayed_addr()));
+        assert!(!relay.relayable(host(30)));
+        assert!(relay.next_timer_ms(deadline) > 0.0);
+        assert!(drain(&mut relay, deadline).is_empty());
+    }
+
+    #[test]
+    fn stream_refresh_timeout_ends_the_allocation_without_retransmits() {
+        let mut relay = stream_relay();
+        ready(&mut relay, 0.0);
+        let now = relay.refresh_ms;
+        let requests = drain(&mut relay, now);
+        assert!(requests.iter().any(|request| kind_of(request) == REFRESH));
+        assert!(drain(&mut relay, now + RESEND_MS).is_empty());
+        relay.poll(now + STREAM_TRANSACTION_MS);
+        assert_eq!(relay.state(), State::Failed(Failure::Lost));
+        assert!(
+            relay
+                .next_timer_ms(now + STREAM_TRANSACTION_MS)
+                .is_infinite()
+        );
+    }
+
+    #[test]
+    fn stream_channel_renewal_satisfies_an_unanswered_permission_renewal() {
+        let mut relay = stream_relay();
+        ready(&mut relay, 0.0);
+        relay.follow(host(20));
+        let binding = one(&mut relay, 0.0);
+        answer(&mut relay, &granted(&binding, None, &key()), 0.0);
+        let requests = drain(&mut relay, RENEW_MS);
+        assert!(
+            requests
+                .iter()
+                .any(|request| kind_of(request) == PERMISSION)
+        );
+        let binding = requests
+            .iter()
+            .find(|request| kind_of(request) == CHANNEL)
+            .unwrap();
+        answer(&mut relay, &granted(binding, None, &key()), RENEW_MS);
+        relay.poll(RENEW_MS + STREAM_TRANSACTION_MS);
+        assert_eq!(relay.state(), State::Ready(relayed_addr()));
+        assert!(relay.relayable(host(20)));
+        assert!(
+            relay
+                .permissions
+                .iter()
+                .flatten()
+                .all(|permission| permission.pending.is_none())
+        );
     }
 
     /// The order the whole design rests on. A relayed address offered before

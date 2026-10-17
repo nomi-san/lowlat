@@ -19,4 +19,4 @@ pub(crate) use addrs::interface_v4;
 pub(crate) use io::Io;
 pub(crate) use send::{offload_send, offload_unsupported, pinned_send};
 pub use socket::Socket;
-pub use wake::{Wake, WakeHandle};
+pub(crate) use wake::{Wake, WakeHandle};

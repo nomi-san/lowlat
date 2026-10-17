@@ -10,6 +10,7 @@ authors.workspace = true
 
 [features]
 default = []
+turn-stream = ["lowlat-net/turn-stream"]
 # The software decoder takes a GPL build of the machine's codec library as
 # well as an LGPL one; see the drivers crate. Never on in a release build.
 gpl-libavcodec = ["lowlat-drivers/gpl-libavcodec"]

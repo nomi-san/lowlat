@@ -485,10 +485,19 @@ unparseable connectivity messages and at the client as resends.)*
 
 ### §7.4 Transport
 
-**Reaching the relay over a stream transport is deferred.** It cannot sit behind the sans-IO
-boundary, where there is no async runtime and no transport security, so it is a shell concern
-if it is ever wanted. The datagram transport is the whole of the first implementation, and the
-relayed address is IPv4.
+**UDP is the default.** The optional `turn-stream` feature adds experimental TCP and
+TLS-over-TCP client-to-relay carriers in the native shell. The allocation still asks for UDP
+and the host leg stays UDP; this is RFC 8656, not an RFC 6062 TCP allocation. The relayed
+address remains IPv4. The sans-IO core only sees complete TURN messages and an explicit
+reliable-carrier transaction policy, never sockets or a TLS engine.
+
+The stream uses the same merged session thread and application/teardown wake. It restores
+message boundaries, retains partial writes, disables Nagle, and bounds application output
+plus TLS output buffering. A stalled write or partial frame older than five seconds ends
+the transport instead of accumulating indefinitely. Socket/TLS setup has its own ten-second
+deadline before the core's existing five-second allocation clock starts. TCP head-of-line
+blocking remains; prefer UDP where available. TLS authenticates the configured server name
+against public/OS trust. See [verification status](turn-stream-development.md).
 
 ## §8 Policy and the ladder
 

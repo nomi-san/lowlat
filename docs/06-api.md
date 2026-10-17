@@ -1479,6 +1479,15 @@ growing it moved that half, and a host application built against an earlier mino
 the size of what it is given. Taken deliberately rather than kept by a call of its own; the host
 half carries no promise before 1.0, as the client half never has.
 
+**Minor 29** adds optional native client-to-TURN TCP/TLS carriers. The `turn-stream` build
+feature enables them; the default build remains UDP. `relay_transport` (0 UDP, 1 TCP, 2 TLS)
+and `relay_tls_server_name` are appended to `lowlat_client_config` and read only where the
+caller's size reaches each complete field. TLS requires a certificate identity without a
+port. Older callers retain UDP. An unsupported carrier, a TLS request without its identity,
+or a non-UDP carrier without a relay is refused. `relay_transport` is also appended to the
+client status, meaningful only for an established relayed path. All earlier fields keep
+their offsets. See [TURN stream integration](turn-stream-development.md).
+
 **Minor 28** (2026-10-16) is waking the display ([§3](#3-host)): `wake_display` in
 `lowlat_host_config`, taking its last reserved byte. Nothing moves, and a caller built against
 an earlier minor leaves it zero, off. The third half's handle now follows its driver

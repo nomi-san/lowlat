@@ -17,6 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["host", "client", "vdd"]
+turn-stream = ["client", "lowlat-client/turn-stream"]
 # The host half: capture, encode, delivery and input, and every
 # `lowlat_host_*` entry point. Off, none of the Linux display stack is compiled.
 host = [
