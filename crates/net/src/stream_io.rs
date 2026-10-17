@@ -220,9 +220,7 @@ impl StreamIo {
     }
 
     fn interest(&mut self) -> io::Result<()> {
-        let write = self.connecting
-            || self.output.pending() != 0
-            || self.tls.as_ref().is_some_and(|tls| tls.wants_write());
+        let write = self.connecting || self.pending();
         if write != self.wants_write {
             let interest = if write {
                 Interest::READABLE | Interest::WRITABLE
@@ -241,33 +239,53 @@ impl StreamIo {
         if let Some(error) = self.terminal.take() {
             return Err(error);
         }
-        if self
-            .pending_at
-            .is_some_and(|at| at.elapsed() >= WRITE_STALL)
-            || ((self.output.pending() != 0
-                || self.tls.as_ref().is_some_and(|tls| tls.wants_write()))
-                && self.write_progress.elapsed() >= WRITE_STALL)
-        {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
+        let now = Instant::now();
+        self.track_output(now);
+        let timeout = self.output_timeout(Duration::from_secs_f64(timeout_ms / 1000.0), now)?;
         self.received = 0;
         let immediate = self.continuation
             || self.start < self.end
             || self.plaintext > 0
             || self.readable
-            || (self.writable && self.output.pending() != 0);
+            || (self.writable && self.pending());
         self.continuation = false;
-        let timeout = if immediate {
-            Duration::ZERO
-        } else {
-            Duration::from_secs_f64(timeout_ms / 1000.0)
-        };
+        let timeout = if immediate { Duration::ZERO } else { timeout };
         self.poll_once(timeout)?;
+        self.output_timeout(Duration::ZERO, Instant::now())?;
         self.flush()?;
         Ok(crate::shell::Ready {
             socket: self.readable || self.plaintext > 0 || self.start < self.end || immediate,
             wake: self.notify.armed.load(Ordering::Acquire),
         })
+    }
+
+    // Track one continuous unit of carrier work, including TLS ciphertext.
+    // TLS accepting plaintext is not socket progress and must not reset age.
+    fn track_output(&mut self, now: Instant) {
+        if !self.pending() {
+            self.pending_at = None;
+        } else if self.pending_at.is_none() {
+            self.pending_at = Some(now);
+            self.write_progress = now;
+        }
+    }
+
+    fn output_timeout(&self, requested: Duration, now: Instant) -> io::Result<Duration> {
+        if !self.pending() {
+            return Ok(requested);
+        }
+        let mut timeout = requested;
+        for since in [self.pending_at, Some(self.write_progress)]
+            .into_iter()
+            .flatten()
+        {
+            let remaining = (since + WRITE_STALL)
+                .checked_duration_since(now)
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or(io::ErrorKind::TimedOut)?;
+            timeout = timeout.min(remaining);
+        }
+        Ok(timeout)
     }
 
     fn read_tls(&mut self) -> io::Result<bool> {
@@ -284,6 +302,7 @@ impl StreamIo {
                     .process_new_packets()
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 self.plaintext = state.plaintext_bytes_to_read();
+                self.track_output(Instant::now());
                 Ok(true)
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -376,19 +395,21 @@ impl StreamIo {
     }
 
     pub(crate) fn pending(&self) -> bool {
-        self.output.pending() != 0
+        self.output.pending() != 0 || self.tls.as_ref().is_some_and(|tls| tls.wants_write())
     }
     pub(crate) fn queue(&mut self, message: &[u8], to: SocketAddr) -> io::Result<()> {
         if to != self.server {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let idle =
-            self.output.pending() == 0 && self.tls.as_ref().is_none_or(|tls| !tls.wants_write());
-        self.output.queue(message)?;
-        self.pending_at = Some(Instant::now());
-        if idle {
-            self.write_progress = Instant::now();
+        // The shell must not consume another core datagram while an earlier
+        // frame is retained by either the framer or the TLS record writer.
+        if self.pending() {
+            return Err(io::ErrorKind::WouldBlock.into());
         }
+        self.output.queue(message)?;
+        let now = Instant::now();
+        self.pending_at = Some(now);
+        self.write_progress = now;
         self.flush()
     }
     pub(crate) fn continue_soon(&mut self) {
@@ -397,7 +418,7 @@ impl StreamIo {
 
     pub(crate) fn finish_output(&mut self, timeout: Duration) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
-        while self.output.pending() != 0 || self.tls.as_ref().is_some_and(|tls| tls.wants_write()) {
+        while self.pending() {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or(io::ErrorKind::TimedOut)?;
@@ -407,19 +428,20 @@ impl StreamIo {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.track_output(Instant::now());
         if !self.writable || self.connecting {
             return Ok(());
         }
         if let Some(tls) = &mut self.tls {
             let progress = self.output.write_ready(&mut PlainWriter(tls))?;
-            if progress == Progress::Complete {
-                self.pending_at = None;
-            }
             if progress == Progress::Yielded {
                 self.continuation = true;
             }
             for _ in 0..PASSES {
                 if !tls.wants_write() {
+                    if self.output.pending() == 0 {
+                        self.pending_at = None;
+                    }
                     self.continuation |= self.output.pending() != 0;
                     return Ok(());
                 }
@@ -546,6 +568,152 @@ mod tests {
             .set_write_timeout(Some(Duration::from_secs(3)))
             .unwrap();
         socket.set_nodelay(true).unwrap();
+    }
+
+    // Complete real TLS in memory, without relying on kernel send-buffer sizes
+    // to reproduce a blocked ciphertext writer. The TCP socket remains live.
+    fn tls_pair() -> (StreamIo, ServerConnection, Blocking) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut io = StreamIo::start(listener.local_addr().unwrap(), Security::Tcp).unwrap();
+        io.prepare(|| false).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let (config, roots) = fixture(false);
+        let settings = Tls::with_roots("relay.test", roots).unwrap();
+        let mut client = ClientConnection::new(settings.config, settings.name).unwrap();
+        client.set_buffer_limit(Some(TLS_BUFFER));
+        let mut server = ServerConnection::new(config).unwrap();
+        for _ in 0..16 {
+            let mut wire = Vec::new();
+            client.write_tls(&mut wire).unwrap();
+            if !wire.is_empty() {
+                server.read_tls(&mut std::io::Cursor::new(wire)).unwrap();
+                server.process_new_packets().unwrap();
+            }
+            let mut wire = Vec::new();
+            server.write_tls(&mut wire).unwrap();
+            if !wire.is_empty() {
+                client.read_tls(&mut std::io::Cursor::new(wire)).unwrap();
+                client.process_new_packets().unwrap();
+            }
+            if !client.is_handshaking()
+                && !server.is_handshaking()
+                && !client.wants_write()
+                && !server.wants_write()
+            {
+                io.tls = Some(client);
+                io.writable = false;
+                return (io, server, peer);
+            }
+        }
+        panic!("in-memory TLS handshake made no progress");
+    }
+
+    fn stage_tls_frame(io: &mut StreamIo) {
+        io.queue(MESSAGE, io.server).unwrap();
+        // This is the boundary after rustls accepts plaintext but before its
+        // ciphertext reaches the socket. No newer core output may pass it.
+        assert_eq!(
+            io.output
+                .write_ready(&mut PlainWriter(io.tls.as_mut().unwrap()))
+                .unwrap(),
+            Progress::Complete
+        );
+        assert_eq!(io.output.pending(), 0);
+        assert!(io.tls.as_ref().unwrap().wants_write());
+    }
+
+    #[test]
+    fn stream_tls_ciphertext_backpressures_new_frames_until_fully_written() {
+        let (mut io, mut server, _peer) = tls_pair();
+        stage_tls_frame(&mut io);
+        let started = io.pending_at;
+        let last_progress = io.write_progress;
+        for _ in 0..100 {
+            assert!(io.pending());
+            assert_eq!(
+                io.queue(MESSAGE, io.server).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert_eq!(io.pending_at, started);
+            assert_eq!(io.write_progress, last_progress);
+        }
+        // The blocked period introduced neither duplicate frames nor drops.
+        let mut wire = Vec::new();
+        io.tls.as_mut().unwrap().write_tls(&mut wire).unwrap();
+        server.read_tls(&mut std::io::Cursor::new(wire)).unwrap();
+        assert_eq!(
+            server
+                .process_new_packets()
+                .unwrap()
+                .plaintext_bytes_to_read(),
+            WIRE.len()
+        );
+        let mut plain = [0; 8];
+        server.reader().read_exact(&mut plain).unwrap();
+        assert_eq!(plain, WIRE);
+        io.flush().unwrap();
+        assert!(!io.pending());
+        assert!(io.pending_at.is_none());
+        io.queue(MESSAGE, io.server).unwrap();
+    }
+
+    #[test]
+    fn stream_tls_accepting_plaintext_and_partial_wire_progress_do_not_reset_age() {
+        let (mut io, _server, _peer) = tls_pair();
+        stage_tls_frame(&mut io);
+        let now = Instant::now();
+        let started = now - WRITE_STALL;
+        io.pending_at = Some(started);
+        // Even physical progress must not keep an old frame alive forever.
+        let tls = io.tls.as_mut().unwrap();
+        let mut prefix = [0; 1];
+        assert_eq!(tls.write_tls(&mut prefix.as_mut_slice()).unwrap(), 1);
+        assert!(tls.wants_write());
+        io.write_progress = now;
+        io.flush().unwrap();
+        assert_eq!(io.pending_at, Some(started));
+        assert_eq!(io.wait(0.0).unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(io.pending());
+    }
+
+    #[test]
+    fn stream_tls_pending_deadlines_bound_long_polls_without_sleeping() {
+        let (mut io, _server, _peer) = tls_pair();
+        stage_tls_frame(&mut io);
+        let now = Instant::now();
+        io.pending_at = Some(now - WRITE_STALL + Duration::from_millis(10));
+        io.write_progress = now;
+        assert_eq!(
+            io.output_timeout(Duration::from_secs(60), now).unwrap(),
+            Duration::from_millis(10)
+        );
+        io.write_progress = now - WRITE_STALL + Duration::from_millis(5);
+        assert_eq!(
+            io.output_timeout(Duration::from_secs(60), now).unwrap(),
+            Duration::from_millis(5)
+        );
+        assert_eq!(
+            io.output_timeout(Duration::ZERO, now + Duration::from_millis(5))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn stream_tls_control_output_after_idle_gets_its_own_deadline() {
+        let (mut io, _server, _peer) = tls_pair();
+        let now = Instant::now();
+        io.write_progress = now - WRITE_STALL;
+        io.tls.as_mut().unwrap().refresh_traffic_keys().unwrap();
+        assert!(io.pending());
+        io.track_output(now);
+        assert_eq!(io.pending_at, Some(now));
+        assert_eq!(io.write_progress, now);
+        assert_eq!(
+            io.output_timeout(Duration::from_secs(60), now).unwrap(),
+            WRITE_STALL
+        );
     }
 
     fn echo(socket: &mut (impl Read + Write), count: usize) {

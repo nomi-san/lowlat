@@ -53,6 +53,15 @@ Implemented in the second stage:
 - Ten-second cancellable dial/handshake before the protocol clock starts.
   Pending-frame age and lack of physical write progress are bounded to five
   seconds; failure closes the transport rather than dropping a frame suffix.
+- Carrier backpressure includes rustls ciphertext, not only the plaintext
+  framer. No next core datagram is consumed until both are drained to the
+  socket. Plaintext acceptance and partial wire progress do not restart the
+  oldest pending frame's age. Poll waits are capped by output deadlines, and
+  TLS-only writable work gets an immediate pass rather than waiting for a new
+  readiness edge. TLS control output after an idle period starts a fresh timer.
+  These bounds cover local application/TLS queues, not the kernel or relay's
+  queues, and do not remove TCP head-of-line blocking or BUD retransmissions.
+  The TLS buffer cap remains 32 KiB; no new latency result is claimed.
 - Rust RelayTransport selection and append-only minor-29 C config/status fields,
   complete-field size gates, UDP defaults, and unsupported-mode rejection.
 - Windows/Linux TLS burst, untrusted CA, wrong-name, expired-certificate,
