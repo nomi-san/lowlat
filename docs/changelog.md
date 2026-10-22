@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-22 - A portable Windows host folder
+
+### Added
+- **A folder that runs the host with nothing installed but the display driver**
+  (`scripts/stage-windows.ps1 -Portable`, `target/dist` by default): `start-host.ps1` logs in the
+  first time and starts `lowlatd` as the system account in the console session, in a window of
+  its own, the session and the log kept in the folder, the session's file readable by the system
+  account and administrators alone; `install-driver.ps1` trusts the certificate the driver's
+  package is signed with and installs the driver, and `-Remove` takes both back.
+- **The login tool writes into a file it is named** (`--file PATH`), made when absent, restarting
+  nothing; `--logout` with it revokes the session that file carries.
+- **The service's folder carries the driver's install script too**, with the device tool and the
+  package's certificate beside the package, since the service installs no driver.
+
+### Checked
+- Both folders staged from this build, each with the driver's package, its install script, the
+  device tool and the certificate; the scripts parse. Earlier, on 2026-10-21: arguments passed
+  through to the host, the signatures valid, nothing but the system's libraries loaded, the login's
+  file written offline, and the system account's half run once from a copy -- the console session,
+  the system account, and the host ending as not logged in.
+- Owed: a login through the folder, and the driver installed by its script on another machine.
+
 ## 2026-10-22 - The service installs no driver: each has a script of its own
 
 ### Decided
