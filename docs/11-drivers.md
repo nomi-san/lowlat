@@ -8,17 +8,20 @@ to it (W3.8), built and checked 2026-10-20, and the turn of the host's own displ
 built and checked live the same day; a guest's size and turn of any display put by `lowlatd`
 (W3.10) built and checked live the same day; a program's own mode on the host's display (W3.11)
 built and checked live 2026-10-21, and a display read from its driver paced on the period it is
-handed pictures at (W3.12) built and checked live the same day; W3's gate to come. Built by
-[impl-plan-windows.md](impl-plan-windows.md) W3,
+handed pictures at (W3.12) built and checked live the same day; W3's gate to come. The input
+device (§2) planned 2026-10-22, at W4's interview; nothing of it built yet. Built by
+[impl-plan-windows.md](impl-plan-windows.md) W3 and W4,
 where the decisions and their reasons are recorded; this document is the design they add up to.
 
 On Windows the host carries drivers of its own where the system offers no interface for what a
 host needs: a display, for a machine with no monitor and for pictures the host reads without the
-system's own duplication pass (§1), and later an input device for the guests' mice, keyboards and
-pads (§2). Both are user-mode drivers: a library the system's user-mode driver host loads, the
-system's own kernel components beneath it, nothing of this project's in the kernel. Their C
-interface is the library's third half ([06](06-api.md)); the host's side of the display is
-[05 §2](05-host.md); installing and signing them is [07 §10](07-platforms.md).
+system's own duplication pass (§1), and an input device for the guests' keyboards, mice and Sony
+pads, whose input the system takes as a device's (§2). Both are user-mode drivers: a library the
+system's user-mode driver host loads, the system's own kernel components beneath it, nothing of
+this project's in the kernel. The display's C interface is the library's third half
+([06](06-api.md)), and the input device has none, the host being its one user; the host's side of
+the display is [05 §2](05-host.md), of the input device [05 §7](05-host.md); installing and
+signing them is [07 §10](07-platforms.md).
 
 ## §1 The display
 
@@ -399,12 +402,98 @@ a release signature ([07 §10](07-platforms.md)).
 
 ## §2 Input
 
-**Deferred.** A HID device of the host's own for the guests' mice, keyboards and pads, whose input
-the system takes as a device's rather than a program's. Until it is planned, input on Windows is
-[05 §7](05-host.md)'s: the system's batch input call, and pads on a virtual bus as Xbox 360
-pads.
+*Planned 2026-10-22, at W4's interview; nothing of it is built.* HID devices of the host's own for
+a guest's keyboard, mouse and Sony pads, whose input the system takes as a device's rather than a
+program's: a low-level hook sees no injected flag on it, raw input names the device it came from,
+and it reaches the input desktop by itself, the secure one included. Until it is built, and
+wherever it is not switched on, input on Windows is [05 §7](05-host.md)'s: the system's batch
+input call, and pads on a virtual bus as Xbox 360 pads. The Xbox 360 pad stays on the bus even
+then, since a HID pad never reaches the system's Xbox pad interface.
+
+### §2.1 The device
+
+- One root-enumerated device of the system class, `Root\lowlat-hid`, "Lowlat Virtual Input"
+  from "Lowlat": a user-mode filter above the system's virtual HID framework, which makes each
+  HID device the driver asks for. The system's own drivers claim those as they claim real ones --
+  the keyboard driver, the mouse driver, the game controller class -- and the framework's kernel
+  half is the system's.
+- Written in Rust in this workspace, as the display's driver is (§1.1): the user-mode framework's
+  and the HID framework's declarations generated once from the pinned kit's and the SDK's headers
+  and committed, a set of its own so the display driver stays as it is; a callback never unwinds
+  into the system's code. Its files are `lowlat_hid.dll`, `lowlat-hid.inf` and `lowlat-hid.cat`;
+  what it shares with the host is `lowlat-hid-proto`, which has no platform code.
+- Whether it runs in a host process of its own or in the pool the system keeps for HID drivers
+  at a raised priority is measured (W4.0): the write it takes is on the path of every input.
+- Its log goes to the debugger stream, as the display's does.
+
+### §2.2 The control interface, and who may open it
+
+- **The system account and administrators alone.** A device's input reaches the secure desktop
+  and its elevation prompts, and lands on the console session's input desktop whoever made it, so
+  a user who could open the driver could type into a consent prompt or into another person's
+  session. The display's control interface admits interactive users (§1.9); this one does not.
+  An administrator matches only elevated.
+- **No C interface.** The host is the driver's one user, and an application embedding the host
+  half reaches it through the host; an application that holds its own pads takes their reports
+  through the pad sink ([05 §7.2](05-host.md)) and keeps its own device.
+- **A handle makes one device, of a kind it names**: a keyboard, a mouse, a DualShock 4 or a
+  DualSense. The descriptors and identities are compiled into the driver and the host alike and
+  never sent, so nothing describes a device to the driver; a descriptor's change re-signs it. A
+  pad's handle gives its feature table as the pad is made.
+- **A report is a write of the report's bytes** on the device's handle; what the system writes to
+  a pad comes back through a read the host keeps outstanding. The handle is opened for overlapped
+  requests: one that is not serializes them, and the outstanding read would hold every report
+  behind it.
+- **The handle's end removes its device**, a killed host's included, **after the driver submits
+  the device's neutral report** -- no key down, no button, the sticks centred -- so a host that
+  dies leaves nothing held. Nothing keeps a device alive by traffic, as nothing keeps a monitor
+  alive (§1.3).
+
+### §2.3 The devices
+
+- **The keyboard**: a bitmap of the keyboard page with its eight modifiers, so no number of keys
+  held at once is too many, and a consumer collection for mute, volume and the media keys. No
+  system control collection, and the keyboard page's power key never set, so the power, sleep and
+  wake keys stay out of a guest's reach; no lock lights. The system's own keyboard driver
+  translates it, so Pause, Break, PrintScreen and SysRq take the forms a keyboard plugged into the
+  machine gives them, each keyboard keeping its own modifiers. **It never types the attention
+  chord** ([05 §7.3](05-host.md)).
+- **The mouse**: a relative collection -- sixteen-bit deltas, five buttons, the wheel and the
+  horizontal wheel through a resolution multiplier, so the peer's own units pass whole -- and an
+  absolute one. **Buttons and wheels ride the report of the pointer that moved last**: a report
+  of the absolute collection carries a position, so a button sent on it after relative motion
+  would move the pointer back to where the absolute one last was. Where the absolute range lands
+  with more than one display is measured at W4.0.
+- **The DualShock 4 and the DualSense**: the real products' descriptors and identities, as the
+  Linux host presents them ([07 §4.2](07-platforms.md)). The driver answers a feature read from
+  the pad's table -- the peer's calibration and firmware, else a real pad's, and a pairing report
+  around an address the host makes up, unique per guest and pad -- and refuses an identifier
+  nobody defined. What the system writes to the pad, an output report or a feature write, is
+  completed at once and kept for the host, a few deep and the oldest dropped, each being a whole
+  state; a read of the input report answers the last one submitted. No audio: the pads present
+  their HID interface alone.
+- **Identities**: each device's instance is stable per kind and slot, so the system sets a slot's
+  device up once rather than at every connection; the keyboard and the mouse carry an identity of
+  the project's own, never a real vendor's.
+
+### §2.4 Lifetimes
+
+- **A guest's keyboard and mouse exist while the application's switch is on**
+  (`virtual_input` in the host's input configuration, [06 §3](06-api.md)): made for each seated
+  guest on its next pass after the switch, or at its admission while the switch is on, and
+  removed when the switch goes off or the guest leaves. A switch either way first releases
+  everything held on the old path.
+- **A pad sent as its reports is made at its first report while the owner has `virtual_pads`
+  on**, a change reaching the pads plugged after it, and removed at its unplug or its guest's
+  leaving, as on Linux.
+- **A device made is not yet a device that delivers**: input for it is held until it does, as on
+  Linux ([07 §4.1](07-platforms.md)), and the time, with whatever announces it, is measured at
+  W4.0.
 
 ## §3 Verification status
+
+**The input device is planned** (W4, 2026-10-22): nothing of it is built, and W4.0's checks and
+measurements are its first.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

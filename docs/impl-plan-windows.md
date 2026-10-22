@@ -21,6 +21,8 @@ the host's display -- added after a probe at the gate's second review, decided, 
 live; W3's gate is next, its legs amended at it. *Amended 2026-10-21:* W3.12 -- a display read
 from its driver paced on the period it is handed pictures at -- added after W3.11's live check
 showed each picture a composition old, decided, built and checked live; W3's gate is next.
+*Amended 2026-10-22:* W4 -- the host's own input device -- added and planned at its interview; it
+is built once W2's and W3's gates are through.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -638,6 +640,11 @@ once, here.
   a write the system refuses is taken as policy, and the call is refused with a line naming it;
   a value a policy set on a key the system account may write is raised for the length of the
   call like any other, as established hosts do.
+  *Amended 2026-10-22, at W4's planning:* the HID device of the host's own is W4's driver. It
+  carries a guest's keyboard and mouse where the application switches them onto it, the batch
+  input call staying the default and the fallback, and a pad sent as its reports where the owner
+  sets it, off by default -- so the Xbox pad played from the whole states stays what such a pad
+  is unless the owner chooses otherwise. The Xbox 360 pad stays the bus's.
 - **Sound.** The loopback of the default render endpoint, event-driven, 48 kHz stereo asked and
   the system's engine converting, 20 ms a packet. **A loopback delivers nothing while nothing
   plays** -- measured on the development machine: no packet in three seconds, where a silent
@@ -2006,8 +2013,196 @@ on the LAN and one on a Windows machine:
 - the test-signed package installing silently with no test mode; CI building the driver; both
   CI jobs and the Linux bar.
 
+## Phase W4 - The host's input device
+
+**Planned 2026-10-22, interview of the same day.** A HID driver of the host's own, so that a
+guest's keyboard, mouse and Sony pads reach Windows as devices rather than as a program's input:
+a user-mode filter above the system's virtual HID framework, presenting a keyboard, a mouse, a
+DualShock 4 and a DualSense to the system's own drivers ([00 §D17](00-overview.md)). The batch
+input call stays the default for the keyboard and the mouse, and the fallback wherever the driver
+cannot carry them; the Xbox 360 pad stays on the ViGEm bus. It is built once W2's and W3's gates
+are through. The decisions are recorded once, here; the design they add up to is
+[11 §2](11-drivers.md).
+
+### Decisions taken at the interview
+
+- **Four kinds, and no Xbox pad.** The driver presents a keyboard, a mouse, a DualShock 4 and a
+  DualSense, and nothing else. A HID pad never reaches the system's Xbox pad interface, which a
+  game that knows no other reads, so the Xbox 360 pad stays the bus's (W2.3) for every such game,
+  and the driver presents none.
+- **Why a device: the system takes its input as hardware's.** A low-level hook sees no injected
+  flag on it and raw input names the device it came from, so a game whose anti-cheat ignores the
+  batch input call's input takes it -- the maintainer's own runs of virtual HID devices on the
+  same framework, behind such games, showed it, so the gate checks the mechanism and names no
+  game. A device's input also reaches the input desktop by itself, the lock screen and elevation
+  prompts included, with no thread attached to it; a mouse gives a machine with none of its own a
+  pointer the system shows while a guest is seated; and the system's own keyboard driver gives
+  Pause, Break, PrintScreen and SysRq their forms, each keyboard keeping its own modifiers.
+- **Rust, in this workspace, as the display driver is** (W3): a Windows-only library the
+  system's user-mode driver host loads, `lowlat_hid.dll` from `lowlat-hid.inf`, on a
+  root-enumerated device of the system class, `Root\lowlat-hid`, named "Lowlat Virtual Input"
+  from "Lowlat". The framework beneath it is the system's, its kernel half included, so nothing of
+  this project's is in the kernel. The user-mode framework's and the HID framework's declarations
+  are generated from the pinned kit's and the SDK's headers by a script of their own and
+  committed, so the display driver's declarations and package stay as they are. What the host and
+  the driver share -- the kinds, the requests, the feature table -- is `lowlat-hid-proto`, with no
+  platform code, tested on every platform and fuzzed on what the driver parses. A callback never
+  unwinds into the system's code.
+- **A fixed set of kinds, each device bound to its handle.** A caller names a kind; the four
+  descriptors and identities are compiled into both sides and never sent, so nothing describes a
+  device to the driver, at the cost of a re-signed driver for a descriptor's change. One device to
+  a handle, opened for overlapped requests: a handle that is not serializes them, and an
+  outstanding read then holds every report behind it. **The handle's end removes the device, a
+  killed host's included, and the driver first submits the device's neutral report** -- no key,
+  no button, the sticks centred -- so a host that dies leaves nothing held. Nothing keeps a device
+  alive by traffic. A device's instance is stable per kind and slot, so the system sets a slot's
+  device up once rather than at every connection. The pads carry the real products' identities,
+  as on Linux; the keyboard and the mouse carry an identity of the project's own, never a real
+  vendor's.
+- **The control interface admits the system account and administrators alone.** A device's
+  input reaches the secure desktop and its elevation prompts, and lands on the console session's
+  input desktop whoever made the device, so a user who could open the driver could type into a
+  consent prompt or into another person's session. The display driver's interface admits
+  interactive users because plugging a display asks no more than a person at the desk may do;
+  this asks more. An administrator matches only elevated. **No C interface of its own**: the host
+  is the driver's one user, an application embedding the host half runs as the system account
+  (W2), and one holding its own pads keeps the pad sink ([05 §7.2](05-host.md)).
+- **Input has a live configuration of its own**, `lowlat_host_input_config`: nested in the whole
+  as `input` and set and read back through its own pair of calls, as the sound's is, every field
+  live, and declared on Windows alone. Not a field of the video configuration: the input devices
+  are not the stream's, and switching them should neither carry nor re-send the stream's fields.
+- **The application switches the keyboard and the mouse onto the driver, while guests are
+  seated.** `virtual_input`, in the input configuration, **off by default**: off, a guest's keys
+  and pointer go through the batch input call as in W2; on, through that guest's HID keyboard and
+  mouse. Zero is off, so a caller that never sets it keeps W2's input. Switching it on with no
+  driver installed refuses the call and changes nothing; a driver lost while it is on gives the
+  guests the batch input call again, said once. The devices exist only while it is on: made for
+  each seated guest on its next pass, that guest's input held until they deliver, and removed when
+  it goes off. **A switch either way first releases everything held on the old path**, as a
+  permission taken away does, so a key held across it comes up rather than staying down.
+  `lowlatd` takes it at start, by a flag.
+- **The keyboard** is a bitmap of the keyboard page with its modifiers, so no number of keys held
+  at once is too many, and a consumer collection for mute, volume and the media keys, where the
+  codes peers send for them on the keyboard page and above it land. **No system control
+  collection, and the keyboard page's power key never set**, so the power, sleep and wake keys
+  stay out of a guest's reach; no lock lights. The host's own lock state is read and a lock tapped
+  where it differs, as in W2.
+- **The mouse** is a relative collection -- sixteen-bit deltas, a larger one split, five
+  buttons, the wheel and the horizontal wheel in the peer's own units through a resolution
+  multiplier -- and an absolute one. **Buttons and wheels ride the report of the pointer that
+  moved last**: one sent on the absolute report moves the pointer to that report's position,
+  which after relative motion is somewhere else. Where the absolute range lands with more than one
+  display is measured before the pointer is built (W4.0), and an output it cannot reach is decided
+  then.
+- **The attention chord is never typed on the HID keyboard.** A hardware keyboard's
+  Ctrl+Alt+Del raises the secure screen, which the same keys through the batch input call never
+  do ([05 §7.3](05-host.md)), so on this keyboard a guest's ordinary key messages would raise it,
+  past the policy the service honours for its own call (W2.5). So a Delete -- the main key or the
+  keypad's -- going down while Ctrl and Alt are held, on this guest's keyboard or by the system's
+  own key state, goes through the batch input call instead, its form chosen as it goes down and
+  kept until it comes up: applications see the keys as before, and the screen comes from the
+  service's call alone. A Delete already held when Ctrl and Alt arrive is released on the HID
+  keyboard first, unless the build shows that order harmless without raising the screen. Checked
+  by unit tests, each broken once, and never by raising the screen.
+- **A pad sent as its reports is presented as its product only where the owner sets it.**
+  `virtual_pads`, in the input configuration and live, **off by default**: off, the reports are
+  not taken and the pad is played as the Xbox pad from its whole states, as in W2.3; on, a
+  DualShock 4 or a DualSense sent as its reports is presented as that product on the driver --
+  touchpad, motion sensors, lights, trigger effects, the reports both ways
+  ([05 §7.2](05-host.md)). A change applies to the pads plugged after it, each pad keeping the
+  family its first message fixed, so an owner moving between kinds of game changes it without
+  ending anybody's session. Off by default
+  because a HID pad never reaches a game that reads only the Xbox pad's interface, and an
+  established client holding a DualSense always sends its reports: with the peer deciding, every
+  such guest would lose every such game, and an established host defaults its own pad type to the
+  Xbox pad too. **This amends [00 §D12](00-overview.md) for Windows alone**; on Linux, where the
+  kernel's own driver makes the pad readable by everything, the peer still decides. On, with no
+  driver, a pad is the Xbox pad again, said once; whole-state pads stay on the bus; an application
+  that takes the reports itself still takes them. The driver answers a pad's feature reads from a
+  table it is given as the pad is made -- the peer's calibration and firmware, else a real pad's,
+  and a pairing report around an address the host makes up, unique per guest and pad -- and
+  completes what is written to the pad at once, keeping it for the host, which sends it to the
+  peer.
+- **The fields only Windows acts on are declared on Windows alone.** In the C header the input
+  configuration -- its structure, its member of the whole and its two calls -- and
+  `virtual_width`, `virtual_height` and `virtual_hz` in the video configuration and
+  `virtual_fallback` and `wake_display` in the settled half exist where the header is compiled for
+  Windows and nowhere else, where until then the fields are accepted and do nothing. A value with
+  a meaning on Windows alone, the output `virtual`, stays refused at the call elsewhere. The
+  configuration's layout then differs by platform, which the bindings follow
+  ([06 §11](06-api.md)); it lands with the input configuration, so they change once.
+- **Signed and installed as the display driver is**: the test certificate in development with no
+  test mode, the signing service for releases from CI's build; `lowlatd install` and `uninstall`
+  add and remove it beside the display driver. The floor is the display driver's, Windows 10
+  1903, unless its setup information needs a later release; the host's own floor stays 1703, on
+  the batch input call.
+
+### Steps
+
+- [ ] **W4.0 the driver and its package**: the two crates and the generated declarations; the
+  four kinds; a device to a handle and its neutral report at the handle's end; the feature table
+  and the written reports; the setup information, the package and its test signature; install and
+  uninstall through `lowlatd` and a development script; CI building it. Checked by each kind made
+  by an elevated program arriving as the system's own device -- a keyboard, a mouse, a game
+  controller -- a standard user refused, and a handle's end and a killed process each removing
+  the device with nothing held. Measured there, before the devices are built on it: a device's
+  creation to its first delivered report, and whether anything announces that it delivers; where
+  the absolute range lands with two displays, and the pixel a value names; a report submitted
+  just before the device goes, and a key held on a keyboard removed; the bitmap keyboard, the
+  consumer collection and the keys whose form changes; the wheel's multiplier; a report to its
+  arrival in raw input against the batch input call, at p50, p95 and p99, idle and under one busy
+  loop per logical processor, at 125 and 1000 reports a second, with the driver host's processor
+  time and its priority.
+- [ ] **W4.1 the keyboard and the switch**: the input configuration with `virtual_input` and its
+  two calls in its minor, the Windows-only fields declared on Windows alone in the same minor,
+  `lowlatd`'s flag; a guest's HID keyboard while the switch is on, the chord's rule, the batch
+  input call where there is no driver. Checked by every
+  key class against a USB keyboard's as W2.3 listed them, read by raw input and a low-level hook --
+  a device named, no injected flag; typing on the lock screen and into an elevation prompt with no
+  thread attached; a guest's Ctrl+Alt+Del keys reaching applications and never the secure screen;
+  the power, sleep and wake keys never reaching the system; the switch moved both ways mid-session
+  with a key held, the key coming up; switched on with no driver, refused.
+- [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
+  multiplier, the last-moved rule -- and absolute positions as W4.0's measurement settles them.
+  Checked by W2.3's sweep through the guest's own devices landing every position on its pixel at
+  100 and 125 percent; relative motion in raw input naming a device; the wheels in the peer's
+  units, a trackpad's fine scroll included; a machine with no mouse showing its pointer while a
+  guest is seated; absolute motion turned into deltas while an application holds the pointer.
+- [ ] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
+  in its minor; the DualShock 4 and the DualSense on the driver, the feature table filled from the
+  peer, what is written to a pad sent back to the peer; the answers a Linux pad gives moved to
+  where both platforms build them, Linux unchanged. Checked by the library's demo's DualShock 4
+  and DualSense and an established client's DualSense each read as its product -- features asked
+  and answered, touch, motion, the lightbar and player lights, trigger effects and rumble back --
+  by the common game launcher, the controller libraries' HID layer, a browser's gamepad interface
+  and the system's own game controller panel; the setting off, the Xbox pad as before; the setting
+  changed mid-session, the next pad plugged following it and one already plugged keeping its
+  family; the Linux bar.
+
+**Gate:** on the development machine, with established clients on macOS and Windows and the
+library's demo:
+
+- through the HID keyboard, every key class, typing on the lock screen and into an elevation
+  prompt, the chord's keys raising nothing and the attention chord asked for still the service's;
+- through the HID mouse, the sweep, relative aim and both wheels;
+- for both, raw input naming a device and no injected flag;
+- the switch moved both ways mid-session with keys and buttons held, nothing left held;
+- both pads as their products with everything back, the setting off giving the Xbox pad, and the
+  setting changed mid-session reaching the next pad plugged;
+- the driver removed and the host killed mid-session, nothing left held and no device behind;
+- recorded rather than passed: a report to its arrival in raw input against the batch input call,
+  across the switch, at p50, p95 and p99, idle and under load, and a slot's first setup;
+- the test-signed package installing silently with no test mode; CI building the driver; both CI
+  jobs and the Linux bar.
+
 ## Change log
 
+- 2026-10-22: W4 added and planned at its interview: a HID driver of the host's own for a
+  guest's keyboard, mouse and Sony pads, the keyboard and the mouse switched onto it by the
+  application, a pad sent as its reports presented as its product where the owner sets it, off by
+  default ([00 §D12](00-overview.md) amended for Windows and §D17 added; [05 §7](05-host.md),
+  [06 §3, §11](06-api.md), [07 §4.2, §10](07-platforms.md) and [11 §2](11-drivers.md) amended).
+  W2's input decision amended.
 - 2026-10-22: W2's pacing decision amended: a panel slower than the primary, duplicated, left with
   its late pictures (the maintainer's decision; [05 §2](05-host.md) amended); W2.7's late
   compositions at 60 corrected to the frame clock in the changelog and

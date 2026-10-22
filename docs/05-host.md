@@ -799,7 +799,13 @@ work identically on X11, on Wayland, and at the login screen, and it is the capa
 display-server-level injection cannot match. *On Windows* (*2026-10-15*) it is the system's
 batch input call, made by a process of the system account on the session's input desktop,
 which reaches the lock screen and an elevation prompt the same way; the expansion below is
-shared and only the last step differs.
+shared and only the last step differs. *Amended 2026-10-22, planned as W4:* where the
+application switches it on (`virtual_input`, [06 §3](06-api.md)), a guest's keys and pointer go
+instead to a keyboard and a mouse of the host's own HID driver ([11 §2](11-drivers.md)), whose
+input the system takes as a device's: a low-level hook sees no injected flag on it, raw input
+names the device, it reaches the input desktop with no thread attached to it, and the system's own
+keyboard driver gives the keys whose form changes their forms. The batch input call stays the
+default and the fallback where the driver cannot carry the input.
 
 - **Batches are expanded and injected as a unit.** The wire delivers input batches; expansion
   to device events is a pure, unit-tested function with no device dependency, so the mapping
@@ -1053,6 +1059,16 @@ its Xbox mode plays it; an application that takes the reports itself still gets 
 the report would fix the pad as one that drops the states, and the peer's controller would do
 nothing at all.
 
+*Amended 2026-10-22, planned as W4:* **the host's own HID driver is that device where the owner
+sets `virtual_pads`** ([06 §3](06-api.md)), off by default. On, a DualShock 4 or a DualSense sent
+as its reports is presented as that product, as on Linux: its feature questions answered from
+what the peer sent, with a real pad's answers for what it did not and a pairing address the host
+makes up, and what is written to it sent back whole ([11 §2.3](11-drivers.md)). Off, the report
+is not taken, as above. **On Windows the owner chooses, not the peer** ([00 §D12](00-overview.md)):
+a HID pad never reaches a game that reads only the Xbox pad's interface, and an established client
+holding a DualSense always sends its reports, so with the peer deciding every such guest would
+lose every such game. The Xbox 360 pad stays the bus's either way.
+
 ### §7.3 The attention chord
 
 **A guest asks for `Ctrl+Alt+Del` rather than typing it**, because the operating system the
@@ -1084,6 +1100,13 @@ holds. The keyboard permission gates it there as here, read by the host before i
 its own call in the machine's policy for the length of each call**, putting back the value it
 found -- so installing the service changes no policy, and nothing is left set by a program
 removed without its uninstall.
+*Amended 2026-10-22, planned as W4:* **the host's own HID keyboard never types it.** A hardware
+keyboard's Ctrl+Alt+Del raises the secure screen, so on that keyboard a guest's ordinary key
+messages would, past the policy the service honours for its own call. A Delete -- the main key or
+the keypad's -- going down while Ctrl and Alt are held, on that guest's keyboard or by the
+system's own key state, goes through the batch input call instead, in that form until it comes
+up: applications see the keys as before, and the secure screen comes from the service's call
+alone.
 
 There is no general "inject these keys" call behind this. Input comes from guests; this is the
 one chord a guest is unable to send for itself.

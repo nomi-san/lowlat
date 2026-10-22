@@ -388,6 +388,12 @@ and the location shows the session.
 ([§6](#6-privileges)): no distribution grants access to either by default, so a second backend
 means a second rule.
 
+*On Windows* (*2026-10-22*, planned as W4) the same split holds: the Xbox 360 pad on a virtual
+bus, and the DualShock 4 and the DualSense on the host's own HID driver
+([11 §2](11-drivers.md)) -- there only where the owner sets it, since a HID pad never reaches a
+game that reads only the Xbox pad's interface, where on Linux the kernel's own driver makes the
+pad readable by everything.
+
 ## §5 Process topology
 
 The topology follows from §3, and this is the coupling worth seeing before the capture
@@ -897,6 +903,15 @@ After Gate B. The differences are contained:
   the system account and administrators read. An arrangement of displays that only the virtual
   one can satisfy is never saved, or a later boot waits on the driver. The design is
   [11](11-drivers.md).
+- An input driver of the host's own (*planned 2026-10-22*,
+  [impl-plan-windows.md](impl-plan-windows.md) W4): a user-mode filter above the system's virtual
+  HID framework, presenting a keyboard, a mouse, a DualShock 4 and a DualSense whose input the
+  system takes as a device's, signed and installed as the display driver is, and with it. Its
+  control interface admits the system account and administrators alone, since its devices' input
+  reaches the secure desktop and the console's session. The application switches a guest's
+  keyboard and mouse onto it, the batch input call staying the default; the owner sets whether a
+  pad sent as its reports is presented as its product; the Xbox 360 pad stays on the virtual bus.
+  The design is [11 §2](11-drivers.md).
 - The service (*reviewed 2026-10-17*, [impl-plan-windows.md](impl-plan-windows.md) W2.5): the
   daemon's second role, under the service manager, which starts the host in the console's session
   and starts it again when that session changes or the host fails, deciding on every pass rather

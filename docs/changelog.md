@@ -3,6 +3,39 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-22 - W4 planned: the host's own input device
+
+### Decided
+- **A HID driver of the host's own on Windows** ([impl-plan-windows.md](impl-plan-windows.md) W4,
+  [00 §D17](00-overview.md), [11 §2](11-drivers.md)): a user-mode filter above the system's
+  virtual HID framework, written in Rust in this workspace, presenting a keyboard, a mouse, a
+  DualShock 4 and a DualSense whose input the system takes as a device's -- no injected flag, a
+  device named in raw input, the secure desktop reached with no thread attached. No Xbox pad: a
+  HID pad never reaches the Xbox pad's interface, so the Xbox 360 pad stays on the ViGEm bus.
+- **Input gets a live configuration of its own on Windows**, `lowlat_host_input_config`, set and
+  read back through its own pair of calls as the sound's is ([06 §3](06-api.md)).
+- **The keyboard and the mouse are the application's switch** there: `virtual_input`, off by
+  default, the batch input call staying the default and the fallback; the devices exist only while
+  it is on, and a switch either way first releases what the old path held.
+- **A pad sent as its reports is presented as its product only where the owner sets
+  `virtual_pads`** in the same configuration, off by default and live for the pads plugged after a
+  change, since an established client's DualSense always sends its reports and a HID pad never
+  reaches a game that reads only the Xbox pad's interface ([00 §D12](00-overview.md) amended for
+  Windows; Linux unchanged).
+- **The HID keyboard never types the attention chord**: a Delete under Ctrl and Alt goes through
+  the batch input call, and the secure screen comes from the service's call alone
+  ([05 §7.3](05-host.md)).
+- **The driver's control interface admits the system account and administrators alone**, since
+  its devices' input reaches the secure desktop and the console's session; it has no C interface.
+  A device is bound to its handle, the driver submitting its neutral report at the handle's end,
+  so a host that dies leaves nothing held.
+- **The configuration fields only Windows acts on are declared on Windows alone** in the header
+  from the switch's minor, the host's own display's included, so the configuration's layout
+  differs by platform ([06 §11](06-api.md)).
+- Built after W2's and W3's gates; W4.0 measures readiness, where the absolute pointer lands, the
+  keyboard's forms, the wheel's multiplier and the latency against the batch input call before
+  the devices are built on it.
+
 ## 2026-10-22 - A panel slower than the primary: its late pictures are the frame clock's
 
 ### Found
