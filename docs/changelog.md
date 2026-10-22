@@ -3,6 +3,40 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-22 - W4.0 built: the host's input driver and its package
+
+### Added
+- **The input driver** ([11 §2](11-drivers.md)): a user-mode filter above the system's virtual
+  HID framework, `lowlat_hid.dll` from `lowlat-hid.inf` on `Root\lowlat-hid`, its declarations
+  generated from the kit's and the SDK's headers by a script of its own. A handle makes one device
+  of a kind it names -- a keyboard, a mouse, a DualShock 4, a DualSense -- through the device
+  beneath opened by that handle; every write is checked against the kind before the system sees
+  it; feature reads are answered from the device's table and what the system writes is completed
+  at once and kept for the host's outstanding read; the handle's close submits the kind's neutral
+  reports, then removes the device.
+- **What the driver and the host share**, `lowlat-hid-proto`: the four kinds with their
+  identities, descriptors, input reports, neutral reports and own answers, and the three
+  requests; fuzzed on what the driver parses.
+- **The host's side of it**: a device per handle, written whole, the system's writes polled from a
+  read kept outstanding, and the checks on the machine.
+- **Its package and install**: the packaging script, test-signed; an install script that makes
+  the root device and installs, updates and removes the package with nefcon, an open-source device
+  tool fetched pinned by its digest and shipped beside the script with its licence; CI builds the
+  driver.
+
+### Changed
+- **The display driver's install script uses nefcon too**, and both staged folders carry it, its
+  licence and each driver's package beside that driver's script, in place of the kit's device
+  tool, which a published folder has no stated right to carry.
+
+### Checked
+- Each kind's descriptor read against the code that writes its reports and against its neutral
+  report -- a pad's d-pad released, its sticks centred -- and every request read, written back
+  and refused; each check broken once and caught. The setup information valid and the package
+  signed. The Windows bar: fmt and clippy clean, tests 1425 passed, none failed; the Linux bar
+  clean, tests 1412 passed but the two that need a `localhost` answering on both families.
+- Owed: the install by its script on the machine, the checks there, and W4.0's measurements.
+
 ## 2026-10-22 - W4 reviewed: the mouse's buttons on one collection, a neutral report per kind
 
 ### Decided

@@ -927,7 +927,9 @@ After Gate B. The differences are contained:
   sent as its reports is played as the Xbox pad, said once. A driver installed while the host runs
   is taken up without a restart: the display at the host's next attempt to plug it, the input
   devices the next time `virtual_input` is switched on -- for `lowlatd`, whose flag switches it at
-  start, its next start.
+  start, its next start. Both scripts make the driver's root device and install its package with
+  nefcon, an open-source device tool shipped beside them with its licence, since the system's own
+  tool cannot make a root device.
 - The service (*reviewed 2026-10-17*, [impl-plan-windows.md](impl-plan-windows.md) W2.5): the
   daemon's second role, under the service manager, which starts the host in the console's session
   and starts it again when that session changes or the host fails, deciding on every pass rather

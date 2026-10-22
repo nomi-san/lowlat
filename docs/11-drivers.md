@@ -404,7 +404,8 @@ a release signature ([07 §10](07-platforms.md)).
 
 ## §2 Input
 
-*Planned 2026-10-22, at W4's interview; nothing of it is built.* HID devices of the host's own for
+*Planned 2026-10-22, at W4's interview. Built the same day (W4.0), not yet installed or checked
+live.* HID devices of the host's own for
 a guest's keyboard, mouse and Sony pads, whose input the system takes as a device's rather than a
 program's: a low-level hook sees no injected flag on it, raw input names the device it came from,
 and it reaches the input desktop by itself, the secure one included. Until it is built, and
@@ -450,6 +451,14 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   a pad comes back through a read the host keeps outstanding. The handle is opened for overlapped
   requests: one that is not serializes them, and the outstanding read would hold every report
   behind it.
+- **Three requests** (*built 2026-10-22*): the version, which the host asks first and refuses
+  another's; the create, naming the kind and its slot -- a guest's for the keyboard and the mouse,
+  a guest's pad's for the pads -- with up to four feature reports of up to 64 bytes beside the
+  kind's own; and the read of what the system wrote, kept outstanding. Each is a fixed sequence of
+  little-endian words with its own length first, parsed field by field and never cast.
+  **Every write is checked before the system sees it**: an input report the kind declares,
+  whole, never the keyboard page's power key and never a button on the mouse's absolute
+  collection. At most 96 devices: every seated guest's keyboard and mouse and four pads each.
 - **The handle's end removes its device**, a killed host's included, **after the driver submits
   the device's neutral report** -- no key down, no button, the sticks centred -- so a host that
   dies leaves nothing held. Nothing keeps a device alive by traffic, as nothing keeps a monitor
@@ -492,7 +501,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   their HID interface alone.
 - **Identities**: each device's instance is stable per kind and slot, so the system sets a slot's
   device up once rather than at every connection; the keyboard and the mouse carry an identity of
-  the project's own, never a real vendor's.
+  the project's own, never a real vendor's. *Built 2026-10-22:* in development the open-source
+  projects' shared vendor and two of its test products, `1209:0001` and `1209:0002`, an
+  identity assigned to the project before a release; the instance names the kind and the slot,
+  and each kind and slot has a container of its own. The mouse answers its multipliers' feature
+  report itself and keeps what the system sets there.
 
 ### §2.4 Lifetimes
 
@@ -511,7 +524,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
 ## §3 Verification status
 
 **The input device is planned** (W4, 2026-10-22): nothing of it is built, and W4.0's checks and
-measurements are its first.
+measurements are its first. *Built 2026-10-22* (W4.0): the driver, its setup information and its
+package, signed with the test certificate, and the host's side of its interface. Run so far,
+needing no installed driver: each kind's descriptor read against the code that writes its reports
+and against its neutral report, the requests read and refused, each such check broken once. Owed:
+the install by its script, the checks on the machine and W4.0's measurements.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

@@ -2186,6 +2186,12 @@ are through. The decisions are recorded once, here; the design they add up to is
   under load; the script's install, update and removal each with no reboot, the update and
   removal with a pad held open by a program; `lowlatd install` and `uninstall` leaving the driver
   as they found it. Each kind's neutral report checked against its descriptor.
+  *Built 2026-10-22, unticked:* the two crates, the declarations, the setup information and the
+  package, test-signed and valid; both drivers' install scripts on nefcon, an open-source device
+  tool shipped beside them with its licence, since the system's own tool cannot make a root
+  device; the host's side of the interface and its checks on the machine, ignored until the
+  driver is installed. Run: every check needing no installed driver, each broken once. Owed: the
+  install, the checks on the machine and the measurements above.
 - [ ] **W4.1 the keyboard and the switch**: the input configuration with `virtual_input` and its
   two calls in its minor, the Windows-only fields declared on Windows alone in the same minor,
   `lowlatd`'s flag; a guest's HID keyboard while the switch is on, the chord's rule, the batch
