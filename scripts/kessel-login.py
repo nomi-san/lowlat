@@ -11,11 +11,15 @@ daemon does on its own; a machine that has been off for a week logs in again.
     lowlat-login                      # print what to put in lowlatd.env
     sudo lowlat-login --install       # write it there and restart lowlatd
     sudo lowlat-login --logout        # revoke the session lowlatd.env carries
+    lowlat-login --file PATH          # write it into PATH, restarting nothing
+    lowlat-login --logout --file PATH # revoke the session PATH carries
 
 Installed as lowlat-login on Linux; scripts/kessel-login.py in a checkout, and
 copied as lowlat-login.py beside lowlatd.exe on Windows. There the file is
 %ProgramData%\lowlat\lowlatd.env, --install and --logout need an elevated
-shell, and the service is restarted through the service manager.
+shell, and the service is restarted through the service manager. --file is
+for a host started by hand, as the portable folder's start-host.ps1 does: the
+file is made when absent and nobody else is asked for privilege.
 
 The API host comes from KESSEL_API_SERVER when set. Standard library only.
 """
@@ -117,19 +121,21 @@ def account_name(token):
     return ""
 
 
-def read_env():
-    path = env_file()
+def read_env(path, missing_ok=False):
     try:
         with open(path) as handle:
             return handle.read()
+    except FileNotFoundError:
+        if missing_ok:
+            return ""
+        sys.exit("kessel-login: %s does not exist (lowlatd install writes it)" % path)
     except OSError as error:
         sys.exit("kessel-login: cannot read %s: %s (lowlatd install writes it)" % (path, error))
 
 
-def install(token):
+def write_session(path, token, missing_ok=False):
     """Put the token on the KESSEL_SESSION line, keeping everything else."""
-    path = env_file()
-    lines = read_env().splitlines()
+    lines = read_env(path, missing_ok).splitlines()
     replaced = False
     for at, line in enumerate(lines):
         if line.startswith("KESSEL_SESSION="):
@@ -140,11 +146,10 @@ def install(token):
     # In place, so the file keeps the owner and the access install gave it.
     with open(path, "w", newline="\n") as handle:
         handle.write("\n".join(lines) + "\n")
-    restart_service()
 
 
-def installed_token():
-    for line in read_env().splitlines():
+def installed_token(path):
+    for line in read_env(path).splitlines():
         if line.startswith("KESSEL_SESSION="):
             return line[len("KESSEL_SESSION="):].strip()
     return ""
@@ -206,25 +211,37 @@ def restart_service():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument(
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument(
         "--install",
         action="store_true",
         help="write the session into %s and restart %s" % (env_file(), UNIT),
     )
-    parser.add_argument("--logout", action="store_true", help="revoke the session %s carries" % env_file())
+    destination.add_argument(
+        "--file",
+        metavar="PATH",
+        help="write the session into PATH, made when absent, and restart nothing",
+    )
+    parser.add_argument(
+        "--logout",
+        action="store_true",
+        help="revoke the session %s carries, or the one --file names" % env_file(),
+    )
     args = parser.parse_args()
+    path = args.file or env_file()
 
     if args.logout:
-        need_privilege("--logout")
-        token = installed_token()
+        if not args.file:
+            need_privilege("--logout")
+        token = installed_token(path)
         if not token:
-            sys.exit("kessel-login: %s carries no session" % env_file())
+            sys.exit("kessel-login: %s carries no session" % path)
         status, answer = call("DELETE", "/auth/sessions", token=token)
         if status != 204:
             sys.exit("kessel-login: revoke refused, status=%d %s" % (status, reason(answer)))
         print(
             "kessel-login: session revoked; %s still carries it, log in again before starting %s"
-            % (env_file(), UNIT)
+            % (path, UNIT)
         )
         return
 
@@ -236,8 +253,12 @@ def main():
     name = account_name(token)
     print("kessel-login: logged in as %s, host peer %s" % (name or "?", session.get("host_peer_id", "?")))
     if args.install:
-        install(token)
-        print("kessel-login: written to %s, %s restarted" % (env_file(), UNIT))
+        write_session(path, token)
+        restart_service()
+        print("kessel-login: written to %s, %s restarted" % (path, UNIT))
+    elif args.file:
+        write_session(path, token, missing_ok=True)
+        print("kessel-login: written to %s" % path)
     else:
         print("KESSEL_SESSION=" + token)
 

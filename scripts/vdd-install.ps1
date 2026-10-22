@@ -1,15 +1,29 @@
 # Install the packaged display driver (target/vdd-package, scripts/package-vdd.sh)
 # and its device, or remove both with -Remove. Run from an elevated shell. The
 # device is made once; installing again updates the driver of the one there.
+#
+# In the portable folder (scripts/stage-windows.ps1 -Portable) this is
+# install-driver.ps1, and the package, devcon and the certificate the package
+# is signed with are in driver\ beside it. That machine has never seen the
+# certificate, so it is trusted first, and -Remove takes the trust back.
 
 param([switch]$Remove)
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
-$kit = (& python.exe (Join-Path $root 'scripts\fetch-wdk.py')).Trim()
-$devcon = Join-Path $kit 'c\tools\10.0.26100.0\x64\devcon.exe'
+$package = Join-Path $PSScriptRoot 'driver'
+if (Test-Path (Join-Path $package 'devcon.exe')) {
+    $devcon = Join-Path $package 'devcon.exe'
+    $certificate = Join-Path $package 'lowlat-idd.cer'
+} else {
+    $root = Split-Path -Parent $PSScriptRoot
+    $kit = (& python.exe (Join-Path $root 'scripts\fetch-wdk.py')).Trim()
+    $devcon = Join-Path $kit 'c\tools\10.0.26100.0\x64\devcon.exe'
+    $package = Join-Path $root 'target\vdd-package'
+    $certificate = $null
+}
 $hwid = 'Root\lowlat-vdd'
-$inf = Join-Path $root 'target\vdd-package\lowlat-idd.inf'
+$inf = Join-Path $package 'lowlat-idd.inf'
+$stores = @('Root', 'TrustedPublisher')
 
 function Present {
     $found = & $devcon find $hwid
@@ -27,10 +41,24 @@ if ($Remove) {
             pnputil /delete-driver $Matches[1] /uninstall /force
         }
     }
+    if ($certificate) {
+        $thumbprint = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $certificate).Thumbprint
+        foreach ($store in $stores) {
+            Remove-Item "Cert:\LocalMachine\$store\$thumbprint" -ErrorAction SilentlyContinue
+        }
+    }
     return
 }
 
 if (-not (Test-Path $inf)) { throw "no package at $inf; run scripts/package-vdd.sh first" }
+
+# A root, so the catalogue's signature chains; a trusted publisher, so the
+# install goes on without asking (docs/11-drivers.md section 1).
+if ($certificate) {
+    foreach ($store in $stores) {
+        Import-Certificate -FilePath $certificate -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
+    }
+}
 
 # The folder kept monitors come back from (docs/11-drivers.md section 1.4): the
 # system account and administrators in full, users to write -- so an
