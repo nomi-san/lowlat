@@ -42,11 +42,9 @@ lowlat-vdd-ctl.workspace = true
 # The device id the advertisement carries: the workspace's one entropy
 # source, so the id is drawn rather than derived from the machine.
 lowlat-crypto.workspace = true
-# The service manager, the token and process calls, the job, the registry, the
-# file security and the driver setup: the system's own declarations, as the
-# IO shell uses them.
+# The service manager, the token and process calls, the job, the registry and
+# the file security: the system's own declarations, as the IO shell uses them.
 windows-sys = { version = "0.61", features = [
-    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

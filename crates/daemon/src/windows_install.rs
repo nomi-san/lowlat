@@ -1,5 +1,7 @@
-//! `lowlatd install` and `lowlatd uninstall`: the service's registration, the
-//! programs' place and access, and the display driver's package.
+//! `lowlatd install` and `lowlatd uninstall`: the service's registration and
+//! the programs' place and access. **No driver is the service's to install**:
+//! each of the host's drivers is installed and removed by its own script, run
+//! by the machine's administrator (docs/07-platforms.md section 10).
 //!
 //! **A program the system account runs is writable by administrators alone**,
 //! so the programs live under the program-files directory and never in the
@@ -10,17 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    DICD_GENERATE_ID, DIF_REGISTERDEVICE, DIF_REMOVE, DIGCF_PRESENT, INSTALLFLAG_FORCE,
-    INSTALLFLAG_NONINTERACTIVE, SP_DEVINFO_DATA, SPDRP_HARDWAREID, SUOI_FORCEDELETE,
-    SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW,
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceRegistryPropertyW, SetupDiSetDeviceRegistryPropertyW, SetupUninstallOEMInfW,
-    UpdateDriverForPlugAndPlayDevicesW,
-};
 use windows_sys::Win32::Foundation::{
-    ERROR_NO_SUCH_DEVINST, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
-    ERROR_SERVICE_EXISTS, ERROR_SERVICE_NOT_ACTIVE, ERROR_SUCCESS, GetLastError, LocalFree,
+    ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_EXISTS,
+    ERROR_SERVICE_NOT_ACTIVE, ERROR_SUCCESS, GetLastError, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -42,21 +36,8 @@ use windows_sys::Win32::System::Services::{
     SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_STATUS, SERVICE_STOP,
     SERVICE_STOPPED, SERVICE_WIN32_OWN_PROCESS, StartServiceW,
 };
-use windows_sys::core::GUID;
 
 use crate::windows_service::{DISPLAY_NAME, SERVICE_NAME};
-
-/// The driver's device and package names, and the class whose installer
-/// handles them (display adapters).
-const HARDWARE_ID: &str = "Root\\lowlat-vdd";
-const DEVICE_NAME: &str = "LowlatVdd";
-const DEVICE_DESCRIPTION: &str = "Lowlat Virtual Display";
-const DISPLAY_CLASS: GUID = GUID {
-    data1: 0x4D36_E968,
-    data2: 0xE325,
-    data3: 0x11CE,
-    data4: [0xBF, 0xC1, 0x08, 0x00, 0x2B, 0xE1, 0x03, 0x18],
-};
 
 /// The configuration written when the file is absent and no template was
 /// staged beside the programs.
@@ -235,132 +216,6 @@ fn protect(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    Ok(())
-}
-
-/// Install or update the display driver from the package beside the program.
-///
-/// `UpdateDriverForPlugAndPlayDevicesW` updates an existing device. Only when
-/// no device matches the hardware id is the root device made -- any other
-/// failure would otherwise add another device on every install -- and a device
-/// made here whose driver then fails is removed again, so a failed install
-/// leaves no device without a driver. **Never interactive**: a package the
-/// machine does not trust fails here rather than asking at the desk.
-fn install_driver(package: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let inf = package.join("lowlat-idd.inf");
-    let inf_w = wide(&inf.to_string_lossy());
-    let hardware = wide(HARDWARE_ID);
-    let flags = INSTALLFLAG_FORCE | INSTALLFLAG_NONINTERACTIVE;
-    let mut reboot = 0;
-    // SAFETY: terminated strings and a live output flag.
-    let first = unsafe {
-        UpdateDriverForPlugAndPlayDevicesW(
-            std::ptr::null_mut(),
-            hardware.as_ptr(),
-            inf_w.as_ptr(),
-            flags,
-            &raw mut reboot,
-        )
-    };
-    if first != 0 {
-        lowlat_common::log_info!(
-            "lowlatd: driver updated, inf={} reboot={reboot}",
-            inf.display()
-        );
-        return Ok(());
-    }
-    let error = unsafe { GetLastError() };
-    if error != ERROR_NO_SUCH_DEVINST {
-        return Err(format!("the driver was not updated, error={error:#x}").into());
-    }
-
-    // SAFETY: the class is a plain value; no parent window.
-    let list = unsafe { SetupDiCreateDeviceInfoList(&DISPLAY_CLASS, std::ptr::null_mut()) };
-    if list == -1 {
-        return Err(format!("the device list was not made, error={}", unsafe {
-            GetLastError()
-        })
-        .into());
-    }
-    let name = wide(DEVICE_NAME);
-    let description = wide(DEVICE_DESCRIPTION);
-    let mut data: SP_DEVINFO_DATA = unsafe { core::mem::zeroed() };
-    data.cbSize = u32::try_from(core::mem::size_of::<SP_DEVINFO_DATA>()).unwrap_or(0);
-    // **The name is a root device id the system numbers**
-    // (`ROOT\LOWLATVDD\0000`): without the flag the call takes a whole
-    // instance path only, and a bare name is refused.
-    // SAFETY: every pointer lives for the call and the list is open.
-    let created = unsafe {
-        SetupDiCreateDeviceInfoW(
-            list,
-            name.as_ptr(),
-            &DISPLAY_CLASS,
-            description.as_ptr(),
-            std::ptr::null_mut(),
-            DICD_GENERATE_ID,
-            &raw mut data,
-        )
-    };
-    if created == 0 {
-        let error = unsafe { GetLastError() };
-        // SAFETY: the list is owned here.
-        unsafe { SetupDiDestroyDeviceInfoList(list) };
-        return Err(format!("the root device was not made, error={error:#x}").into());
-    }
-    // The hardware id travels as a REG_MULTI_SZ: the string, its terminator,
-    // and the list's own.
-    let mut multi: Vec<u16> = HARDWARE_ID.encode_utf16().collect();
-    multi.push(0);
-    multi.push(0);
-    // SAFETY: the list and the device are open, and the buffer lives.
-    let set = unsafe {
-        SetupDiSetDeviceRegistryPropertyW(
-            list,
-            &raw mut data,
-            SPDRP_HARDWAREID,
-            multi.as_ptr().cast(),
-            u32::try_from(core::mem::size_of_val(multi.as_slice())).unwrap_or(0),
-        )
-    };
-    // SAFETY: as above.
-    let registered = set != 0
-        && unsafe { SetupDiCallClassInstaller(DIF_REGISTERDEVICE, list, &raw const data) } != 0;
-    if !registered {
-        let error = unsafe { GetLastError() };
-        // SAFETY: the list is owned here; an element never registered goes
-        // with it.
-        unsafe { SetupDiDestroyDeviceInfoList(list) };
-        return Err(format!("the root device was not registered, error={error:#x}").into());
-    }
-
-    // SAFETY: terminated strings and a live output flag.
-    let second = unsafe {
-        UpdateDriverForPlugAndPlayDevicesW(
-            std::ptr::null_mut(),
-            hardware.as_ptr(),
-            inf_w.as_ptr(),
-            flags,
-            &raw mut reboot,
-        )
-    };
-    if second == 0 {
-        let error = unsafe { GetLastError() };
-        // SAFETY: the device was registered from this open list above.
-        unsafe {
-            SetupDiCallClassInstaller(DIF_REMOVE, list, &raw const data);
-            SetupDiDestroyDeviceInfoList(list);
-        }
-        return Err(format!(
-            "the driver was not installed and the device was removed again, error={error:#x}"
-        )
-        .into());
-    }
-    // SAFETY: the list is owned here and closed once.
-    unsafe { SetupDiDestroyDeviceInfoList(list) };
-    lowlat_common::log_info!(
-        "lowlatd: driver installed, inf={} reboot={reboot}",
-        inf.display()
-    );
     Ok(())
 }
 
@@ -663,22 +518,6 @@ pub(crate) fn install() -> Result<(), Box<dyn std::error::Error>> {
             lowlat_common::log_info!("lowlatd: copied {}", to.display());
         }
     }
-    // The driver's package travels beside the program, in its own folder.
-    let staged_driver = source.join("driver");
-    let driver = target.join("driver");
-    if staged_driver.exists() && !same_path(&staged_driver, &driver) {
-        std::fs::create_dir_all(&driver)?;
-        for entry in std::fs::read_dir(&staged_driver)? {
-            let entry = entry?;
-            let from = entry.path();
-            if from.is_file() {
-                let to = driver.join(entry.file_name());
-                copy_file(&from, &to)?;
-                lowlat_common::log_info!("lowlatd: copied {}", to.display());
-            }
-        }
-    }
-
     // The configuration's folder is made before its file, and both get the
     // explicit list; the file is written only when absent, so an install over
     // one keeps what the login wrote.
@@ -693,22 +532,6 @@ pub(crate) fn install() -> Result<(), Box<dyn std::error::Error>> {
         lowlat_common::log_info!("lowlatd: wrote {}", environment.display());
     }
     protect(&environment)?;
-
-    // **A driver that cannot be installed does not fail the install**: the
-    // service still serves a lit monitor, and a machine that had the driver
-    // keeps the one it had.
-    let driver = target.join("driver");
-    if driver.join("lowlat-idd.inf").exists() {
-        if let Err(error) = install_driver(&driver) {
-            lowlat_common::log_warn!(
-                "lowlatd: display driver not installed, going on without it: {error}"
-            );
-        }
-    } else {
-        lowlat_common::log_info!(
-            "lowlatd: no driver package beside the program; a machine with a display needs none"
-        );
-    }
 
     register_service(&installed)?;
     if !vigem_installed() {
@@ -777,101 +600,11 @@ fn remove_service() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Remove the display device and every package whose setup information names
-/// its hardware id.
-fn remove_driver() -> Result<(), Box<dyn std::error::Error>> {
-    // SAFETY: the display class, no enumerator, present devices only.
-    let list = unsafe {
-        SetupDiGetClassDevsW(
-            &DISPLAY_CLASS,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            DIGCF_PRESENT,
-        )
-    };
-    if list != -1 {
-        let mut index = 0;
-        loop {
-            let mut data: SP_DEVINFO_DATA = unsafe { core::mem::zeroed() };
-            data.cbSize = u32::try_from(core::mem::size_of::<SP_DEVINFO_DATA>()).unwrap_or(0);
-            // SAFETY: an open list and a live structure.
-            if unsafe { SetupDiEnumDeviceInfo(list, index, &raw mut data) } == 0 {
-                break;
-            }
-            index += 1;
-            let mut kind = 0u32;
-            let mut buffer = [0u8; 512];
-            let mut needed = 0u32;
-            // SAFETY: an open list, a live structure and a bounded buffer.
-            let read = unsafe {
-                SetupDiGetDeviceRegistryPropertyW(
-                    list,
-                    &raw const data,
-                    SPDRP_HARDWAREID,
-                    &raw mut kind,
-                    buffer.as_mut_ptr(),
-                    u32::try_from(buffer.len()).unwrap_or(0),
-                    &raw mut needed,
-                )
-            };
-            if read == 0 {
-                continue;
-            }
-            let wide_id: Vec<u16> = HARDWARE_ID.encode_utf16().collect();
-            let bytes = wide_id.len() * 2;
-            let id = buffer.get(..bytes).unwrap_or(&[]);
-            let matches = id
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .eq(HARDWARE_ID.encode_utf16());
-            if matches {
-                // SAFETY: the list and the device are open.
-                unsafe { SetupDiCallClassInstaller(DIF_REMOVE, list, &raw const data) };
-            }
-        }
-        // SAFETY: the list is owned here.
-        unsafe { SetupDiDestroyDeviceInfoList(list) };
-    }
-
-    // The published name is `oemNN.inf`, so the store is searched by content:
-    // the copy keeps the hardware id its original had.
-    let inf_dir = directory("SystemRoot")
-        .map(|root| root.join("Inf"))
-        .unwrap_or_else(|_| PathBuf::from(r"C:\Windows\Inf"));
-    if let Ok(entries) = std::fs::read_dir(&inf_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if !name.starts_with("oem") || !name.ends_with(".inf") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if !text.contains(HARDWARE_ID) {
-                continue;
-            }
-            let published = wide(name);
-            // SAFETY: a file name inside the driver store; the system removes
-            // it and reports failure itself.
-            unsafe {
-                SetupUninstallOEMInfW(published.as_ptr(), SUOI_FORCEDELETE, std::ptr::null());
-            }
-            lowlat_common::log_info!("lowlatd: driver package removed, name={name}");
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
     if !elevated() {
         return Err("uninstall needs an elevated shell (Run as administrator)".into());
     }
     remove_service()?;
-    remove_driver()?;
     let target = program_files()?;
     if target.exists() {
         match std::fs::remove_dir_all(&target) {
