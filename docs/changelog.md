@@ -3,6 +3,30 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-22 - W4 reviewed: the mouse's buttons on one collection, a neutral report per kind
+
+### Decided
+- **Every button and wheel of the host's HID mouse rides its relative collection, and the
+  absolute one carries positions alone** ([impl-plan-windows.md](impl-plan-windows.md) W4,
+  [11 §2.3](11-drivers.md)). Each collection is a pointer of its own to the system, with its own
+  buttons, so a release sent on the other would leave a button held, and a report of the absolute
+  collection carries a position, so a button sent on it after relative motion moves the pointer
+  back. As planned, buttons went with the pointer that moved last, which a client turning its
+  pointer relative in the middle of a drag would have met with a button held or the pointer
+  thrown back; with every button on one collection the drag goes on. Measured at W4.0 before the
+  pointer is built: whether the system keeps a move on one collection before the click that
+  follows on the other.
+- **A neutral report per kind** ([11 §2.2](11-drivers.md)): a pad's d-pad is a hat whose released
+  value lies outside its range, so a report of zeroes would hold it up and pull both sticks into a
+  corner; the mouse's moves nothing.
+- **The host lets the input driver go when the system asks for its device**, as the display's
+  controller does, so an update or a removal waits on nothing of the host's; `lowlatd`'s flag with
+  no driver says so once and keeps the batch input call.
+- **W4.0 measures as well** how many reports the framework keeps for a device nothing reads yet and
+  which it lets go when full, since a key's release must reach the system whoever keeps them; the
+  mouse's two collections; and the driver's script installing, updating and removing it with no
+  reboot.
+
 ## 2026-10-22 - A portable Windows host folder
 
 ### Added

@@ -453,7 +453,12 @@ then, since a HID pad never reaches the system's Xbox pad interface.
 - **The handle's end removes its device**, a killed host's included, **after the driver submits
   the device's neutral report** -- no key down, no button, the sticks centred -- so a host that
   dies leaves nothing held. Nothing keeps a device alive by traffic, as nothing keeps a monitor
-  alive (§1.3).
+  alive (§1.3). *Amended 2026-10-22, at W4's review:* **each kind's neutral report is its own**,
+  defined beside its descriptor and checked against it: a pad's d-pad is a hat whose released
+  value lies outside its range, so a report of zeroes would hold it up and pull both sticks into a
+  corner, and the mouse's moves nothing. The host closes its handles when the system asks for the
+  device, as the display's controller does (§1.8), so an update or a removal of the driver waits
+  on nothing of the host's.
 
 ### §2.3 The devices
 
@@ -466,10 +471,17 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   chord** ([05 §7.3](05-host.md)).
 - **The mouse**: a relative collection -- sixteen-bit deltas, five buttons, the wheel and the
   horizontal wheel through a resolution multiplier, so the peer's own units pass whole -- and an
-  absolute one. **Buttons and wheels ride the report of the pointer that moved last**: a report
-  of the absolute collection carries a position, so a button sent on it after relative motion
-  would move the pointer back to where the absolute one last was. Where the absolute range lands
-  with more than one display is measured at W4.0.
+  absolute one. **Every button and wheel rides the relative collection, and the absolute one
+  carries positions alone** (*amended 2026-10-22*; it was the report of the pointer that moved
+  last), its buttons declared and never pressed. Each collection is a pointer of its own to the
+  system, with its own buttons: a release sent on the other would leave the button held there,
+  and a report of the absolute collection carries a position, so a button sent on it after
+  relative motion would move the pointer back to where the absolute one last was. With every
+  button on one collection neither can happen, and a drag held while the client turns its pointer
+  relative goes on. It rests on the system keeping a move on one collection before the click that
+  follows on the other, measured at W4.0; where it does not, a button rides the absolute report at
+  the pointer's place read back. Where the absolute range lands with more than one display is
+  measured at W4.0.
 - **The DualShock 4 and the DualSense**: the real products' descriptors and identities, as the
   Linux host presents them ([07 §4.2](07-platforms.md)). The driver answers a feature read from
   the pad's table -- the peer's calibration and firmware, else a real pad's, and a pairing report

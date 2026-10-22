@@ -2063,7 +2063,12 @@ are through. The decisions are recorded once, here; the design they add up to is
   a handle, opened for overlapped requests: a handle that is not serializes them, and an
   outstanding read then holds every report behind it. **The handle's end removes the device, a
   killed host's included, and the driver first submits the device's neutral report** -- no key,
-  no button, the sticks centred -- so a host that dies leaves nothing held. Nothing keeps a device
+  no button, the sticks centred -- so a host that dies leaves nothing held. *Amended 2026-10-22, at
+  W4's review:* **the neutral report is each kind's own**, defined beside its descriptor and
+  checked against it: a pad's d-pad is a hat whose released value lies outside its range, so a
+  report of zeroes holds it up and pulls both sticks into a corner; the mouse's moves nothing. The
+  host closes its handles when the system asks for the device, as the display's controller does,
+  so the driver's update or removal never waits for a reboot on the host. Nothing keeps a device
   alive by traffic. A device's instance is stable per kind and slot, so the system sets a slot's
   device up once rather than at every connection. The pads carry the real products' identities,
   as on Linux; the keyboard and the mouse carry an identity of the project's own, never a real
@@ -2089,7 +2094,8 @@ are through. The decisions are recorded once, here; the design they add up to is
   each seated guest on its next pass, that guest's input held until they deliver, and removed when
   it goes off. **A switch either way first releases everything held on the old path**, as a
   permission taken away does, so a key held across it comes up rather than staying down.
-  `lowlatd` takes it at start, by a flag.
+  `lowlatd` takes it at start, by a flag; with no driver installed it says so once and keeps the
+  batch input call, its start not failed (*amended 2026-10-22*).
 - **The keyboard** is a bitmap of the keyboard page with its modifiers, so no number of keys held
   at once is too many, and a consumer collection for mute, volume and the media keys, where the
   codes peers send for them on the keyboard page and above it land. **No system control
@@ -2098,11 +2104,18 @@ are through. The decisions are recorded once, here; the design they add up to is
   where it differs, as in W2.
 - **The mouse** is a relative collection -- sixteen-bit deltas, a larger one split, five
   buttons, the wheel and the horizontal wheel in the peer's own units through a resolution
-  multiplier -- and an absolute one. **Buttons and wheels ride the report of the pointer that
-  moved last**: one sent on the absolute report moves the pointer to that report's position,
-  which after relative motion is somewhere else. Where the absolute range lands with more than one
-  display is measured before the pointer is built (W4.0), and an output it cannot reach is decided
-  then.
+  multiplier -- and an absolute one. ~~Buttons and wheels ride the report of the pointer that
+  moved last~~ *Amended 2026-10-22, at W4's review (the maintainer's decision):* **every button
+  and wheel rides the relative collection, and the absolute one carries positions alone** -- its
+  buttons declared and never pressed. Each collection is a pointer of its own to the system, with
+  its own buttons: a release sent on the other leaves the button held there, and a report of the
+  absolute collection carries a position, so a button sent on it after relative motion moves the
+  pointer back to where the absolute one last was. With every button on one collection neither
+  happens, and a drag held while the client turns its pointer relative goes on. It rests on the
+  system keeping a move on one collection before the click that follows it on the other, measured
+  at W4.0; where it does not, a button rides the absolute report at the pointer's place read back.
+  Where the absolute range lands with more than one display is measured before the pointer is
+  built (W4.0), and an output it cannot reach is decided then.
 - **The attention chord is never typed on the HID keyboard.** A hardware keyboard's
   Ctrl+Alt+Del raises the secure screen, which the same keys through the batch input call never
   do ([05 §7.3](05-host.md)), so on this keyboard a guest's ordinary key messages would raise it,
@@ -2164,7 +2177,15 @@ are through. The decisions are recorded once, here; the design they add up to is
   consumer collection and the keys whose form changes; the wheel's multiplier; a report to its
   arrival in raw input against the batch input call, at p50, p95 and p99, idle and under one busy
   loop per logical processor, at 125 and 1000 reports a second, with the driver host's processor
-  time and its priority.
+  time and its priority. *Amended 2026-10-22, at W4's review:* measured as well, how many reports
+  the framework keeps for a device nothing reads yet and which it lets go when full, since the
+  last report of a state -- a key's release -- must reach the system whoever keeps them, the
+  driver keeping its own where the framework would drop it; whether a button pressed on one of the
+  mouse's collections and released on the other stays held, and whether a click on the relative
+  collection lands where a move on the absolute one just put the pointer, over many pairs idle and
+  under load; the script's install, update and removal each with no reboot, the update and
+  removal with a pad held open by a program; `lowlatd install` and `uninstall` leaving the driver
+  as they found it. Each kind's neutral report checked against its descriptor.
 - [ ] **W4.1 the keyboard and the switch**: the input configuration with `virtual_input` and its
   two calls in its minor, the Windows-only fields declared on Windows alone in the same minor,
   `lowlatd`'s flag; a guest's HID keyboard while the switch is on, the chord's rule, the batch
@@ -2175,11 +2196,15 @@ are through. The decisions are recorded once, here; the design they add up to is
   the power, sleep and wake keys never reaching the system; the switch moved both ways mid-session
   with a key held, the key coming up; switched on with no driver, refused.
 - [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
-  multiplier, the last-moved rule -- and absolute positions as W4.0's measurement settles them.
+  multiplier, every button and wheel on the relative collection (*amended 2026-10-22*; as W4.0's
+  measurement of the two collections settles it) -- and absolute positions as W4.0's measurement
+  settles them.
   Checked by W2.3's sweep through the guest's own devices landing every position on its pixel at
   100 and 125 percent; relative motion in raw input naming a device; the wheels in the peer's
   units, a trackpad's fine scroll included; a machine with no mouse showing its pointer while a
-  guest is seated; absolute motion turned into deltas while an application holds the pointer.
+  guest is seated; absolute motion turned into deltas while an application holds the pointer; a
+  button held while the client turns its pointer relative and back, nothing left held, no click
+  lost and the drag not ended.
 - [ ] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
   in its minor; the DualShock 4 and the DualSense on the driver, the feature table filled from the
   peer, what is written to a pad sent back to the peer; the answers a Linux pad gives moved to
@@ -2196,7 +2221,8 @@ library's demo:
 
 - through the HID keyboard, every key class, typing on the lock screen and into an elevation
   prompt, the chord's keys raising nothing and the attention chord asked for still the service's;
-- through the HID mouse, the sweep, relative aim and both wheels;
+- through the HID mouse, the sweep, relative aim and both wheels, and a drag held across the
+  client turning its pointer relative;
 - for both, raw input naming a device and no injected flag;
 - the switch moved both ways mid-session with keys and buttons held, nothing left held;
 - both pads as their products with everything back, the setting off giving the Xbox pad, and the
@@ -2209,6 +2235,11 @@ library's demo:
 
 ## Change log
 
+- 2026-10-22: W4 reviewed: the mouse's buttons and wheels on its relative collection alone, the
+  absolute one carrying positions (the maintainer's decision); a neutral report per kind; the
+  host letting the driver go when the system asks; `lowlatd`'s flag with no driver; W4.0's
+  measurements of the framework's own buffer, the two collections and the script; W4.2's checks
+  and the gate amended ([11 §2](11-drivers.md) amended).
 - 2026-10-22: the service installs no driver (the maintainer's decision, at W4's review): each of
   the host's drivers is installed, updated and removed by a script of its own, which the
   machine's administrator runs, and what needs one -- the host's own display and its fields, W4's
