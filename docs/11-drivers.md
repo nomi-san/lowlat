@@ -21,7 +21,9 @@ system's user-mode driver host loads, the system's own kernel components beneath
 this project's in the kernel. The display's C interface is the library's third half
 ([06](06-api.md)), and the input device has none, the host being its one user; the host's side of
 the display is [05 §2](05-host.md), of the input device [05 §7](05-host.md); installing and
-signing them is [07 §10](07-platforms.md).
+signing them is [07 §10](07-platforms.md). *Amended 2026-10-22:* **each is installed, updated and
+removed by a script of its own, which the machine's administrator runs**, never by the host or its
+service, and whatever the host does on a driver needs it installed first.
 
 ## §1 The display
 
@@ -128,9 +130,9 @@ controller asks; it never writes it** -- a user-mode driver has no right to -- a
 controller writes it, under a lock any user's controller takes, replacing it whole. **Any user
 may write it, so the driver reads it as hostile**: every line bounded, a line it cannot read
 skipped and counted, a word it does not know skipped quietly so an older driver reads a newer
-file, nothing in it able to stop the driver starting. The folder, made by the installer, lets
-users change it, so an unelevated program keeps a display, and lets the driver's own account
-read it; the host's configuration beside it stays readable by the system account and
+file, nothing in it able to stop the driver starting. The folder, made by the driver's install
+script, lets users change it, so an unelevated program keeps a display, and lets the driver's
+own account read it; the host's configuration beside it stays readable by the system account and
 administrators alone ([07 §10](07-platforms.md)). The GPU is named by vendor and device, since
 an adapter's identifier changes across boots (§1.7).
 
@@ -425,6 +427,10 @@ then, since a HID pad never reaches the system's Xbox pad interface.
 - Whether it runs in a host process of its own or in the pool the system keeps for HID drivers
   at a raised priority is measured (W4.0): the write it takes is on the path of every input.
 - Its log goes to the debugger stream, as the display's does.
+- Installed, updated and removed by a script of its own, which the machine's administrator runs,
+  as the display's driver is (*amended 2026-10-22*); nothing of the host installs it, and the
+  host only opens it, refusing `virtual_input` and giving the Xbox pad where it is absent
+  ([07 §10](07-platforms.md)).
 
 ### §2.2 The control interface, and who may open it
 

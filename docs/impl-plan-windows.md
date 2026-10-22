@@ -22,7 +22,9 @@ live; W3's gate is next, its legs amended at it. *Amended 2026-10-21:* W3.12 -- 
 from its driver paced on the period it is handed pictures at -- added after W3.11's live check
 showed each picture a composition old, decided, built and checked live; W3's gate is next.
 *Amended 2026-10-22:* W4 -- the host's own input device -- added and planned at its interview; it
-is built once W2's and W3's gates are through.
+is built once W2's and W3's gates are through. *Amended 2026-10-22, at W4's review:* the service
+installs no driver -- each of the host's drivers is installed by a script of its own -- and what
+needs a driver needs it installed.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -699,7 +701,13 @@ once, here.
   host's configuration; an existing configuration is kept, its owner and access reset. **The
   display driver is installed and removed with the service** ([07 §10](07-platforms.md)), from
   beside the program; with none there it is said and skipped, since a machine with a monitor
-  needs none. **One log**: the host's output and the service's own lines, each start stamped in
+  needs none. *Amended 2026-10-22, at W4's review (the maintainer's decision):* **the service
+  installs no driver.** Each of the host's drivers is installed, updated and removed by a script of
+  its own, which the machine's administrator runs, and `lowlatd install` and `uninstall` place and
+  remove the programs alone. Whatever needs a driver -- the host's own display and its fields,
+  W4's input devices -- needs it installed first, and without it is refused or waits, said once
+  ([07 §10](07-platforms.md)).
+  **One log**: the host's output and the service's own lines, each start stamped in
   UTC, with one earlier file kept past 16 MB. **What a guest is told when its host ends at a
   change of session is decided by measurement at the build**: a host ended with its session, as
   at a logoff, can say nothing; where the old host lives on -- a user switch, a remote connection,
@@ -2010,8 +2018,9 @@ on the LAN and one on a Windows machine:
   desktop watched, the switch made by a person -- since nothing in the stream marks a new
   desktop's first picture: the duplication's loss and its making again are logged, and the direct
   frame loses nothing at a switch;
-- the test-signed package installing silently with no test mode; CI building the driver; both
-  CI jobs and the Linux bar.
+- the test-signed package installing silently with no test mode, by its script (*amended
+  2026-10-22*: the service installs no driver); CI building the driver; both CI jobs and the Linux
+  bar.
 
 ## Phase W4 - The host's input device
 
@@ -2131,18 +2140,21 @@ are through. The decisions are recorded once, here; the design they add up to is
   a meaning on Windows alone, the output `virtual`, stays refused at the call elsewhere. The
   configuration's layout then differs by platform, which the bindings follow
   ([06 §11](06-api.md)); it lands with the input configuration, so they change once.
-- **Signed and installed as the display driver is**: the test certificate in development with no
-  test mode, the signing service for releases from CI's build; `lowlatd install` and `uninstall`
-  add and remove it beside the display driver. The floor is the display driver's, Windows 10
-  1903, unless its setup information needs a later release; the host's own floor stays 1703, on
-  the batch input call.
+- **Signed as the display driver is, and installed as it is, by a script of its own**
+  (*amended 2026-10-22, the maintainer's decision*): the test certificate in development with no
+  test mode, the signing service for releases from CI's build; the machine's administrator runs
+  the script, which installs, updates and removes the driver, and nothing of the host or its
+  service does -- the service installs no driver (W2, amended). The floor is the display
+  driver's, Windows 10 1903, unless its setup information needs a later release; the host's own
+  floor stays 1703, on the batch input call.
 
 ### Steps
 
 - [ ] **W4.0 the driver and its package**: the two crates and the generated declarations; the
   four kinds; a device to a handle and its neutral report at the handle's end; the feature table
-  and the written reports; the setup information, the package and its test signature; install and
-  uninstall through `lowlatd` and a development script; CI building it. Checked by each kind made
+  and the written reports; the setup information, the package and its test signature; the script
+  that installs, updates and removes it, nothing of it in `lowlatd` (*amended 2026-10-22*); CI
+  building it. Checked by each kind made
   by an elevated program arriving as the system's own device -- a keyboard, a mouse, a game
   controller -- a standard user refused, and a handle's end and a killed process each removing
   the device with nothing held. Measured there, before the devices are built on it: a device's
@@ -2192,11 +2204,17 @@ library's demo:
 - the driver removed and the host killed mid-session, nothing left held and no device behind;
 - recorded rather than passed: a report to its arrival in raw input against the batch input call,
   across the switch, at p50, p95 and p99, idle and under load, and a slot's first setup;
-- the test-signed package installing silently with no test mode; CI building the driver; both CI
-  jobs and the Linux bar.
+- the test-signed package installing silently with no test mode, by its script; CI building the
+  driver; both CI jobs and the Linux bar.
 
 ## Change log
 
+- 2026-10-22: the service installs no driver (the maintainer's decision, at W4's review): each of
+  the host's drivers is installed, updated and removed by a script of its own, which the
+  machine's administrator runs, and what needs one -- the host's own display and its fields, W4's
+  input devices -- needs it installed ([06 §3](06-api.md), [07 §10](07-platforms.md) and
+  [11](11-drivers.md) amended). W2's service decision, W3's gate, and W4's install decision, W4.0
+  and its gate amended.
 - 2026-10-22: W4 added and planned at its interview: a HID driver of the host's own for a
   guest's keyboard, mouse and Sony pads, the keyboard and the mouse switched onto it by the
   application, a pad sent as its reports presented as its product where the owner sets it, off by

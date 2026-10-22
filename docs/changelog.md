@@ -3,6 +3,42 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-22 - The service installs no driver: each has a script of its own
+
+### Decided
+- **The service installs no driver** ([impl-plan-windows.md](impl-plan-windows.md) W2's service
+  decision amended, [07 §10](07-platforms.md)): `lowlatd install` and `uninstall` place and
+  remove the programs alone. Each of the host's drivers -- the display's, and from W4 the input
+  device's -- is installed, updated and removed by a script of its own, which the machine's
+  administrator runs.
+- **What needs a driver needs it installed** ([06 §3](06-api.md), [07 §10](07-platforms.md),
+  [11](11-drivers.md)): the host's own display -- the output `virtual`, `virtual_fallback`,
+  `virtual_width`, `virtual_height` and `virtual_hz`, the library's third half, `lowlatd display`
+  and `lowlat-vdd` -- only where the display driver is installed, and `virtual_input` and
+  `virtual_pads` only where the input driver is. Without the display driver nothing is plugged, the
+  reason said once, and a stream asked for `virtual` waits as for a display that is not scanning
+  out; a driver installed meanwhile is taken up with no restart.
+
+### Removed
+- **The display driver's install and removal from `lowlatd install` and `uninstall`**: the
+  package is no longer copied beside the installed programs, the device no longer made or
+  updated, and an uninstall no longer removes the device or the driver store's packages. A machine
+  installed before keeps its driver until the driver's own script removes it.
+
+### Found
+- By the code, not run: the service's install never made the folder the display driver's
+  settings live in, which only the driver's script makes, so on a machine whose driver came from
+  the service's install alone every change of that file -- a monitor kept, the modes, the GPU --
+  would have been refused for want of the folder. Closed by the script being the one install.
+
+### Checked
+- The Windows bar: fmt and clippy clean, tests 1401 passed, none failed; the Linux bar is
+  unchanged by it, the install building for Windows alone. Looked for by name in each program, the
+  device-installation calls the one before it imported are gone from the one built from it, and
+  the service manager's calls are found in both.
+- Owed: `lowlatd install` and `uninstall` on the machine leaving a driver's device and packages as
+  they found them, and the display driver installed by its script on the gate's package leg.
+
 ## 2026-10-22 - W4 planned: the host's own input device
 
 ### Decided

@@ -288,6 +288,16 @@ compiled for Windows and nowhere else ([§11](#11-versioning)). Until that minor
 exist are accepted elsewhere and do nothing. A value whose meaning is Windows' alone, the output
 `virtual`, stays refused at the call elsewhere.
 
+**On Windows they need the host's drivers installed** (*added 2026-10-22*): the host's own
+display -- the output `virtual`, `virtual_fallback`, `virtual_width`, `virtual_height` and
+`virtual_hz` -- exists only where its display driver is installed, and the input configuration's
+devices (W4, planned) only where its input driver is. Nothing of the library or `lowlatd`
+installs either: the machine's administrator runs each driver's script
+([07 §10](07-platforms.md)). Without the display driver the fields are accepted and nothing is
+plugged: a stream asked for `virtual` says why once and waits as for a display that is not
+scanning out, and the host takes the driver up at its next attempt once it is installed. Without
+the input driver, switching `virtual_input` on is refused, and `virtual_pads` gives the Xbox pad.
+
 **The library turns no display, its own included** (*2026-10-20*, W3.10): a turn is made where a
 person makes one, in the display's own settings, or by the application -- on Windows, where the
 host runs in the session, through the system's display configuration, as `lowlatd` puts an
@@ -981,7 +991,8 @@ lowlat_status lowlat_vdd_debug_panic(lowlat_vdd *vdd);
 ```
 
 **The third half, on Windows alone (minor 26): the monitors of the host's own display driver**
-([11](11-drivers.md) §1), for any application to plug its own. The driver must be installed;
+([11](11-drivers.md) §1), for any application to plug its own. The driver must be installed,
+by its own script and never by the library ([07 §10](07-platforms.md));
 without it the open answers `LOWLAT_ERR_VDD_ABSENT`, and a driver of another version
 `LOWLAT_ERR_VDD_VERSION`, since the two ship together.
 

@@ -893,8 +893,9 @@ After Gate B. The differences are contained:
 - A display driver of the host's own (*planned 2026-10-15*,
   [impl-plan-windows.md](impl-plan-windows.md) W3): a user-mode indirect display driver, so a
   test certificate the machine trusts loads it with no test mode, and a release is signed from
-  CI's build by a signing service for open-source projects. It is installed and removed with
-  the service, and needs Windows 10 1903. Its control interface admits any interactive user, a
+  CI's build by a signing service for open-source projects. It is installed, updated and removed
+  by a script of its own, which the machine's administrator runs, never by the service (*amended
+  2026-10-22*), and needs Windows 10 1903. Its control interface admits any interactive user, a
   monitor bound to the handle that plugged it or kept until removed; its frames reach only a
   process that can take handles from the driver's own -- the system account (*amended
   2026-10-16*, [11 §1.2](11-drivers.md)) -- and never the library's boundary. Kept monitors
@@ -906,21 +907,37 @@ After Gate B. The differences are contained:
 - An input driver of the host's own (*planned 2026-10-22*,
   [impl-plan-windows.md](impl-plan-windows.md) W4): a user-mode filter above the system's virtual
   HID framework, presenting a keyboard, a mouse, a DualShock 4 and a DualSense whose input the
-  system takes as a device's, signed and installed as the display driver is, and with it. Its
-  control interface admits the system account and administrators alone, since its devices' input
-  reaches the secure desktop and the console's session. The application switches a guest's
-  keyboard and mouse onto it, the batch input call staying the default; the owner sets whether a
-  pad sent as its reports is presented as its product; the Xbox 360 pad stays on the virtual bus.
-  The design is [11 §2](11-drivers.md).
+  system takes as a device's, signed and installed as the display driver is, by a script of its
+  own (*amended 2026-10-22*). Its control interface admits the system account and administrators
+  alone, since its devices' input reaches the secure desktop and the console's session. The
+  application switches a guest's keyboard and mouse onto it, the batch input call staying the
+  default; the owner sets whether a pad sent as its reports is presented as its product; the Xbox
+  360 pad stays on the virtual bus. The design is [11 §2](11-drivers.md).
+- **What needs a driver needs it installed** (*added 2026-10-22*). Nothing of the host installs
+  its drivers -- not the service's install, not the host, not the library: the machine's
+  administrator runs each driver's script, once, again to update it, and with `-Remove` to take it
+  away. The host's own display -- the output `virtual`, `virtual_fallback`, `virtual_width`,
+  `virtual_height` and `virtual_hz`, the library's third half, `lowlatd display` and `lowlat-vdd`
+  -- works only where the display driver is installed, and the input devices -- `virtual_input`
+  and `virtual_pads` -- only where the input driver is ([06 §3](06-api.md)). Without the display
+  driver, a stream asked for `virtual`, or for the fallback with nothing lit, plugs nothing, says
+  why once and waits as for any display that is not scanning out, its guests ended when that wait
+  runs out; the third half's open answers `LOWLAT_ERR_VDD_ABSENT`, and the commands say the driver
+  is not installed. Without the input driver, `virtual_input` switched on is refused, and a pad
+  sent as its reports is played as the Xbox pad, said once. A driver installed while the host runs
+  is taken up without a restart: the display at the host's next attempt to plug it, the input
+  devices the next time `virtual_input` is switched on -- for `lowlatd`, whose flag switches it at
+  start, its next start.
 - The service (*reviewed 2026-10-17*, [impl-plan-windows.md](impl-plan-windows.md) W2.5): the
   daemon's second role, under the service manager, which starts the host in the console's session
   and starts it again when that session changes or the host fails, deciding on every pass rather
   than on each notification. `lowlatd install` copies the programs into the program-files
   directory -- a program the system account runs must be writable by administrators alone -- makes
   the program-data folder readable by the system account and administrators alone, since the
-  configuration it holds is the host's environment and carries the signaling secret, and installs
-  the display driver from beside the program; `uninstall` removes the service, the programs and
-  the driver and keeps the configuration. The secure attention call is allowed in the machine's
+  configuration it holds is the host's environment and carries the signaling secret; `uninstall`
+  removes the service and the programs and keeps the configuration. **Neither touches a driver**
+  (*amended 2026-10-22*; until then the display driver was installed from beside the program and
+  removed with the service). The secure attention call is allowed in the machine's
   policy only for the length of each call. The login tool writes the configuration and restarts
   the service; Python is a prerequisite here, as the ViGEm bus is. The host advertises Windows,
   the system's major version, the computer's name and a random identifier kept beside its

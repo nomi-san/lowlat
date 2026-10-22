@@ -51,7 +51,8 @@ What does not, yet:
 
 - A Windows host out of the box: the host, its display driver and the service are built and
   checked on the development machine, but there is no package yet -- the programs are staged
-  from a build and installed with `lowlatd install` -- and the Windows gates remain
+  from a build and installed with `lowlatd install`, and the display driver, which the host's own
+  display needs, with its own script -- and the Windows gates remain
   ([docs/impl-plan-windows.md](docs/impl-plan-windows.md)). A guest is told nothing when the
   host's session ends at a logoff or a shutdown, and waits for its own timeout.
 - A guest's microphone as a device other applications on the host can open: the route is
