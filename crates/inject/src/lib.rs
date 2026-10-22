@@ -27,6 +27,8 @@ pub mod event;
 pub mod gamepad;
 pub mod handback;
 #[cfg(windows)]
+pub mod hid;
+#[cfg(windows)]
 mod scancode;
 #[cfg(target_os = "linux")]
 pub mod uhid;

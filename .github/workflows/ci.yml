@@ -167,9 +167,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace --lib --bins --tests --no-fail-fast
 
-      # The driver as it is packaged: a release build, linked.
+      # The drivers as they are packaged: release builds, linked.
       - name: The display driver
         run: cargo build -p lowlat-vdd --release
+
+      - name: The input driver
+        run: cargo build -p lowlat-hid --release
 
   loom:
     name: model checking

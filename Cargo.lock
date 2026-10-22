@@ -858,6 +858,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-hid"
+version = "0.0.0"
+dependencies = [
+ "lowlat-common",
+ "lowlat-hid-proto",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "lowlat-hid-proto"
+version = "0.0.0"
+
+[[package]]
 name = "lowlat-host"
 version = "0.0.0"
 dependencies = [
@@ -884,6 +897,7 @@ dependencies = [
  "libc",
  "lowlat-common",
  "lowlat-core",
+ "lowlat-hid-proto",
  "windows-sys 0.61.2",
 ]
 

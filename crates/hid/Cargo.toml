@@ -1,0 +1,36 @@
+[package]
+name = "lowlat-hid"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The host's own input driver: a library the system's user-mode driver host
+# loads (docs/11-drivers.md section 2). Built for Windows alone; elsewhere it
+# is empty.
+[lib]
+# The file the system loads is `lowlat_hid.dll`. No program may be named
+# `lowlat-hid`: a program's debug symbols take its name with underscores, and
+# the two would write one `lowlat_hid.pdb`.
+name = "lowlat_hid"
+crate-type = ["cdylib"]
+# What can be tested without the driver host -- the kinds, their reports, the
+# requests -- is lowlat-hid-proto's and tested there. This crate is the glue
+# the frameworks call into, checked live (docs/impl-plan-windows.md W4.0).
+test = false
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+lowlat-common.workspace = true
+lowlat-hid-proto.workspace = true
+# The debugger stream the log goes to.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[lints]
+workspace = true

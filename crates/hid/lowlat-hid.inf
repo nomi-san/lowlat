@@ -1,0 +1,92 @@
+;
+; lowlat-hid.inf - the host's own input device (docs/11-drivers.md section 2).
+;
+; A user-mode filter above the system's virtual HID framework, which makes the
+; HID devices the host asks for. scripts/package-hid.sh stamps the driver's
+; version and the framework's into a copy of this file, catalogues the package
+; and signs it; scripts/hid-install.ps1 installs it.
+;
+
+[Version]
+PnpLockdown=1
+Signature="$Windows NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+CatalogFile=lowlat-hid.cat
+DriverVer=01/01/2026,0.0.0.0
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64.10.0...18362
+
+; Windows 10 1903 on: the display driver's floor, and the first release whose
+; setup takes the filter directive below.
+[Standard.NTamd64.10.0...18362]
+%DeviceName%=LowlatHid_Install, Root\lowlat-hid
+
+[SourceDisksFiles]
+lowlat_hid.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[DestinationDirs]
+LowlatHid_Files=12,UMDF
+
+; Copied aside when the old one is in use, so an update needs no restart.
+[LowlatHid_Files]
+lowlat_hid.dll,,,0x00004000
+
+; The virtual HID framework as the device's function driver, from the
+; system's own setup information.
+[LowlatHid_Install.NT]
+CopyFiles=LowlatHid_Files
+Include=hidvhf.inf
+Needs=vhfservice.NT
+
+[LowlatHid_Install.NT.HW]
+Include=hidvhf.inf
+Needs=vhfservice.NT.HW
+AddReg=LowlatHid_Hardware
+
+; The device's access: the system account and administrators alone, since
+; its devices' input reaches the secure desktop and the console's session.
+[LowlatHid_Hardware]
+HKR,,"Security",,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+; The reflector as an upper filter, in the form Windows 10 accepts: its
+; service by hand, and the filter by the filter directive.
+[LowlatHid_Install.NT.Services]
+Include=hidvhf.inf
+Needs=vhfservice.NT.Services
+AddService=WUDFRd,0x000001f8,WUDFRD_ServiceInstall
+
+[LowlatHid_Install.NT.Filters]
+AddFilter=WUDFRd,,WUDFRD_UpperFilterPosition
+
+[WUDFRD_UpperFilterPosition]
+FilterPosition=Upper
+
+[WUDFRD_ServiceInstall]
+DisplayName=%WudfRdDisplayName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+; A host process of its own; the pool the system keeps for HID drivers at a
+; raised priority is measured against it.
+[LowlatHid_Install.NT.Wdf]
+UmdfService=LowlatHid,LowlatHid_Umdf
+UmdfServiceOrder=LowlatHid
+UmdfHostProcessSharing=ProcessSharingDisabled
+
+[LowlatHid_Umdf]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\lowlat_hid.dll
+
+[Strings]
+ManufacturerName="Lowlat"
+DiskName="Lowlat Virtual Input"
+WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+DeviceName="Lowlat Virtual Input"

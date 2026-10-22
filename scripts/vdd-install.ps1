@@ -5,45 +5,65 @@
 # (docs/07-platforms.md section 10).
 #
 # In a staged folder (scripts/stage-windows.ps1, either form) this is
-# install-driver.ps1, and the package, devcon and the certificate the package
-# is signed with are in driver\ beside it. That machine has never seen the
-# certificate, so it is trusted first, and -Remove takes the trust back.
+# install-driver.ps1, and the package, nefcon and the certificate the package
+# is signed with are in driver\ beside it. That machine may never have seen the
+# certificate, so it is trusted first; -Remove takes the trust back only when
+# no lowlat driver package is left, the input driver being signed with the
+# same certificate.
 
 param([switch]$Remove)
 
 $ErrorActionPreference = 'Stop'
 $package = Join-Path $PSScriptRoot 'driver'
-if (Test-Path (Join-Path $package 'devcon.exe')) {
-    $devcon = Join-Path $package 'devcon.exe'
+if (Test-Path (Join-Path $package 'nefconc.exe')) {
+    $nefcon = Join-Path $package 'nefconc.exe'
     $certificate = Join-Path $package 'lowlat-idd.cer'
 } else {
     $root = Split-Path -Parent $PSScriptRoot
-    $kit = (& python.exe (Join-Path $root 'scripts\fetch-wdk.py')).Trim()
-    $devcon = Join-Path $kit 'c\tools\10.0.26100.0\x64\devcon.exe'
+    $nefcon = (& python.exe (Join-Path $root 'scripts\fetch-nefcon.py')).Trim()
     $package = Join-Path $root 'target\vdd-package'
     $certificate = $null
 }
 $hwid = 'Root\lowlat-vdd'
+$className = 'Display'
+$classGuid = '4d36e968-e325-11ce-bfc1-08002be10318'
 $inf = Join-Path $package 'lowlat-idd.inf'
 $stores = @('Root', 'TrustedPublisher')
 
-function Present {
-    $found = & $devcon find $hwid
-    return -not ($found -match 'No matching devices found')
+function Invoke-Nefcon {
+    & $nefcon @args
+    if ($LASTEXITCODE -eq 3010) {
+        Write-Warning 'done; a reboot finishes the change'
+        return
+    }
+    if ($LASTEXITCODE -ne 0) { throw "nefconc $($args[0]) ended with exit code $LASTEXITCODE" }
+}
+
+function Test-Present {
+    $null -ne (Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.HardwareID -contains $hwid })
+}
+
+# The packages of lowlat's drivers in the store, by the names they were built as.
+function Get-Packages([string]$Pattern) {
+    $text = (pnputil /enum-drivers) -join "`n"
+    foreach ($block in ($text -split "`n\s*`n")) {
+        if ($block -match "Original Name:\s+($Pattern)" -and $block -match 'Published Name:\s+(oem\d+\.inf)') {
+            $Matches[1]
+        }
+    }
 }
 
 if ($Remove) {
-    if (Present) { & $devcon remove $hwid }
+    if (Test-Present) {
+        Invoke-Nefcon --remove-device-node --hardware-id $hwid --class-guid $classGuid
+    }
     # Every package of this driver in the store, by either name it was built
     # as: `lowlat-vdd.inf` before its files took the name `lowlat-idd`.
-    $text = (pnputil /enum-drivers) -join "`n"
-    $blocks = $text -split "`n\s*`n"
-    foreach ($block in $blocks) {
-        if ($block -match 'Original Name:\s+lowlat-[iv]dd\.inf' -and $block -match 'Published Name:\s+(oem\d+\.inf)') {
-            pnputil /delete-driver $Matches[1] /uninstall /force
-        }
+    foreach ($published in (Get-Packages 'lowlat-[iv]dd\.inf')) {
+        pnputil /delete-driver $published /uninstall /force
     }
-    if ($certificate) {
+    if ($certificate -and -not (Get-Packages 'lowlat-(idd|vdd|hid)\.inf')) {
         $thumbprint = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $certificate).Thumbprint
         foreach ($store in $stores) {
             Remove-Item "Cert:\LocalMachine\$store\$thumbprint" -ErrorAction SilentlyContinue
@@ -83,8 +103,8 @@ foreach ($rule in @(
 }
 Set-Acl -Path $folder -AclObject $acl
 
-if (Present) {
-    & $devcon update $inf $hwid
-} else {
-    & $devcon install $inf $hwid
+if (-not (Test-Present)) {
+    Invoke-Nefcon --create-device-node --hardware-id $hwid --class-name $className `
+        --class-guid $classGuid --no-duplicates
 }
+Invoke-Nefcon --install-driver --inf-path $inf

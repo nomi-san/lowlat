@@ -19,6 +19,8 @@ libc.workspace = true
 # making it, and the pad bus's device and its requests: the system's own
 # declarations, as capture and the IO shell take them.
 [target.'cfg(windows)'.dependencies]
+# The host's own input driver's kinds and requests (docs/11-drivers.md section 2).
+lowlat-hid-proto.workspace = true
 windows-sys = { version = "0.61", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
@@ -34,7 +36,8 @@ windows-sys = { version = "0.61", features = [
 
 # The pad tests read a pad back the way a game does.
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController"] }
+# The input driver's checks read its devices back through raw input.
+windows-sys = { version = "0.61", features = ["Win32_UI_Input", "Win32_UI_Input_XboxController"] }
 
 [lints]
 workspace = true

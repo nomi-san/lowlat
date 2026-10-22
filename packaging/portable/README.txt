@@ -1,14 +1,19 @@
 lowlat host for Windows, portable
 
-Nothing here is installed but the display driver, and that only for a
-machine with no monitor lit. Everything runs from an elevated PowerShell in
-this folder; a folder copied or unzipped from elsewhere needs the policy
-bypass shown, or Unblock-File on the scripts first.
+Nothing here is installed but the drivers, and each only where it is needed:
+the display driver for a machine with no monitor lit, the input driver for
+the host's own keyboard, mouse and pads. Everything runs from an elevated
+PowerShell in this folder; a folder copied or unzipped from elsewhere needs
+the policy bypass shown, or Unblock-File on the scripts first.
 
 1. The display driver, once per machine (trusts the certificate it is signed
    with, then installs it; -Remove takes both back):
 
      powershell -ExecutionPolicy Bypass -File install-driver.ps1
+
+   The input driver the same way, if wanted:
+
+     powershell -ExecutionPolicy Bypass -File install-input-driver.ps1
 
 2. One display, kept until removed (`lowlat-vdd.exe` alone lists its
    commands; `lowlat-vdd.exe remove 0` unplugs it):

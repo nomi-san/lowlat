@@ -631,10 +631,15 @@ dependencies = [
  "lowlat-core",
  "lowlat-crypto",
  "lowlat-decode",
+ "lowlat-hid-proto",
  "lowlat-net",
  "lowlat-portmap",
  "lowlat-vdd-proto",
 ]
+
+[[package]]
+name = "lowlat-hid-proto"
+version = "0.0.0"
 
 [[package]]
 name = "lowlat-net"
@@ -664,6 +669,9 @@ dependencies = [
 [[package]]
 name = "lowlat-vdd-proto"
 version = "0.0.0"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "matchers"

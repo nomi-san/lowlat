@@ -1,22 +1,24 @@
 #!/usr/bin/env pwsh
 # Build the folder W2.5's install copies from: the host, the display
-# controller, the login tool and the configuration template, and the display
-# driver's package with its install script when one has been built.
+# controller, the login tool and the configuration template, and each driver's
+# package with its install script when one has been built.
 #
 #   scripts/stage-windows.ps1 [-Profile release] [-OutDir <path>] [-Portable]
 #
-# The package takes the driver from target/vdd-package, which
-# scripts/package-vdd.sh signs; a folder without one is still staged, with a
-# warning, for a machine that already has the driver. The service's install
-# installs no driver: the machine's administrator runs install-driver.ps1,
-# which finds the package, devcon and the certificate the package is signed
-# with in driver\ beside it (docs/07-platforms.md section 10). The result is
-# what the Windows zip will carry (docs/impl-plan-windows.md W2.5).
+# The display driver comes from target/vdd-package (scripts/package-vdd.sh),
+# into driver\ beside install-driver.ps1; the input driver from
+# target/hid-package (scripts/package-hid.sh), into input-driver\ beside
+# install-input-driver.ps1. Each folder carries nefcon, its licence and the
+# certificate the package is signed with. A folder without a package is still
+# staged, with a warning, for a machine that already has that driver or does
+# without it. The service's install installs no driver: the machine's
+# administrator runs the scripts (docs/07-platforms.md section 10). The result
+# is what the Windows zip will carry (docs/impl-plan-windows.md W2.5).
 #
 # -Portable builds the folder that runs the host with nothing installed
 # instead, target/dist by default: no template, but packaging/portable's
-# launcher and README, and PsExec64 from the PATH. The driver is required
-# there.
+# launcher and README, and PsExec64 from the PATH. The display driver is
+# required there.
 
 [CmdletBinding()]
 param(
@@ -57,26 +59,39 @@ if ($Portable) {
     Take (Join-Path $root "packaging\lowlatd.env.windows") "lowlatd.env.template"
 }
 
-$parts = @("lowlat_idd.dll", "lowlat-idd.inf", "lowlat-idd.cat")
-$package = Join-Path $root "target\vdd-package"
-$missing = $parts | Where-Object { -not (Test-Path -LiteralPath (Join-Path $package $_)) }
-if ($missing) {
-    if ($Portable) { throw "no complete driver package in $package (scripts/package-vdd.sh builds it)" }
-    Write-Warning "no complete driver package in $package (scripts/package-vdd.sh builds it); the folder has no driver"
-} else {
-    $driver = Join-Path $OutDir "driver"
-    New-Item -ItemType Directory -Path $driver -Force | Out-Null
-    foreach ($part in $parts) {
-        Copy-Item -LiteralPath (Join-Path $package $part) -Destination (Join-Path $driver $part) -Force
-        Write-Host "  driver\$part"
+$nefcon = (& python.exe (Join-Path $root "scripts\fetch-nefcon.py")).Trim()
+$nefconLicense = Join-Path (Split-Path -Parent (Split-Path -Parent $nefcon)) "LICENSE"
+
+# One driver's package into a folder of its own, its library, setup
+# information and catalogue in that order, with nefcon, its licence and the
+# certificate the catalogue is signed with; the script that installs them
+# beside the folder.
+function Copy-DriverPackage([string]$Package, [string[]]$Parts, [string]$Folder,
+        [string]$Script, [string]$Installer, [string]$Certificate, [bool]$Required, [string]$Builder) {
+    $missing = $Parts | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Package $_)) }
+    if ($missing) {
+        if ($Required) { throw "no complete driver package in $Package ($Builder builds it)" }
+        Write-Warning "no complete driver package in $Package ($Builder builds it); the folder has no $Folder"
+        return
     }
-    Take (Join-Path $root "scripts\vdd-install.ps1") "install-driver.ps1"
-    $kit = (& python.exe (Join-Path $root "scripts\fetch-wdk.py")).Trim()
-    Take (Join-Path $kit "c\tools\10.0.26100.0\x64\devcon.exe") "driver\devcon.exe"
+    $dest = Join-Path $OutDir $Folder
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    foreach ($part in $Parts) {
+        Copy-Item -LiteralPath (Join-Path $Package $part) -Destination (Join-Path $dest $part) -Force
+        Write-Host "  $Folder\$part"
+    }
+    Take (Join-Path $root $Script) $Installer
+    Take $nefcon "$Folder\nefconc.exe"
+    Take $nefconLicense "$Folder\nefcon-LICENSE.txt"
     # The public half of the certificate the catalogue is signed with, which
     # the install script makes the machine trust.
-    $signer = (Get-AuthenticodeSignature -LiteralPath (Join-Path $package "lowlat-idd.cat")).SignerCertificate
-    if (-not $signer) { throw "the driver's catalogue is not signed" }
-    [IO.File]::WriteAllBytes((Join-Path $driver "lowlat-idd.cer"), $signer.Export("Cert"))
-    Write-Host "  driver\lowlat-idd.cer ($($signer.Thumbprint))"
+    $signer = (Get-AuthenticodeSignature -LiteralPath (Join-Path $Package $Parts[2])).SignerCertificate
+    if (-not $signer) { throw "the catalogue in $Package is not signed" }
+    [IO.File]::WriteAllBytes((Join-Path $dest $Certificate), $signer.Export("Cert"))
+    Write-Host "  $Folder\$Certificate ($($signer.Thumbprint))"
 }
+
+Copy-DriverPackage (Join-Path $root "target\vdd-package") @("lowlat_idd.dll", "lowlat-idd.inf", "lowlat-idd.cat") `
+    "driver" "scripts\vdd-install.ps1" "install-driver.ps1" "lowlat-idd.cer" $Portable "scripts/package-vdd.sh"
+Copy-DriverPackage (Join-Path $root "target\hid-package") @("lowlat_hid.dll", "lowlat-hid.inf", "lowlat-hid.cat") `
+    "input-driver" "scripts\hid-install.ps1" "install-input-driver.ps1" "lowlat-hid.cer" $false "scripts/package-hid.sh"

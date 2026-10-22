@@ -29,6 +29,8 @@ lowlat-client = { path = "../crates/client" }
 lowlat-portmap = { path = "../crates/portmap" }
 # The display driver's settings file: any user writes it, the driver reads it.
 lowlat-vdd-proto = { path = "../crates/vdd-proto" }
+# The input driver's requests and the reports it takes: its caller sends both.
+lowlat-hid-proto = { path = "../crates/hid-proto" }
 
 [[bin]]
 name = "envelope"
@@ -179,6 +181,13 @@ bench = false
 [[bin]]
 name = "vdd_settings"
 path = "fuzz_targets/vdd_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hid_control"
+path = "fuzz_targets/hid_control.rs"
 test = false
 doc = false
 bench = false
