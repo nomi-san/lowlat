@@ -1,8 +1,10 @@
 # Install the packaged display driver (target/vdd-package, scripts/package-vdd.sh)
 # and its device, or remove both with -Remove. Run from an elevated shell. The
 # device is made once; installing again updates the driver of the one there.
+# This is the driver's only install: the service's install installs no driver
+# (docs/07-platforms.md section 10).
 #
-# In the portable folder (scripts/stage-windows.ps1 -Portable) this is
+# In a staged folder (scripts/stage-windows.ps1, either form) this is
 # install-driver.ps1, and the package, devcon and the certificate the package
 # is signed with are in driver\ beside it. That machine has never seen the
 # certificate, so it is trusted first, and -Remove takes the trust back.

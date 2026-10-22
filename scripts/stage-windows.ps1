@@ -1,20 +1,22 @@
 #!/usr/bin/env pwsh
 # Build the folder W2.5's install copies from: the host, the display
-# controller, the display driver's package when one has been built, the login
-# tool and the configuration template.
+# controller, the login tool and the configuration template, and the display
+# driver's package with its install script when one has been built.
 #
 #   scripts/stage-windows.ps1 [-Profile release] [-OutDir <path>] [-Portable]
 #
 # The package takes the driver from target/vdd-package, which
 # scripts/package-vdd.sh signs; a folder without one is still staged, with a
-# warning, for a machine that already has the driver. The result is what the
-# Windows zip will carry (docs/impl-plan-windows.md W2.5).
+# warning, for a machine that already has the driver. The service's install
+# installs no driver: the machine's administrator runs install-driver.ps1,
+# which finds the package, devcon and the certificate the package is signed
+# with in driver\ beside it (docs/07-platforms.md section 10). The result is
+# what the Windows zip will carry (docs/impl-plan-windows.md W2.5).
 #
 # -Portable builds the folder that runs the host with nothing installed
 # instead, target/dist by default: no template, but packaging/portable's
-# launcher and README, the driver's install script with devcon and the
-# certificate the package is signed with, and PsExec64 from the PATH. The
-# driver is required there.
+# launcher and README, and PsExec64 from the PATH. The driver is required
+# there.
 
 [CmdletBinding()]
 param(
@@ -47,7 +49,6 @@ Take (Join-Path $root "scripts\kessel-login.py") "lowlat-login.py"
 if ($Portable) {
     Take (Join-Path $root "packaging\portable\start-host.ps1") "start-host.ps1"
     Take (Join-Path $root "packaging\portable\README.txt") "README.txt"
-    Take (Join-Path $root "scripts\vdd-install.ps1") "install-driver.ps1"
     $psexec = Get-Command PsExec64.exe -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $psexec) { throw "PsExec64.exe is not on the PATH" }
@@ -69,9 +70,7 @@ if ($missing) {
         Copy-Item -LiteralPath (Join-Path $package $part) -Destination (Join-Path $driver $part) -Force
         Write-Host "  driver\$part"
     }
-}
-
-if ($Portable) {
+    Take (Join-Path $root "scripts\vdd-install.ps1") "install-driver.ps1"
     $kit = (& python.exe (Join-Path $root "scripts\fetch-wdk.py")).Trim()
     Take (Join-Path $kit "c\tools\10.0.26100.0\x64\devcon.exe") "driver\devcon.exe"
     # The public half of the certificate the catalogue is signed with, which
