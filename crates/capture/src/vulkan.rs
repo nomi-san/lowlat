@@ -634,6 +634,10 @@ fn pixel_format(fourcc: DrmFourcc) -> Option<vk::Format> {
         // One packed word, alpha in the top two bits then blue, green, red.
         DrmFourcc::Abgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
         DrmFourcc::Xbgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
+        // The same word with red and blue exchanged: blue lowest. This is what
+        // GNOME scans out on a ten-bit-capable panel.
+        DrmFourcc::Argb2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
+        DrmFourcc::Xrgb2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
         _ => return None,
     })
 }
@@ -1285,6 +1289,10 @@ mod tests {
         assert_eq!(
             super::pixel_format(DrmFourcc::Abgr2101010),
             Some(vk::Format::A2B10G10R10_UNORM_PACK32)
+        );
+        assert_eq!(
+            super::pixel_format(DrmFourcc::Xrgb2101010),
+            Some(vk::Format::A2R10G10B10_UNORM_PACK32)
         );
         // Something nothing here scans out has no import rather than a guess.
         assert_eq!(super::pixel_format(DrmFourcc::Yuyv), None);

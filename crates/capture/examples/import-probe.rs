@@ -166,6 +166,15 @@ fn write_ppm(
                         u8::try_from((word >> 20 & 0x3ff) >> 2).unwrap_or(0),
                     )
                 }
+                // The same word, blue lowest.
+                DrmFourcc::Argb2101010 | DrmFourcc::Xrgb2101010 => {
+                    let word = u32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]);
+                    (
+                        u8::try_from((word >> 20 & 0x3ff) >> 2).unwrap_or(0),
+                        u8::try_from((word >> 10 & 0x3ff) >> 2).unwrap_or(0),
+                        u8::try_from((word & 0x3ff) >> 2).unwrap_or(0),
+                    )
+                }
                 // Bytes in memory are blue, green, red, alpha.
                 DrmFourcc::Argb8888 | DrmFourcc::Xrgb8888 => (quad[2], quad[1], quad[0]),
                 // Bytes in memory are red, green, blue, alpha.
