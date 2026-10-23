@@ -11,10 +11,12 @@
 # package is left, the display driver being signed with the same certificate.
 #
 # An update or a removal while the lowlat service runs stops the service first
-# and starts it again after: a device a program holds open -- a game's handle
-# on a pad -- would otherwise hold the driver, and the change would wait for a
-# reboot. A first install touches nothing else; a running host takes the
-# driver up the next time its input is switched onto it.
+# and starts it again after, so the host's devices go before the driver does.
+# A game's handle still open on a pad leaves the change finishing at a reboot:
+# the device and its packages go and an install works at once, but the old
+# driver host stays until then, and nefcon says so. A first install touches
+# nothing else; a running host takes the driver up the next time its input is
+# switched onto it.
 
 param([switch]$Remove)
 
