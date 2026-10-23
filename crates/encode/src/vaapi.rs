@@ -508,6 +508,29 @@ mod tests {
         CString::new(named).expect("a node path with no interior nul")
     }
 
+    /// The low-delay B decision, from the words two drivers actually answer
+    /// for HEVC Main.
+    ///
+    /// Intel's low-power entry point on Alder Lake (iHD 26.1.2) reports every
+    /// direction including the second list's, and three references in each
+    /// list; handed predicted slices it hangs the video engine. The AMD open
+    /// driver (radeonsi, Mesa 26.0.8) reports no direction and no second list,
+    /// and codes predicted slices as it always has.
+    #[test]
+    fn low_delay_b_is_asked_for_only_where_a_device_needs_it() {
+        let both_lists = (3 << 16) | 3;
+        assert!(needs_low_delay_b(0x7, both_lists), "Intel, Alder Lake");
+        assert!(
+            !needs_low_delay_b(VA_ATTRIB_NOT_SUPPORTED, 1),
+            "AMD, radeonsi"
+        );
+        // A second list that is required but has no room cannot be used.
+        assert!(!needs_low_delay_b(0x5, 3));
+        // No constraint on the second list: predicted slices are fine.
+        assert!(!needs_low_delay_b(0x3, both_lists));
+        assert!(!needs_low_delay_b(0x7, VA_ATTRIB_NOT_SUPPORTED));
+    }
+
     #[test]
     fn profiles_are_listed_best_first() {
         // High before Main, because every decoder that matters takes High and
@@ -1514,6 +1537,41 @@ impl Display<'_> {
         (depth > 0).then_some(depth)
     }
 
+    /// Whether this device needs predicted pictures sent as low-delay B.
+    ///
+    /// **The rule is the one the established open encoder follows.** A device
+    /// whose bidirectional slices must have a second list, and which offers a
+    /// reference in that list at all, wants a predicted picture as a
+    /// bidirectional slice with both lists naming the same picture. A device
+    /// that reports no constraint, or that cannot be asked, is left as it is.
+    fn low_delay_b(&self, caps: Caps) -> bool {
+        let mut attribs = [
+            VAConfigAttrib {
+                type_: crate::ffi::va::VAConfigAttribPredictionDirection,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: crate::ffi::va::VAConfigAttribEncMaxRefFrames,
+                value: 0,
+            },
+        ];
+        // SAFETY: the array is writable for the length passed.
+        let status = unsafe {
+            (self.va.get_config_attributes)(
+                self.raw,
+                caps.profile,
+                caps.entrypoint,
+                attribs.as_mut_ptr(),
+                2,
+            )
+        };
+        if self.va.check(status).is_err() {
+            return false;
+        }
+        let [direction, refs] = attribs.map(|attrib| attrib.value);
+        needs_low_delay_b(direction, refs)
+    }
+
     /// Ask what the driver offers for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
         self.caps_at(codec, false)
@@ -2065,6 +2123,10 @@ pub struct Encoder<'a> {
     quality: u32,
     /// The quantiser this encoder may not go below.
     min_qp: u32,
+    /// Predicted HEVC pictures go out as low-delay bidirectional slices,
+    /// because the device codes no predicted ones; see
+    /// [`crate::h265::Picture::LowDelayB`].
+    low_delay_b: bool,
 }
 
 /// A picture an encode may reference, as the driver needs to see it.
@@ -2133,6 +2195,19 @@ fn quality_for(range: u32) -> u32 {
     if range <= 1 { 0 } else { range }
 }
 
+/// The decision behind [`Display::low_delay_b`], from the two attribute words.
+///
+/// The reference count packs the first list's limit in its low half and the
+/// second list's in its high half; a device with no room in the second list
+/// cannot be given a bidirectional slice whatever its direction says.
+fn needs_low_delay_b(direction: u32, refs: u32) -> bool {
+    if direction == VA_ATTRIB_NOT_SUPPORTED || refs == VA_ATTRIB_NOT_SUPPORTED {
+        return false;
+    }
+    let second_list = (refs >> 16) & 0xFFFF;
+    direction & crate::ffi::va::VA_PREDICTION_DIRECTION_BI_NOT_EMPTY != 0 && second_list > 0
+}
+
 /// The quantiser a picture opens at, before any per-block delta.
 ///
 /// **Both codecs' picture sets declare no offset from it**, so this value and
@@ -2161,6 +2236,15 @@ impl<'a> Context<'a> {
                 h265.transform_depth
             );
             h265.transform_depth = depth;
+        }
+        // **Asked once, here, for the same reason.** A device that codes no
+        // predicted HEVC slices accepts the first picture and fails every one
+        // after it, which reads as an encoder that stopped answering.
+        let low_delay_b = matches!(params, Params::H265(_)) && self.display.low_delay_b(self.caps);
+        if low_delay_b {
+            lowlat_common::log_info!(
+                "vaapi: the device codes no predicted HEVC slices, sending low-delay B"
+            );
         }
         let va = self.display.va;
         let display = self.display.raw;
@@ -2208,6 +2292,7 @@ impl<'a> Context<'a> {
             reference: None,
             quality: quality_for(self.caps.quality_range),
             min_qp: crate::DEFAULT_MIN_QP,
+            low_delay_b,
         })
     }
 }
@@ -2840,6 +2925,13 @@ impl Encoder<'_> {
         push: &mut impl FnMut(VABufferID),
     ) -> Result<()> {
         let (coded_width, coded_height) = params.coded();
+        // The picture as this device codes it: a predicted one goes out as
+        // low-delay B where the device codes no predicted slices.
+        let picture = if self.low_delay_b {
+            plan.hevc_picture().low_delay_b()
+        } else {
+            plan.hevc_picture()
+        };
 
         let mut seq =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferHEVC>() };
@@ -2956,7 +3048,7 @@ impl Encoder<'_> {
         // which the picture set declares the same way.
         pic.diff_cu_qp_delta_depth = byte(crate::h265::LOG2_CTB - crate::h265::LOG2_MIN_CB);
         pic.pic_init_qp = INITIAL_QP;
-        pic.nal_unit_type = plan.hevc_picture().unit_type();
+        pic.nal_unit_type = picture.unit_type();
         // SAFETY: as above, a zeroed union accessed only through one view.
         unsafe {
             let bits = &mut pic.pic_fields.bits;
@@ -2975,7 +3067,7 @@ impl Encoder<'_> {
         let mut slice =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferHEVC>() };
         slice.num_ctu_in_slice = params.ctus();
-        slice.slice_type = plan.hevc_picture().slice_type();
+        slice.slice_type = picture.slice_type();
         slice.max_num_merge_cand = u8::try_from(crate::h265::MAX_NUM_MERGE_CAND).unwrap_or(5);
         for entry in slice
             .ref_pic_list0
@@ -2992,6 +3084,12 @@ impl Encoder<'_> {
                 entry.flags = crate::ffi::va::VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE;
             }
         }
+        // **Both lists name the one reference** in a low-delay B slice: the
+        // second is the copy the device insists on, and it is what a decoder
+        // builds from the same reference set anyway.
+        if let crate::h265::Picture::LowDelayB { .. } = picture {
+            slice.ref_pic_list1 = slice.ref_pic_list0;
+        }
         // SAFETY: as above, a zeroed union accessed only through one view.
         unsafe {
             let bits = &mut slice.slice_fields.bits;
@@ -3003,8 +3101,8 @@ impl Encoder<'_> {
         push(self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?);
 
         let mut header = [0u8; 64];
-        let written = crate::h265::slice_header(params, plan.hevc_picture(), &mut header)
-            .ok_or(Error::NoEncoder)?;
+        let written =
+            crate::h265::slice_header(params, picture, &mut header).ok_or(Error::NoEncoder)?;
         let (head, data) = self.packed(
             crate::ffi::va::VAEncPackedHeaderSlice,
             &header[..written.bytes_written],
