@@ -548,17 +548,17 @@ impl Session {
             }
             return Some(());
         }
-        // An output names itself, which is the same name the display device
-        // knows it by and the only thing tying the two together; and its
-        // geometry ends with the transform, which nothing below the session
-        // reports.
+        // An output names itself, which is the display device's name for it
+        // once spelled the device's way (`device_name`) and the only thing
+        // tying the two together; and its geometry ends with the transform,
+        // which nothing below the session reports.
         if let Some(output) = self.outputs.get_mut(&object) {
             let before = output.clone();
             match opcode {
                 0 => output.transform = trailing_u32(body),
                 4 => {
                     if let Some(name) = read_str(body, 0) {
-                        output.name = Some(name);
+                        output.name = Some(device_name(name));
                     }
                 }
                 _ => {}
@@ -584,7 +584,7 @@ impl Session {
             }
             // Superseded by the output naming itself, and still the only name
             // a session too old to do that gives.
-            3 if described.name.is_none() => described.name = read_str(body, 0),
+            3 if described.name.is_none() => described.name = read_str(body, 0).map(device_name),
             _ => {}
         }
         // **Compared rather than assumed.** A session re-sends every field of
@@ -651,6 +651,23 @@ impl Session {
 /// A dimension, which the protocol signs and nothing real makes negative.
 fn extent(bytes: &[u8]) -> Option<u32> {
     u32::try_from(read_i32(bytes)?).ok()
+}
+
+/// The display device's name for an output the session has named.
+///
+/// **GNOME drops the type letter from an HDMI connector.** The kernel names
+/// the first one `HDMI-A-1`, and so does KDE; Mutter names it `HDMI-1`. Read
+/// as sent, the output was never found in the layout, so absolute input
+/// spanned the picture alone and the pointer left the captured screen for the
+/// one beside it (measured on GNOME Shell 50, an HDMI monitor beside a laptop
+/// panel). Every other connector reads the same in both, `HDMI-B` included.
+fn device_name(name: String) -> String {
+    match name.strip_prefix("HDMI-") {
+        Some(number) if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) => {
+            format!("HDMI-A-{number}")
+        }
+        _ => name,
+    }
 }
 
 #[cfg(test)]
@@ -889,6 +906,38 @@ mod tests {
         let layout = [output("DP-2", 0, 0, 2560, 1440)];
         assert_eq!(place(&layout, "DP-1"), None);
         assert_eq!(place(&[], "DP-2"), None);
+    }
+
+    /// **GNOME's HDMI name is read as the device's.** The layout is the one
+    /// measured: a panel at the corner and an HDMI monitor to its right, the
+    /// second named by Mutter, and the capture asking by the kernel's name.
+    #[test]
+    fn gnomes_hdmi_name_is_the_devices() {
+        assert_eq!(device_name("HDMI-1".to_string()), "HDMI-A-1");
+        assert_eq!(device_name("HDMI-A-1".to_string()), "HDMI-A-1");
+        assert_eq!(device_name("HDMI-B-1".to_string()), "HDMI-B-1");
+        assert_eq!(device_name("DP-3".to_string()), "DP-3");
+        assert_eq!(device_name("eDP-1".to_string()), "eDP-1");
+        assert_eq!(device_name("HDMI-".to_string()), "HDMI-");
+
+        let layout = [
+            output("eDP-1", 0, 0, 1920, 1080),
+            output(&device_name("HDMI-1".to_string()), 1920, 0, 2560, 1440),
+        ];
+        let ours = place(&layout, "HDMI-A-1").expect("the HDMI monitor is placed");
+        assert_eq!((ours.x, ours.y), (1920, 0));
+        assert_eq!((ours.desktop_width, ours.desktop_height), (4480, 1440));
+
+        // The same pair with the panel at 125%: the session lays outputs out
+        // in scaled units, so the panel is 1536x864 and the HDMI monitor
+        // begins where it ends.
+        let scaled = [
+            output("eDP-1", 0, 0, 1536, 864),
+            output(&device_name("HDMI-1".to_string()), 1536, 0, 2560, 1440),
+        ];
+        let ours = place(&scaled, "HDMI-A-1").expect("the HDMI monitor is placed");
+        assert_eq!((ours.x, ours.y, ours.width), (1536, 0, 2560));
+        assert_eq!((ours.desktop_width, ours.desktop_height), (4096, 1440));
     }
 
     /// **A half-described output is dropped rather than defaulted.** One
