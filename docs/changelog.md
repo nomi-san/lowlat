@@ -27,9 +27,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   input against the batch input call, idle and under one busy loop per logical processor, at 125
   and 1000 a second; whole up to 2000 reports a second; a click on the relative collection
   landing where a move on the absolute one put the pointer, 300 of 300 idle and under load.
-- Owed: a removal while a program holds a pad open, the service's install and removal leaving the
-  driver as they found it, and the driver found at the next switch-on; the pads' consumers at
-  W4.3.
+- The service's removal and install leave the input driver as they found it. A removal while a
+  program holds a pad open goes through without blocking the host, but finishes at a reboot: the
+  old driver host stays until then, and an install works at once meanwhile.
+- Owed: the driver found at the next switch-on, with the host's side; the service's removal and
+  install from the current source, which touch no driver, checked with the service's next build;
+  the pads' consumers at W4.3.
 
 ## 2026-10-22 - W4.0 built: the host's input driver and its package
 

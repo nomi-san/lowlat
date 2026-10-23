@@ -474,7 +474,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   value lies outside its range, so a report of zeroes would hold it up and pull both sticks into a
   corner, and the mouse's moves nothing. The host closes its handles when the system asks for the
   device, as the display's controller does (§1.8), so an update or a removal of the driver waits
-  on nothing of the host's. *Amended 2026-10-23, at W4.0's measurements:* **the device goes 50 ms
+  on nothing of the host's. *Measured 2026-10-23:* a game's handle still open on a pad does not
+  hold the device back -- the host's close took 51 ms, the game's pending read answered with the
+  pad at rest -- but the driver's removal then finishes at a reboot: the device and its packages
+  go and an install works at once, on a new root device, while the old driver host stays until
+  the reboot. *Amended 2026-10-23, at W4.0's measurements:* **the device goes 50 ms
   after its neutral reports.** The system's keyboard path drops a report still on its way when
   the device is deleted: raw input saw a key go down and never come up, though the system's own
   key state and its hooks saw the release -- a game reading raw input kept the key held, and a
