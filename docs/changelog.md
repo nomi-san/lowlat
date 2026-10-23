@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-23 - W4.0 on the machine: installed, checked and measured
+
+### Changed
+- **The input driver names no device's instance**; the virtual HID framework names each itself
+  ([11 §2](11-drivers.md)). The name the driver gave reached the framework a character short, so
+  two slots of one ten shared it, and two devices of one name stop the machine rather than being
+  refused. A kind and slot is still one device at a time, in a container of its own.
+- **A device goes 50 ms after its neutral reports**: the system's keyboard path dropped a release
+  still on its way when the device was deleted, so raw input kept the key held.
+- **The driver raises its own host process to the high class** as it loads: at the normal class,
+  under load, a write waited 10 to 15 ms now and then and some mouse reports were lost.
+- **An absolute position on an output other than the primary goes through the batch input call**
+  (the maintainer's decision): the HID mouse's absolute range spans the primary display alone.
+
+### Checked
+- Installed, updated, removed and installed again by its script on this machine, no reboot; the
+  six checks on the machine pass, a killed host's key included, its release now reaching raw
+  input in 50 of 50 removals.
+- W4.0's measurements: a device listed in raw input within 10 ms of its making and delivering
+  within 5 ms of the listing; the absolute range and its pixel at 100 and 125 percent; the
+  keyboard's forms and the consumer collection; the wheel's multiplier; a report's arrival in raw
+  input against the batch input call, idle and under one busy loop per logical processor, at 125
+  and 1000 a second; whole up to 2000 reports a second; a click on the relative collection
+  landing where a move on the absolute one put the pointer, 300 of 300 idle and under load.
+- Owed: a removal while a program holds a pad open, the service's install and removal leaving the
+  driver as they found it, and the driver found at the next switch-on; the pads' consumers at
+  W4.3.
+
 ## 2026-10-22 - W4.0 built: the host's input driver and its package
 
 ### Added

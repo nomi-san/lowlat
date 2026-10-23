@@ -2066,9 +2066,11 @@ are through. The decisions are recorded once, here; the design they add up to is
   no button, the sticks centred -- so a host that dies leaves nothing held. *Amended 2026-10-22, at
   W4's review:* **the neutral report is each kind's own**, defined beside its descriptor and
   checked against it: a pad's d-pad is a hat whose released value lies outside its range, so a
-  report of zeroes holds it up and pulls both sticks into a corner; the mouse's moves nothing. The
-  host closes its handles when the system asks for the device, as the display's controller does,
-  so the driver's update or removal never waits for a reboot on the host. Nothing keeps a device
+  report of zeroes holds it up and pulls both sticks into a corner; the mouse's moves nothing.
+  *Amended 2026-10-23, at W4.0's measurements:* **the device goes 50 ms after its neutral
+  reports** ([11 §2](11-drivers.md)). The host closes its handles when the system asks for the
+  device, as the display's controller does, so the driver's update or removal never waits for a
+  reboot on the host. Nothing keeps a device
   alive by traffic. A device's instance is stable per kind and slot, so the system sets a slot's
   device up once rather than at every connection. *Amended 2026-10-23:* **the framework names each
   device's instance, the driver none**, as two devices of one name stop the machine rather than
@@ -2118,7 +2120,11 @@ are through. The decisions are recorded once, here; the design they add up to is
   system keeping a move on one collection before the click that follows it on the other, measured
   at W4.0; where it does not, a button rides the absolute report at the pointer's place read back.
   Where the absolute range lands with more than one display is measured before the pointer is
-  built (W4.0), and an output it cannot reach is decided then.
+  built (W4.0), and an output it cannot reach is decided then. *Decided 2026-10-23, at W4.0's
+  measurements:* the range spans the primary display alone, so **an absolute position on any
+  other output goes through the batch input call**, its relative motion, buttons and wheels
+  through the HID mouse (the maintainer's decision); and a move on one collection stayed ahead of
+  the click on the other in 300 of 300 pairs, idle and under load.
 - **The attention chord is never typed on the HID keyboard.** A hardware keyboard's
   Ctrl+Alt+Del raises the secure screen, which the same keys through the batch input call never
   do ([05 §7.3](05-host.md)), so on this keyboard a guest's ordinary key messages would raise it,
@@ -2244,6 +2250,15 @@ library's demo:
 
 ## Change log
 
+- 2026-10-23: W4.0 measured on this machine: the absolute range spans the primary display alone,
+  so an absolute position on any other output goes through the batch input call (the
+  maintainer's decision; [11 §2](11-drivers.md) amended); a move on one collection stays ahead of
+  the click on the other. W4's decision on the pointer amended. The device goes 50 ms after its
+  neutral reports: the system's keyboard path dropped a release still on its way at the delete,
+  so raw input kept the key held ([11 §2](11-drivers.md) amended). The input driver keeps a host
+  process of its own and raises it to the high class as it loads: at the normal class a write
+  waited 10 to 15 ms now and then under load (the maintainer's decision; [11 §2](11-drivers.md)
+  amended).
 - 2026-10-23: the input driver names no device's instance; the virtual HID framework names each
   itself (the maintainer's decision, after a run of W4.0's checks stopped the machine on two
   devices of one name, the per-slot name having reached the framework a character short). A kind

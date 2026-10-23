@@ -427,6 +427,13 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   what it shares with the host is `lowlat-hid-proto`, which has no platform code.
 - Whether it runs in a host process of its own or in the pool the system keeps for HID drivers
   at a raised priority is measured (W4.0): the write it takes is on the path of every input.
+  *Decided 2026-10-23, at W4.0's measurements:* **a host process of its own, which the driver
+  raises to the high class as it loads**, a class that takes no privilege. At the normal class,
+  under one busy loop per logical processor and 1000 reports a second, a write now and then
+  waited 10 to 15 ms and 11 to 18 mouse reports in 4,000 were lost; at the high class the worst
+  was 0.6 ms and none were lost. Idle, the two are alike, and the host's work is about 40 us of
+  processor a report either way. The pool would share a process with other vendors' input
+  drivers.
 - Its log goes to the debugger stream, as the display's does.
 - Installed, updated and removed by a script of its own, which the machine's administrator runs,
   as the display's driver is (*amended 2026-10-22*); nothing of the host installs it, and the
@@ -467,7 +474,12 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   value lies outside its range, so a report of zeroes would hold it up and pull both sticks into a
   corner, and the mouse's moves nothing. The host closes its handles when the system asks for the
   device, as the display's controller does (§1.8), so an update or a removal of the driver waits
-  on nothing of the host's.
+  on nothing of the host's. *Amended 2026-10-23, at W4.0's measurements:* **the device goes 50 ms
+  after its neutral reports.** The system's keyboard path drops a report still on its way when
+  the device is deleted: raw input saw a key go down and never come up, though the system's own
+  key state and its hooks saw the release -- a game reading raw input kept the key held, and a
+  release the host wrote just before closing was lost the same way. With 20 ms before the delete
+  every release arrived; the mouse's and the pads' last reports arrived either way.
 
 ### §2.3 The devices
 
@@ -490,7 +502,12 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   relative goes on. It rests on the system keeping a move on one collection before the click that
   follows on the other, measured at W4.0; where it does not, a button rides the absolute report at
   the pointer's place read back. Where the absolute range lands with more than one display is
-  measured at W4.0.
+  measured at W4.0. *Measured 2026-10-23:* **the move stays ahead of the click**, 300 of 300 pairs
+  written back to back, idle and under one busy loop per logical processor; and **the absolute
+  range spans the primary display alone**, a value v landing on its pixel floor(v x W / 32768) in
+  its own pixels at 100 and 125 percent alike, so an absolute position on any other output goes
+  through the batch input call, the relative motion, buttons and wheels staying on the HID mouse
+  (the maintainer's decision).
 - **The DualShock 4 and the DualSense**: the real products' descriptors and identities, as the
   Linux host presents them ([07 §4.2](07-platforms.md)). The driver answers a feature read from
   the pad's table -- the peer's calibration and firmware, else a real pad's, and a pairing report
