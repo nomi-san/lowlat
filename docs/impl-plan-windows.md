@@ -2070,7 +2070,10 @@ are through. The decisions are recorded once, here; the design they add up to is
   host closes its handles when the system asks for the device, as the display's controller does,
   so the driver's update or removal never waits for a reboot on the host. Nothing keeps a device
   alive by traffic. A device's instance is stable per kind and slot, so the system sets a slot's
-  device up once rather than at every connection. The pads carry the real products' identities,
+  device up once rather than at every connection. *Amended 2026-10-23:* **the framework names each
+  device's instance, the driver none**, as two devices of one name stop the machine rather than
+  being refused ([11 §2](11-drivers.md)); a kind and slot stays one device at a time, in a
+  container of its own. The pads carry the real products' identities,
   as on Linux; the keyboard and the mouse carry an identity of the project's own, never a real
   vendor's.
 - **The control interface admits the system account and administrators alone.** A device's
@@ -2241,6 +2244,11 @@ library's demo:
 
 ## Change log
 
+- 2026-10-23: the input driver names no device's instance; the virtual HID framework names each
+  itself (the maintainer's decision, after a run of W4.0's checks stopped the machine on two
+  devices of one name, the per-slot name having reached the framework a character short). A kind
+  and slot stays one device at a time, in a container of its own ([11 §2](11-drivers.md)
+  amended). W4's decision on the kinds amended.
 - 2026-10-22: W4 reviewed: the mouse's buttons and wheels on its relative collection alone, the
   absolute one carrying positions (the maintainer's decision); a neutral report per kind; the
   host letting the driver go when the system asks; `lowlatd`'s flag with no driver; W4.0's

@@ -505,7 +505,13 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   projects' shared vendor and two of its test products, `1209:0001` and `1209:0002`, an
   identity assigned to the project before a release; the instance names the kind and the slot,
   and each kind and slot has a container of its own. The mouse answers its multipliers' feature
-  report itself and keeps what the system sets there.
+  report itself and keeps what the system sets there. *Amended 2026-10-23:* **the driver names no
+  instance; the framework names each device itself.** Two devices of one name stop the machine
+  rather than being refused, and a run of W4.0's checks did: the name reached the framework a
+  character short, so two slots of one ten shared it. A kind and slot is still one device at a
+  time, in a container of its own. The framework gives the first device of a kind the same name at
+  every connection, so the system sets it up once; a second of the kind at the same time gets a
+  new name, and a setup, each time.
 
 ### §2.4 Lifetimes
 
