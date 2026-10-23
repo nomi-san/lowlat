@@ -10,28 +10,32 @@
 //! the virtual HID framework, so none of its callbacks can wait on one the
 //! call holds.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lowlat_common::{log_info, log_warn};
 use lowlat_hid_proto::control::{Create, FEATURE_MAX, Features, Written, WrittenKind};
-use lowlat_hid_proto::{Kind, MAX_DEVICES, container_id};
+use lowlat_hid_proto::{Claim, Kind, Live, container_id};
 
 use crate::ffi::{
     GUID, HID_XFER_PACKET, NTSTATUS, PHID_XFER_PACKET, PVOID, STATUS_BUFFER_TOO_SMALL,
-    STATUS_CANCELLED, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_DEVICE_STATE,
-    STATUS_INVALID_PARAMETER, STATUS_SUCCESS, ULONG, ULONG_PTR, VHF_CONFIG, VHFHANDLE,
-    VHFOPERATIONHANDLE, VhfAsyncOperationComplete, VhfCreate, VhfDelete, VhfReadReportSubmit,
-    VhfStart, WDF_IO_TARGET_OPEN_PARAMS, WDFDEVICE, WDFFILEOBJECT, WDFIOTARGET, WDFQUEUE,
-    WDFREQUEST, WdfIoTargetOpenLocalTargetByFile, nt_success, object_attributes, size_of,
-    status_word, wdf_io_queue_retrieve_request_by_file_object, wdf_io_target_create,
-    wdf_io_target_open, wdf_io_target_wdm_get_target_file_handle, wdf_object_delete,
-    wdf_request_complete, wdf_request_complete_with_information, wdf_request_forward_to_io_queue,
-    wdf_request_retrieve_output_buffer,
+    STATUS_CANCELLED, STATUS_DEVICE_BUSY, STATUS_INSUFFICIENT_RESOURCES,
+    STATUS_INVALID_DEVICE_STATE, STATUS_INVALID_PARAMETER, STATUS_SUCCESS, ULONG, ULONG_PTR,
+    VHF_CONFIG, VHFHANDLE, VHFOPERATIONHANDLE, VhfAsyncOperationComplete, VhfCreate, VhfDelete,
+    VhfReadReportSubmit, VhfStart, WDF_IO_TARGET_OPEN_PARAMS, WDFDEVICE, WDFFILEOBJECT,
+    WDFIOTARGET, WDFQUEUE, WDFREQUEST, WdfIoTargetOpenLocalTargetByFile, nt_success,
+    object_attributes, size_of, status_word, wdf_io_queue_retrieve_request_by_file_object,
+    wdf_io_target_create, wdf_io_target_open, wdf_io_target_wdm_get_target_file_handle,
+    wdf_object_delete, wdf_request_complete, wdf_request_complete_with_information,
+    wdf_request_forward_to_io_queue, wdf_request_retrieve_output_buffer,
 };
 
-/// How many devices exist across every handle, held at [`MAX_DEVICES`].
-static MADE: AtomicUsize = AtomicUsize::new(0);
+/// The kinds and slots with a device, across every handle: one device to a
+/// kind and slot, at most [`lowlat_hid_proto::MAX_DEVICES`] in all.
+static LIVE: Mutex<Live> = Mutex::new(Live::new());
+
+fn live() -> MutexGuard<'static, Live> {
+    LIVE.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// How many of the system's writes wait for the host; past it the oldest
 /// goes, each being a whole state.
@@ -74,18 +78,13 @@ struct State {
     dropped: u32,
 }
 
-/// The made device, and what it was made with: the framework reads the
-/// instance name the configuration points at, so both live as long as it.
+/// The made device, and the configuration it was made with, kept as long as
+/// it.
 struct Device {
     kind: Kind,
     slot: u8,
     vhf: VHFHANDLE,
-    _made_with: Box<MadeWith>,
-}
-
-struct MadeWith {
-    instance: [u16; 5],
-    config: VHF_CONFIG,
+    _made_with: Box<VHF_CONFIG>,
 }
 
 #[derive(Clone, Copy)]
@@ -231,13 +230,10 @@ impl File {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Make the handle's device: one to a handle, at most [`MAX_DEVICES`] in
-    /// all, its answers the kind's own with the request's on top.
+    /// Make the handle's device: one to a handle and one to a kind and slot,
+    /// its answers the kind's own with the request's on top.
     pub(crate) fn create(&self, request: &Create) -> NTSTATUS {
         let kind = request.kind;
-        let Some(instance) = kind.instance_id(request.slot) else {
-            return STATUS_INVALID_PARAMETER;
-        };
         let mut features = Features::of(kind);
         for report in request.features.iter() {
             if features.set(report).is_err() {
@@ -253,24 +249,31 @@ impl File {
             state.kind = Some(kind);
             state.features = features;
         }
-        if MADE.fetch_add(1, Ordering::AcqRel) >= MAX_DEVICES {
-            MADE.fetch_sub(1, Ordering::AcqRel);
-            self.lock().creating = false;
+        // Claimed before the device is made, across every handle: a kind and
+        // slot is one device at a time.
+        let claimed = live().claim(kind, request.slot);
+        if let Err(why) = claimed {
+            let mut state = self.lock();
+            state.creating = false;
+            state.kind = None;
             log_warn!(
-                "hid: device refused, every device made, kind={kind:?} slot={}",
+                "hid: device refused, kind={kind:?} slot={} why={why:?}",
                 request.slot
             );
-            return STATUS_INSUFFICIENT_RESOURCES;
+            return match why {
+                Claim::Taken => STATUS_DEVICE_BUSY,
+                Claim::Full => STATUS_INSUFFICIENT_RESOURCES,
+                Claim::Slot => STATUS_INVALID_PARAMETER,
+            };
         }
 
         let identity = kind.identity();
         let container = container_id(kind, request.slot);
         let descriptor = kind.descriptor();
-        let mut made = Box::new(MadeWith {
-            instance: *instance.with_nul(),
-            config: VHF_CONFIG::default(),
-        });
-        made.config = VHF_CONFIG {
+        // No instance: the framework names each device itself, so no two can
+        // share a name, which the system's device manager stops the machine
+        // on rather than refusing.
+        let mut made = Box::new(VHF_CONFIG {
             Size: size_of::<VHF_CONFIG>(),
             VhfClientContext: core::ptr::from_ref(self).cast_mut().cast(),
             // SAFETY: the target this handle opened.
@@ -284,8 +287,6 @@ impl File {
                 Data3: container.data3,
                 Data4: container.data4,
             },
-            InstanceIDLength: instance.byte_len(),
-            InstanceID: made.instance.as_mut_ptr(),
             ReportDescriptorLength: u16::try_from(descriptor.len()).unwrap_or(0),
             ReportDescriptor: descriptor.as_ptr().cast_mut(),
             EvtVhfAsyncOperationGetFeature: Some(get_feature),
@@ -293,12 +294,12 @@ impl File {
             EvtVhfAsyncOperationWriteReport: Some(write_report),
             EvtVhfAsyncOperationGetInputReport: Some(get_input_report),
             ..Default::default()
-        };
+        });
 
         let mut vhf: VHFHANDLE = core::ptr::null_mut();
-        // SAFETY: a whole configuration whose pointers live in `made` and in
-        // static descriptors, and a live output.
-        let mut status = unsafe { VhfCreate(&raw mut made.config, &raw mut vhf) };
+        // SAFETY: a whole configuration whose pointers are static descriptors,
+        // and a live output.
+        let mut status = unsafe { VhfCreate(&raw mut *made, &raw mut vhf) };
         if nt_success(status) {
             // SAFETY: the device just made.
             status = unsafe { VhfStart(vhf) };
@@ -310,7 +311,7 @@ impl File {
         let mut state = self.lock();
         state.creating = false;
         if !nt_success(status) {
-            MADE.fetch_sub(1, Ordering::AcqRel);
+            live().release(kind, request.slot);
             state.kind = None;
             log_warn!(
                 "hid: device not made, kind={kind:?} slot={} status={:#x}",
@@ -445,7 +446,7 @@ pub(crate) fn close(file: Box<File>) {
         // SAFETY: the device made on this handle, deleted once; the delete
         // waits, so no callback reaches the state after it.
         unsafe { VhfDelete(device.vhf, 1) };
-        MADE.fetch_sub(1, Ordering::AcqRel);
+        live().release(device.kind, device.slot);
         log_info!(
             "hid: device removed, kind={:?} slot={} writes_dropped={dropped}",
             device.kind,

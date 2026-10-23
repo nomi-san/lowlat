@@ -329,7 +329,11 @@ mod tests {
     use super::*;
     use lowlat_hid_proto::{keyboard, mouse, pad};
     use std::time::{Duration, Instant};
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_DRP_BASE_CONTAINERID, CM_DRP_HARDWAREID, CM_Get_DevNode_Registry_PropertyW,
+        CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
+    };
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_BUSY};
     use windows_sys::Win32::Security::{
         CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, RevertToSelf,
         SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
@@ -342,10 +346,69 @@ mod tests {
         RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
     };
 
-    /// The devices raw input lists for `kind`'s identity, by type.
-    fn listed(kind: Kind) -> Vec<u32> {
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// The device node of a present device instance.
+    fn node(instance: &str) -> Option<u32> {
+        let id = wide(instance);
+        let mut node = 0u32;
+        // SAFETY: a terminated identifier and a live output.
+        let cr =
+            unsafe { CM_Locate_DevNodeW(&raw mut node, id.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) };
+        (cr == CR_SUCCESS).then_some(node)
+    }
+
+    /// A node's text property, each string of a list, upper-cased.
+    fn strings(node: u32, property: u32) -> Vec<String> {
+        let mut buffer = [0u16; 1024];
+        let mut len = u32::try_from(size_of_val(&buffer)).unwrap();
+        // SAFETY: a buffer of `len` bytes; no type asked for.
+        let cr = unsafe {
+            CM_Get_DevNode_Registry_PropertyW(
+                node,
+                property,
+                core::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &raw mut len,
+                0,
+            )
+        };
+        if cr != CR_SUCCESS {
+            return Vec::new();
+        }
+        let units = buffer.get(..len as usize / 2).unwrap_or(&buffer);
+        units
+            .split(|unit| *unit == 0)
+            .filter(|id| !id.is_empty())
+            .map(|id| String::from_utf16_lossy(id).to_uppercase())
+            .collect()
+    }
+
+    /// The container of `kind`'s device in `slot`, as the system writes it,
+    /// upper-cased.
+    fn container(kind: Kind, slot: u8) -> String {
+        let id = lowlat_hid_proto::container_id(kind, slot);
+        let d = id.data4;
+        format!(
+            "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+            id.data1, id.data2, id.data3, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
+        )
+    }
+
+    /// The devices raw input lists with `kind`'s identity: each one's type and
+    /// container. Raw input names a device of the virtual HID framework by the
+    /// framework's own identifier (`HID_DEVICE_SYSTEM_VHF`) and an instance
+    /// the framework chose: the kind's vendor and product are among its
+    /// hardware identifiers alone, and its container names the kind and the
+    /// slot.
+    fn listed(kind: Kind) -> Vec<(u32, String)> {
         let identity = kind.identity();
-        let wanted = format!("VID_{:04X}&PID_{:04X}", identity.vendor, identity.product);
+        let wanted = format!(
+            "HID\\VID_{:04X}&PID_{:04X}",
+            identity.vendor, identity.product
+        );
         let mut count = 0u32;
         let size = u32::try_from(size_of::<RAWINPUTDEVICELIST>()).unwrap();
         // SAFETY: a count query.
@@ -370,12 +433,36 @@ mod tests {
             if written == u32::MAX {
                 continue;
             }
+            // `\\?\HID#...&COL01#2&...&0000#{class}`: the instance between the
+            // prefix and the interface's class, a `#` for each `\`.
             let name = String::from_utf16_lossy(&name[..written as usize]).to_uppercase();
-            if name.contains(&wanted) {
-                found.push(device.dwType);
+            let Some((path, _class)) = name.trim_start_matches(r"\\?\").rsplit_once('#') else {
+                continue;
+            };
+            let Some(node) = node(&path.replace('#', "\\")) else {
+                continue;
+            };
+            let ours = strings(node, CM_DRP_HARDWAREID).iter().any(|id| {
+                id.strip_prefix(&wanted)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('&'))
+            });
+            if ours {
+                let container = strings(node, CM_DRP_BASE_CONTAINERID).into_iter().next();
+                found.push((device.dwType, container.unwrap_or_default()));
             }
         }
         found
+    }
+
+    /// The types listed for `kind`'s device in `slot`: those in the kind's
+    /// and slot's container.
+    fn ours(kind: Kind, slot: u8) -> Vec<u32> {
+        let container = container(kind, slot);
+        listed(kind)
+            .into_iter()
+            .filter(|(_, listed)| *listed == container)
+            .map(|(kind, _)| kind)
+            .collect()
     }
 
     fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> Option<Duration> {
@@ -389,10 +476,11 @@ mod tests {
         None
     }
 
-    /// **Each kind arrives as the system's own device and goes with its
-    /// handle**: a keyboard and a mouse the system's own drivers claim, a pad
-    /// the game controller class does, listed by raw input under the kind's
-    /// identity; gone again once the handle closes.
+    /// **Each kind arrives as the system's own device in its kind's and slot's
+    /// container, and goes with its handle**: a keyboard and a mouse the
+    /// system's own drivers claim, a pad the game controller class does,
+    /// listed by raw input with the kind's identity and in the container that
+    /// names the kind and the slot; gone again once the handle closes.
     #[test]
     #[ignore = "needs the input driver installed and an elevated shell"]
     fn each_kind_arrives_as_the_systems_own_device_and_goes_with_its_handle() {
@@ -403,18 +491,22 @@ mod tests {
             (Kind::DualSense, 62, RIM_TYPEHID),
         ] {
             assert!(
-                listed(kind).is_empty(),
+                ours(kind, slot).is_empty(),
                 "{kind:?} listed before it was made"
             );
             let device = Device::create(kind, slot, Features::new()).unwrap();
-            let arrived = wait_until(Duration::from_secs(10), || listed(kind).contains(&expected));
+            let arrived = wait_until(Duration::from_secs(10), || {
+                ours(kind, slot).contains(&expected)
+            });
             eprintln!("{kind:?}: listed after {arrived:?}, as {:?}", listed(kind));
             assert!(
                 arrived.is_some(),
-                "{kind:?} never listed as type {expected}"
+                "{kind:?} never listed as type {expected} in container {}: {:?}",
+                container(kind, slot),
+                listed(kind)
             );
             drop(device);
-            let gone = wait_until(Duration::from_secs(10), || listed(kind).is_empty());
+            let gone = wait_until(Duration::from_secs(10), || ours(kind, slot).is_empty());
             eprintln!("{kind:?}: gone after {gone:?}");
             assert!(
                 gone.is_some(),
@@ -512,6 +604,17 @@ mod tests {
         assert_eq!(pad.written(), Ok(None), "nothing written to the pad yet");
     }
 
+    /// A child process, killed when dropped: a check failing while the child
+    /// holds its device leaves neither the device nor its key behind.
+    struct Child(std::process::Child);
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     /// The child of the next test: a keyboard holding F24 until it is killed.
     #[test]
     #[ignore = "run by a_killed_host_leaves_no_key_held"]
@@ -539,16 +642,22 @@ mod tests {
             (unsafe { GetAsyncKeyState(VK_F24) } as u16) & 0x8000 != 0
         };
         assert!(!down(), "F24 down before the test");
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "hid::tests::a_child_holding_a_key"])
-            .env("LOWLAT_HID_CHILD", "1")
-            .spawn()
-            .unwrap();
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "hid::tests::a_child_holding_a_key"])
+                .env("LOWLAT_HID_CHILD", "1")
+                .spawn()
+                .unwrap(),
+        );
         let held = wait_until(Duration::from_secs(10), down);
         eprintln!("F24 down after {held:?}");
         assert!(held.is_some(), "the child's key never went down");
-        child.kill().unwrap();
-        let _ = child.wait();
+        assert!(
+            ours(Kind::Keyboard, 11).contains(&RIM_TYPEKEYBOARD),
+            "the child's keyboard listed while it holds the key"
+        );
+        child.0.kill().unwrap();
+        let _ = child.0.wait();
         let released = wait_until(Duration::from_secs(10), || !down());
         eprintln!("F24 up after {released:?} from the kill");
         assert!(
@@ -556,8 +665,29 @@ mod tests {
             "F24 still down after its host was killed"
         );
         let gone = wait_until(Duration::from_secs(10), || {
-            listed(Kind::Keyboard).is_empty()
+            ours(Kind::Keyboard, 11).is_empty()
         });
         assert!(gone.is_some(), "the killed host's keyboard still listed");
+    }
+
+    /// **A kind and slot is one device at a time**: a second handle asking
+    /// for the kind and slot another's device holds is refused as busy, and
+    /// given it once that device goes.
+    #[test]
+    #[ignore = "needs the input driver installed and an elevated shell"]
+    fn a_kind_and_slot_is_one_device_at_a_time() {
+        let first = Device::create(Kind::Keyboard, 10, Features::new()).unwrap();
+        assert_eq!(
+            Device::create(Kind::Keyboard, 10, Features::new()).unwrap_err(),
+            Error::Refused(ERROR_BUSY)
+        );
+        let other = Device::create(Kind::Mouse, 10, Features::new());
+        assert!(other.is_ok(), "another kind in the slot: {other:?}");
+        drop(first);
+        let again = Device::create(Kind::Keyboard, 10, Features::new());
+        assert!(
+            again.is_ok(),
+            "the slot again once its device went: {again:?}"
+        );
     }
 }

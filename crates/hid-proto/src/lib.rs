@@ -67,8 +67,83 @@ pub const PADS_PER_GUEST: u32 = 4;
 /// mouse and pads.
 pub const MAX_DEVICES: usize = (GUEST_SLOTS * (2 + PADS_PER_GUEST)) as usize;
 
-/// A device's container, the same for a kind and slot at every connection, so
-/// the system sets that device up once.
+/// The kinds and slots that have a device, which the driver keeps across
+/// every handle: **a kind and slot is one device at a time**, the one in the
+/// kind's and slot's container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Live {
+    /// A word per kind, a bit per slot.
+    slots: [u64; Kind::ALL.len()],
+    count: usize,
+}
+
+/// Why a kind's slot was not claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// A slot the kind does not have.
+    Slot,
+    /// A device of the kind exists in the slot.
+    Taken,
+    /// Every device the driver makes exists.
+    Full,
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Live {
+    pub const fn new() -> Self {
+        Self {
+            slots: [0; Kind::ALL.len()],
+            count: 0,
+        }
+    }
+
+    fn bit(kind: Kind, slot: u8) -> Option<(usize, u64)> {
+        if u32::from(slot) >= kind.slots() {
+            return None;
+        }
+        Some((
+            usize::from(kind as u8).checked_sub(1)?,
+            1u64.checked_shl(u32::from(slot))?,
+        ))
+    }
+
+    /// Claim `kind`'s `slot` for a device about to be made.
+    pub fn claim(&mut self, kind: Kind, slot: u8) -> Result<(), Claim> {
+        let (at, bit) = Self::bit(kind, slot).ok_or(Claim::Slot)?;
+        let word = self.slots.get_mut(at).ok_or(Claim::Slot)?;
+        if *word & bit != 0 {
+            return Err(Claim::Taken);
+        }
+        if self.count >= MAX_DEVICES {
+            return Err(Claim::Full);
+        }
+        *word |= bit;
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Give `kind`'s `slot` back once its device is gone.
+    pub fn release(&mut self, kind: Kind, slot: u8) {
+        let Some((at, bit)) = Self::bit(kind, slot) else {
+            return;
+        };
+        if let Some(word) = self.slots.get_mut(at)
+            && *word & bit != 0
+        {
+            *word &= !bit;
+            self.count -= 1;
+        }
+    }
+}
+
+/// A device's container, the same for a kind and slot at every connection:
+/// the system shows a container as one device, whatever the virtual HID
+/// framework names the device's instance.
 pub const fn container_id(kind: Kind, slot: u8) -> Guid {
     Guid {
         data1: 0x5234_c8de,
@@ -97,5 +172,47 @@ mod tests {
             "each kind its own"
         );
         assert_eq!(MAX_DEVICES, 96);
+    }
+
+    #[test]
+    fn a_kind_and_slot_is_one_device_at_a_time_and_96_in_all() {
+        let mut live = Live::new();
+        assert_eq!(live.claim(Kind::Keyboard, 10), Ok(()));
+        assert_eq!(
+            live.claim(Kind::Keyboard, 10),
+            Err(Claim::Taken),
+            "one instance, one device"
+        );
+        assert_eq!(live.claim(Kind::Mouse, 10), Ok(()), "each kind its own");
+        assert_eq!(live.claim(Kind::Keyboard, 11), Ok(()), "a slot apart");
+        assert_eq!(live.claim(Kind::Keyboard, 16), Err(Claim::Slot));
+        assert_eq!(live.claim(Kind::DualSense, 63), Ok(()), "a pad's last slot");
+        assert_eq!(live.claim(Kind::DualSense, 64), Err(Claim::Slot));
+        live.release(Kind::Keyboard, 10);
+        assert_eq!(
+            live.claim(Kind::Keyboard, 10),
+            Ok(()),
+            "free again once its device went"
+        );
+
+        let mut full = Live::new();
+        let mut made = 0;
+        for kind in Kind::ALL {
+            for slot in 0..u8::try_from(kind.slots()).unwrap() {
+                if full.claim(kind, slot).is_ok() {
+                    made += 1;
+                }
+            }
+        }
+        assert_eq!(made, MAX_DEVICES);
+        assert_eq!(full.claim(Kind::DualSense, 0), Err(Claim::Full));
+        full.release(Kind::DualSense, 0);
+        assert_eq!(
+            full.claim(Kind::DualSense, 0),
+            Err(Claim::Full),
+            "a slot never claimed gives nothing back"
+        );
+        full.release(Kind::Keyboard, 3);
+        assert_eq!(full.claim(Kind::DualSense, 0), Ok(()));
     }
 }

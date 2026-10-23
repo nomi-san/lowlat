@@ -148,54 +148,6 @@ impl Kind {
             Kind::DualSense => &pad::DS5_FEATURES,
         }
     }
-
-    /// The two letters a device's instance starts with.
-    const fn prefix(self) -> [u8; 2] {
-        match self {
-            Kind::Keyboard => *b"kb",
-            Kind::Mouse => *b"ms",
-            Kind::DualShock4 => *b"d4",
-            Kind::DualSense => *b"d5",
-        }
-    }
-
-    /// The device's instance, the same for a kind and slot at every
-    /// connection, so the system sets that device up once rather than at each.
-    /// None for a slot the kind does not have.
-    pub fn instance_id(self, slot: u8) -> Option<InstanceId> {
-        if u32::from(slot) >= self.slots() {
-            return None;
-        }
-        let [first, second] = self.prefix();
-        Some(InstanceId {
-            units: [
-                u16::from(first),
-                u16::from(second),
-                u16::from(b'0' + slot / 10),
-                u16::from(b'0' + slot % 10),
-                0,
-            ],
-        })
-    }
-}
-
-/// A device's instance: the kind's two letters and the slot in two digits, in
-/// the system's wide characters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InstanceId {
-    units: [u16; 5],
-}
-
-impl InstanceId {
-    /// The characters, terminated.
-    pub const fn with_nul(&self) -> &[u16; 5] {
-        &self.units
-    }
-
-    /// The length in bytes, the terminator left out.
-    pub const fn byte_len(&self) -> u16 {
-        8
-    }
 }
 
 #[cfg(test)]
@@ -287,28 +239,6 @@ mod tests {
                 "{kind:?}"
             );
         }
-    }
-
-    #[test]
-    fn an_instance_is_the_kinds_letters_and_its_slot() {
-        let id = Kind::DualSense.instance_id(63).unwrap();
-        let text: std::string::String = id.with_nul()[..4]
-            .iter()
-            .map(|unit| char::from(u8::try_from(*unit).unwrap()))
-            .collect();
-        assert_eq!(text, "d563");
-        assert_eq!(id.with_nul()[4], 0);
-        assert_eq!(
-            Kind::Keyboard.instance_id(7).unwrap().with_nul()[..4],
-            [107, 98, 48, 55]
-        );
-        assert_eq!(
-            Kind::Keyboard.instance_id(16),
-            None,
-            "a keyboard has a guest's slots"
-        );
-        assert!(Kind::DualShock4.instance_id(63).is_some());
-        assert_eq!(Kind::DualShock4.instance_id(64), None);
     }
 
     #[test]
