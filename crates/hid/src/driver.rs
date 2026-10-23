@@ -9,6 +9,10 @@ use lowlat_hid_proto::control::{
     Create, IOCTL_CREATE, IOCTL_VERSION, IOCTL_WRITTEN, Refused, VERSION, Version,
 };
 use lowlat_hid_proto::{CONTROL_INTERFACE, MAX_DEVICES};
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, HIGH_PRIORITY_CLASS, SetPriorityClass,
+};
 
 use crate::device::{self, File};
 use crate::ffi::{
@@ -72,7 +76,23 @@ pub(crate) unsafe fn entry(driver: PDRIVER_OBJECT, registry: PCUNICODE_STRING) -
             status_word(status)
         );
     }
+    raise_host();
     status
+}
+
+/// The driver host raised to the high class, which takes no privilege. The
+/// host is this driver's alone and its writes lie on the path of every input:
+/// at the normal class, beside busy work of the same class, a write waited
+/// many milliseconds now and then (measured at W4.0).
+fn raise_host() {
+    // SAFETY: the process's own pseudo-handle; no precondition.
+    if unsafe { SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) } == 0 {
+        // SAFETY: no precondition.
+        let error = unsafe { GetLastError() };
+        log_warn!("hid: host class not raised, error={error}");
+    } else {
+        log_info!("hid: host class raised to high");
+    }
 }
 
 fn guid(id: lowlat_hid_proto::Guid) -> GUID {

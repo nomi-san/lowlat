@@ -26,10 +26,11 @@ doctest = false
 [target.'cfg(windows)'.dependencies]
 lowlat-common.workspace = true
 lowlat-hid-proto.workspace = true
-# The debugger stream the log goes to.
+# The debugger stream the log goes to, and the driver host's class.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
 ] }
 
 [lints]

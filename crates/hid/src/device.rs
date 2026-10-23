@@ -11,6 +11,7 @@
 //! call holds.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use lowlat_common::{log_info, log_warn};
 use lowlat_hid_proto::control::{Create, FEATURE_MAX, Features, Written, WrittenKind};
@@ -47,6 +48,11 @@ const INPUT_IDS: usize = 2;
 
 /// The largest input report any kind sends.
 const INPUT_MAX: usize = 64;
+
+/// How long the neutral reports have to arrive before the device goes: the
+/// system's keyboard path drops a report still on its way at the delete,
+/// and raw input then never sees the keys come up.
+const NEUTRAL_SETTLE: Duration = Duration::from_millis(50);
 
 /// One handle's state.
 pub(crate) struct File {
@@ -424,9 +430,9 @@ impl File {
     }
 }
 
-/// The handle's close: **the kind's neutral reports, then the device goes**,
-/// so a host that ends, a killed one included, leaves nothing held; then the
-/// state goes with it.
+/// The handle's close: **the kind's neutral reports, time for them to arrive,
+/// then the device goes**, so a host that ends, a killed one included, leaves
+/// nothing held; then the state goes with it.
 pub(crate) fn close(file: Box<File>) {
     let (device, dropped) = {
         let mut state = file.lock();
@@ -443,6 +449,7 @@ pub(crate) fn close(file: Box<File>) {
                 );
             }
         }
+        std::thread::sleep(NEUTRAL_SETTLE);
         // SAFETY: the device made on this handle, deleted once; the delete
         // waits, so no callback reaches the state after it.
         unsafe { VhfDelete(device.vhf, 1) };
