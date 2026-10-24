@@ -282,8 +282,8 @@ whole:
 | `virtual_hz` | yes | The host's own display's refresh (minor 27). **Zero is the frame rate's ceiling**, `fps`, and 60 where that is zero too: a display composing faster than the stream takes pictures composes pictures nobody is sent. 24 to 480. (*Amended 2026-10-20, at W3.8*: where `fps` is zero too, **the display's own refresh**, which nothing puts back: the one the system restores for it as it is plugged -- the last its display settings saved -- 60 where it restores none, and whatever those settings set after, the stream pacing from it as from any display. Before, 60 was put back over a refresh a person set.) |
 
 **The fields only Windows acts on are declared on Windows alone** (*planned 2026-10-22*, W4):
-`virtual_width`, `virtual_height` and `virtual_hz` here, `virtual_fallback` and `wake_display` in
-the settled half below, and the input configuration whole (below), exist where the header is
+`virtual_width`, `virtual_height` and `virtual_hz` here, `virtual_fallback`, `wake_display` and
+`hold_memory_clock` in the settled half below, and the input configuration whole (below), exist where the header is
 compiled for Windows and nowhere else ([§11](#11-versioning)). Until that minor the ones that
 exist are accepted elsewhere and do nothing. A value whose meaning is Windows' alone, the output
 `virtual`, stays refused at the call elsewhere.
@@ -326,6 +326,7 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 | `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
 | `virtual_fallback` | Whether the host plugs its own display when nothing is lit (minor 27), checked at its start and again while it runs, and keeps it for as long as it runs. Lit is an output on the desktop with a monitor behind it: the last monitor's cable pulled leaves its output on the desktop with none, and that is nothing lit. **Off by default**, since it changes the machine; `lowlatd` turns it on. Windows alone has the display; elsewhere it is accepted and nothing is plugged. |
 | `wake_display` | Whether a stream wakes the display it captures as it starts, with one pointer move of no distance (minor 28). A stream holds its display on, but a display that slept before anybody arrived stays asleep under that and gives no pictures until input wakes it. **Off by default**, in `lowlatd` too (`--wake-display` turns it on): a guest's first input wakes the display, and a connection lights nothing at the desk by itself. Windows alone acts on it; elsewhere it is accepted and does nothing. |
+| `hold_memory_clock` | Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a floor for as long as it runs (minor 31): the lowest clock the GPU lists at or above half its top, the top its ceiling, the driver choosing between them. The driver's light-load memory states bound the encoder, 4 to 5 ms a picture at 1080p against 1 to 2 above them ([05 §4.2](05-host.md)). A hold outlives the process that took it, so a stream gives it back as it ends, and a host with this set gives back every NVIDIA GPU's as it starts. **Off by default**, since it changes the machine and needs the administrator; `lowlatd` turns it on. A host that cannot hold says why as each stream starts and streams on. Windows alone acts on it; elsewhere it is accepted and does nothing. |
 
 <a name="quality"></a>
 **`lowlat_quality` names where a host sits between delay and picture**, and it is the only
@@ -1559,6 +1560,11 @@ an earlier minor leaves it zero, off. The third half's handle now follows its dr
 monitor as it stands, and a plug the system refuses is unplugged again. No layout changes; a
 caller may read `out` after `LOWLAT_ERR_VDD_NOT_READY` only from this minor on.
 
+**Minor 31** (2026-10-24) is the memory clock ([§3](#3-host)): `hold_memory_clock` in
+`lowlat_host_config`, taking the first byte of the reserved half after `base_port`, whose
+`reserved` is one byte from this minor. Nothing moves, and a caller built against an earlier
+minor leaves it zero, off.
+
 **Minor 29** (2026-10-17) is the relay's carrier ([§3b](#3b-client)): `relay_carrier`
 appended to `lowlat_client_config`, and the `lowlat_relay_carrier` enumeration. Nothing moves, and
 a caller built against an earlier minor gets UDP.
@@ -1574,7 +1580,8 @@ appended to `lowlat_host_config` after the sound's, and `lowlat_host_set_input_c
 `lowlat_host_get_input_config`, all on Windows alone; the report pads' own minor gives
 `virtual_pads` one of its reserved bytes, moving nothing. The first of them also declares every
 other field only Windows acts on -- `virtual_width`, `virtual_height` and `virtual_hz` in
-`lowlat_host_video_config`, `virtual_fallback` and `wake_display` in `lowlat_host_config` --
+`lowlat_host_video_config`, `virtual_fallback`, `wake_display` and `hold_memory_clock` in
+`lowlat_host_config` --
 where the header is compiled for Windows alone, so elsewhere they no longer exist. On Windows
 the whole only grows at its end, so nothing moves there and a caller built against an earlier
 minor is refused by its size. **Off Windows something moves, before the first major version**, as

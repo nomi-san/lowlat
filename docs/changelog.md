@@ -3,6 +3,45 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-24 - A stream holds the GPU's memory clock
+
+### Changed
+- **A stream on an NVIDIA GPU holds the GPU's memory clock at a floor for as long as it runs**, on
+  Windows ([05 §4.2](05-host.md)): the lowest clock the GPU lists at or above half its top, the top
+  its ceiling. W3's gate had found the encoder's time following the memory clock, about 1 ms in
+  the card's high state and 4 to 5 ms in its middle one; held alone, the memory clock took an
+  offline encode at 1080p sixty a second from 5.1 to 5.9 ms at the median and 10 to 11 ms at the
+  99th percentile to 2.11 and 2.16. The stream gives the clock back as it ends, and a host asked to
+  hold gives back every NVIDIA GPU's as it starts, since a hold outlives the process that took it.
+  `hold_memory_clock` in `lowlat_host_config` (minor 31, [06 §3](06-api.md)), off by default;
+  `lowlatd` turns it on.
+- A window moved round the displays, which brought the gate's encode back to 1 ms, was one burst
+  of work among others: each lifts the card a state for seconds or minutes, and the state it falls
+  back to is the driver's choice.
+
+### Checked
+- Two tests. The floor, the lowest clock at or above half the top, on the development machine's
+  list and another generation's in any order: broken on purpose and seen to fail, the light-load
+  405 MHz taken with the half dropped. And on the development machine, as the administrator, a hold
+  under an encoder's load at 1080p sixty a second: held, the memory clock read 7001 MHz or more from
+  the fifth second on, the driver sitting at the floor, an encode 2.05 ms at the median and 2.19 at
+  the 99th percentile, at 18.3 W; given back, the clock fell to 405, the encode to 3.70 and 8.57, at
+  15.5 W -- the second half the break showing the first is the hold's.
+- The GPU found by the adapter's numbers on the development machine: one, listing memory clocks of
+  14001, 13801, 7001, 810 and 405 MHz.
+- Windows: format, lints and ASCII clean, tests 1429 passed, none failed, 154 ignored. Linux, on
+  a clean clone with the change applied: ASCII and format clean, the supply-chain check, the three
+  lint passes and the fuzz targets' check clean, tests 1414 passed and 88 ignored, the two that
+  fail being the dual-stack resolution tests a machine without a second address family fails
+  before the change as after it.
+- Live, the service on the change, an established client at 1920x1080 sixty a second on the host's
+  own display with a video playing on it: the memory clock at 7001 MHz throughout, an encode 1.74
+  to 1.87 ms at the median and 2.5 to 3.0 at the 99th percentile, and 3.1 to 3.5 at the median at
+  2560x1440 before the client asked for the smaller size. The hold taken off for two
+  minutes mid-session: the card in its middle state within fifteen seconds, the encode 4.4 to 4.9
+  and 8.3 to 9.8; put back, 1.74 to 1.79 and 2.1 to 2.3. About 2 W while held. Each rebuild, two
+  size changes, gave the clock back and took it again within a third of a second.
+
 ## 2026-10-24 - W3 closed: the gate on the development machine
 
 ### Checked

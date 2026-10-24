@@ -472,6 +472,37 @@ the quantiser floor on H.264 and ignores it on H.265, on the same part. So a hos
 and the two levers it derived, once per stream, and reports that setting back unchanged. Finding
 out what a device really did means measuring coded bytes.
 
+### §4.2 The GPU's memory clock while a stream runs
+
+*Added 2026-10-24.* **On an NVIDIA GPU a stream holds the memory clock at a floor for as long as
+it runs** (Windows; `hold_memory_clock`, [06 §3](06-api.md), on in `lowlatd`). The driver picks its
+power state from the GPU's load, and a stream's load -- a conversion and an encode a picture, a few
+percent of the GPU -- is light enough for its middle state, whose memory clock is a seventeenth of
+the top. **There the encoder and the conversion are bounded by memory, not by their own clocks**:
+on the development machine's GPU, a 1080p stream at 120 a second encoded a picture in 4.3 to 5.3
+ms in the middle state against 1.0 to 1.1 a state up, at graphics and video clocks higher in the
+middle state than above it, and converted it in 0.62 ms against 0.08. **Which state the driver
+picks is not the content's doing**: any burst of work -- a window dragged across displays, an
+encoder rebuilt -- lifts it a state, and it comes back down seconds or minutes later, so one
+stream of one video ran minutes at each with no input between. Held alone, the graphics clock left
+free, the memory clock took an encode at 1080p sixty a second from 5.1 to 5.9 ms at the median and
+10 to 11 ms at the 99th percentile to 2.11 and 2.16, and given back it went back; what was left was
+the video clock, which the driver had let fall to its own floor. Live, at 1080p sixty a second with
+a video playing on the captured display, a held stream encoded in 1.74 to 1.87 ms at the median
+and the same stream with the hold taken off in 4.4 to 4.9, its middle state back within fifteen
+seconds.
+
+**The floor is the lowest memory clock the GPU lists at or above half its top, and the ceiling its
+top**: the driver still chooses between the two, and the states below half are the light-load
+ones. Holding is the vendor's management library's and needs the administrator -- the service
+runs the host so -- and **a hold outlives the process that took it**: a stream gives the clock
+back as it ends, and a host asked to hold gives back every NVIDIA GPU's as it starts, in case a
+host before it ended without its stream's end. A host that cannot hold -- no library, no
+administrator, a GPU it cannot match -- says why as each stream starts and streams on. The GPU is
+matched by its maker's, device's and board's numbers, so two identical boards are left to the
+driver. The cost measured is 1 to 2.4 W while a stream runs. Linux is not measured, and its host
+does not hold.
+
 ## §5 Congestion and the frame gate
 
 Two actuators, driven entirely by host-local signals ([01 §10](01-protocol.md)). There is no

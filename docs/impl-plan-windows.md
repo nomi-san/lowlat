@@ -2262,6 +2262,9 @@ library's demo:
 
 ## Change log
 
+- 2026-10-24: a stream holds an NVIDIA GPU's memory clock at a floor while it runs (the
+  maintainer's decision), after W3's gate found the encoder at 4 to 5 ms in the card's middle
+  memory state against about 1 above it ([05 §4.2](05-host.md)).
 - 2026-10-24: W3's gate passed; W3 closed.
 - 2026-10-24: W3's gate leg of other vendors' virtual displays cut to one, an established host's
   own (the maintainer's decision): another vendor's virtual display is a panel to the host.
