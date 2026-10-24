@@ -30,9 +30,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The service's removal and install leave the input driver as they found it. A removal while a
   program holds a pad open goes through without blocking the host, but finishes at a reboot: the
   old driver host stays until then, and an install works at once meanwhile.
-- Owed: the driver found at the next switch-on, with the host's side; the service's removal and
-  install from the current source, which touch no driver, checked with the service's next build;
-  the pads' consumers at W4.3.
+- The service's removal and install from the current source touch neither driver, the display's
+  nor the input's, run from the staged folder on this machine.
+- Owed: the driver found at the next switch-on, with the host's side; the pads' consumers at
+  W4.3.
 
 ## 2026-10-22 - W4.0 built: the host's input driver and its package
 
