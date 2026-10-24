@@ -270,8 +270,8 @@ static void ask_rate()
 	printf("demo: asked the host for %u fps%s\n", fps, s == LOWLAT_OK ? "" : ", refused");
 }
 
-// The next of LOWLAT_MODES: a size, or a turn, alone in the element as a
-// settings panel sends either, so nothing else is changed.
+// The next of LOWLAT_MODES: a size, a turn or a bitrate, alone in the element
+// as a settings panel sends each, so nothing else is changed.
 static void ask_mode()
 {
 	const char *at = config::get().modes;
@@ -285,15 +285,18 @@ static void ask_mode()
 	char step[32];
 	snprintf(step, sizeof step, "%.*s", (int) strcspn(at, ","), at);
 	char body[96];
-	unsigned width = 0, height = 0;
+	unsigned width = 0, height = 0, mbps = 0;
+	int end = 0;
 	if (strcmp(step, "turn") == 0 || strcmp(step, "upright") == 0) {
 		snprintf(body, sizeof body, "{\"video\":[{\"rotated\":%s}]}",
 			step[0] == 't' ? "true" : "false");
 	} else if (sscanf(step, "%ux%u", &width, &height) == 2) {
 		snprintf(body, sizeof body, "{\"video\":[{\"resolutionX\":%u,\"resolutionY\":%u}]}",
 			width, height);
+	} else if (sscanf(step, "%u%n", &mbps, &end) == 1 && strcmp(step + end, "mbps") == 0) {
+		snprintf(body, sizeof body, "{\"video\":[{\"encoderMaxBitrate\":%u}]}", mbps);
 	} else {
-		printf("demo: %s is neither a size nor a turn\n", step);
+		printf("demo: %s is neither a size, a turn nor a bitrate\n", step);
 		return;
 	}
 	lowlat_status s = lowlat_client_send_user_data(_client, 11, body, (uint32_t) strlen(body));
