@@ -2209,6 +2209,13 @@ fn run(
         let exit = sys::build(shared, arrivals, &config, &mut roster, &mut own);
         match exit {
             Exit::Stopped => return,
+            Exit::NoDisplay => {
+                if answer_no_display(shared, &mut roster, &mut config, &mut previous_output) {
+                    // Paced as an end below is: the guests have to read the
+                    // reason and leave before their seats free.
+                    std::thread::sleep(IDLE_WAIT);
+                }
+            }
             // **A configuration the device refuses ends nobody.** Every bit a
             // peer declares is a preference -- the codec as much as the two
             // colour axes -- so a guest asks for one and takes what the stream
@@ -2433,6 +2440,13 @@ enum Exit {
     /// The encoder could not be built, or stopped working, and the guests are
     /// owed the reason.
     Failed(i32),
+    /// Nothing scanned out for the whole of the wait for a display
+    /// ([`DISPLAY_WAIT`]).
+    ///
+    /// **Not a configuration the device refused**, which is what a failure is
+    /// answered as: a preference taken off over a display that went away stays
+    /// off for every guest after it ([`answer_no_display`]).
+    NoDisplay,
     /// Every seated guest can decode this codec at this depth and chroma, and
     /// at least one asked for a configuration the running encoder does not
     /// produce.
@@ -2501,6 +2515,54 @@ fn degrade(config: &mut Config) -> Option<(u32, Dropped)> {
         ));
     }
     None
+}
+
+/// The wait for a display ran out ([`Exit::NoDisplay`]). True when the guests
+/// were ended.
+///
+/// **A display that is not there is not a preference refused.** A failure is
+/// answered by taking the guests' preferences off one at a time and
+/// remembering each, which is right for a device that cannot code what was
+/// asked and wrong here: a display gone for longer than the wait -- its driver
+/// reinstalled, a GPU slow to come back, a panel switched off -- left every
+/// later guest without the codec and the colour it asked for, while the line
+/// that said the guests were ended kept them (2026-10-24, at W3's gate). So
+/// nothing comes off. An output a guest asked for that never lit goes back to
+/// the one before it, as an output that encodes nothing does; otherwise every
+/// guest is told why, as the wait's own deadline promises, and the loop goes
+/// back to waiting.
+fn answer_no_display(
+    shared: &Shared,
+    roster: &mut Roster,
+    config: &mut Config,
+    previous_output: &mut Option<Option<String>>,
+) -> bool {
+    if let Some(back) = previous_output.take() {
+        lowlat_common::log_warn!(
+            "stream: {} never lit, staying on {}",
+            config.output.as_deref().unwrap_or("that output"),
+            back.as_deref().unwrap_or("the first output that is lit")
+        );
+        config.output = back;
+        // A different device is owed the question afresh.
+        shared.refused.store(0, Ordering::Relaxed);
+        return false;
+    }
+    lowlat_common::log_error!(
+        "stream: no display came back, ending {} guest(s), reason={}",
+        occupied_seats(shared),
+        status::CAPTURE_UNAVAILABLE
+    );
+    kick_all(shared, &roster.active, status::CAPTURE_UNAVAILABLE);
+    // **Nobody could be served**, as at an encoder that will not build: for
+    // the application this is the session not continuing.
+    if let Some(raise) = shared.raise.as_ref() {
+        raise.send(crate::admission::Event::Fatal {
+            reason: status::CAPTURE_UNAVAILABLE,
+        });
+    }
+    *roster = Roster::default();
+    true
 }
 
 /// End every seated guest, with a reason.
@@ -7013,6 +7075,85 @@ mod tests {
         kick_all(&shared, &active, status::NO_ROOM);
         assert_eq!(first.kicked(), Some(status::NO_ROOM));
         assert_eq!(second.kicked(), Some(status::NO_ROOM));
+    }
+
+    /// **A display gone past the wait ends the guests and costs no preference.**
+    ///
+    /// The wait's deadline promises the guests are told; and a display that is
+    /// not there says nothing about what the device can code, so the codec and
+    /// the colour a guest asked for stay asked for, for it and every guest
+    /// after it.
+    #[test]
+    fn a_display_gone_past_the_wait_ends_the_guests_and_drops_no_preference() {
+        let (shared, stream, _arrivals) = parked();
+        let guest = stream
+            .seats()
+            .take(wake_handle(), wake_handle(), Declared::default())
+            .expect("a seat");
+        let mut roster = Roster::default();
+        let mut config = Config {
+            ten_bit: true,
+            chroma_444: true,
+            ..test_config(Codec::H265)
+        };
+        let mut previous_output = None;
+
+        assert!(
+            answer_no_display(&shared, &mut roster, &mut config, &mut previous_output),
+            "the guests were kept waiting on a display that did not come back"
+        );
+
+        assert_eq!(
+            guest.kicked(),
+            Some(status::CAPTURE_UNAVAILABLE),
+            "the guest was not told why"
+        );
+        assert_eq!(
+            shared.refused.load(Ordering::Relaxed),
+            0,
+            "a preference was remembered as refused, for every guest after"
+        );
+        assert_eq!(config.codec, Codec::H265, "the codec came off");
+        assert!(config.ten_bit, "ten-bit colour came off");
+        assert!(config.chroma_444, "full chroma came off");
+    }
+
+    /// **An output asked for that never lit goes back to the one before it**,
+    /// ending nobody, as an output that encodes nothing does -- and what the
+    /// old one refused does not follow the guests back.
+    #[test]
+    fn an_output_that_never_lit_goes_back_and_ends_nobody() {
+        let (shared, stream, _arrivals) = parked();
+        let guest = stream
+            .seats()
+            .take(wake_handle(), wake_handle(), Declared::default())
+            .expect("a seat");
+        let mut roster = Roster::default();
+        let mut config = Config {
+            output: Some("DISPLAY9".to_owned()),
+            ..test_config(Codec::H265)
+        };
+        let mut previous_output = Some(Some("DISPLAY1".to_owned()));
+        shared
+            .refused
+            .store(lowlat_core::init::FLAG_10BIT, Ordering::Relaxed);
+
+        assert!(
+            !answer_no_display(&shared, &mut roster, &mut config, &mut previous_output),
+            "the guests were ended over an output they can leave"
+        );
+
+        assert_eq!(config.output.as_deref(), Some("DISPLAY1"));
+        assert!(
+            previous_output.is_none(),
+            "the way back was kept for a second use"
+        );
+        assert_eq!(guest.kicked(), None, "a guest was ended");
+        assert_eq!(
+            shared.refused.load(Ordering::Relaxed),
+            0,
+            "the other output's refusals came back with the guests"
+        );
     }
 
     /// **A request that could not be granted ends nobody.**

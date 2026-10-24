@@ -295,12 +295,11 @@ fn run_vulkan(
     let (width, height, refresh_hz) = match await_display(config.output.as_deref()) {
         Some(shape) => shape,
         None => {
-            lowlat_common::log_error!(
-                "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
-                DISPLAY_WAIT.as_secs_f64(),
-                roster.active.len()
+            lowlat_common::log_warn!(
+                "stream: nothing has been scanning out for {:.0}s",
+                DISPLAY_WAIT.as_secs_f64()
             );
-            return Some(Exit::Failed(status::CAPTURE_UNAVAILABLE));
+            return Some(Exit::NoDisplay);
         }
     };
     shared.publish_picture(width, height);
@@ -481,12 +480,11 @@ fn run_open(
                 shape
             }
             None => {
-                lowlat_common::log_error!(
-                    "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
-                    DISPLAY_WAIT.as_secs_f64(),
-                    roster.active.len()
+                lowlat_common::log_warn!(
+                    "stream: nothing has been scanning out for {:.0}s",
+                    DISPLAY_WAIT.as_secs_f64()
                 );
-                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+                return Exit::NoDisplay;
             }
         }
     } else {
@@ -665,12 +663,11 @@ fn run_vendor(
                 shape
             }
             None => {
-                lowlat_common::log_error!(
-                    "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
-                    DISPLAY_WAIT.as_secs_f64(),
-                    roster.active.len()
+                lowlat_common::log_warn!(
+                    "stream: nothing has been scanning out for {:.0}s",
+                    DISPLAY_WAIT.as_secs_f64()
                 );
-                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+                return Exit::NoDisplay;
             }
         }
     } else {

@@ -289,12 +289,11 @@ fn run_display(
                 );
                 return Exit::Failed(status::ENCODER_UNAVAILABLE);
             }
-            lowlat_common::log_error!(
-                "stream: no output has been part of the desktop for {:.0}s, ending {} guest(s)",
-                DISPLAY_WAIT.as_secs_f64(),
-                roster.active.len()
+            lowlat_common::log_warn!(
+                "stream: no output has been part of the desktop for {:.0}s",
+                DISPLAY_WAIT.as_secs_f64()
             );
-            return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+            return Exit::NoDisplay;
         }
         if said != Some(elsewhere.is_some()) {
             said = Some(elsewhere.is_some());
