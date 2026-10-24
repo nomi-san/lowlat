@@ -3,6 +3,67 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-24 - W3 closed: the gate on the development machine
+
+### Checked
+- **The comparison, as the system account**: vblank to encoder input for the direct frame at or
+  below the duplication at 60, 120 and 240 Hz within the spread between the run's own blocks,
+  idle and under a load's GPU pass, the 240 leg with the host's display the primary; no picture
+  of 12,000 converted again; the GPU scheduling mode recorded (off). **The blackout per source**:
+  the duplication out for 0.4 to 49.8 ms at each switch to and from the secure desktop, the
+  direct frame losing nothing.
+- **Ten minutes each at 120 a second** from an established client on a remote Windows machine
+  over the internet: the second codec 612 s at 120.0 a second, encode at a median 1.05 ms,
+  composition to hand-over 0.24/0.59/0.80 ms at p50/p95/p99, a round trip of 9 to 11 ms; the
+  first codec 649 s. Ten-bit, ten-bit with full chroma, and full chroma alone through the
+  library's demo, each at 120 a second.
+- **A size from a client's settings**: put and read again 0.43 s after the ask on the host's
+  side; through the demo, with motion on the display, 0.54 to 0.57 s without pictures a size and
+  0.26 to 0.29 s a turn.
+- **With the host's display the only one**: the machine booted with no monitor, the default
+  configuration plugging the host's display 1.15 s after the host started; the logon screen
+  streamed, a sign-in through it, the desktop at the owner's size; the lock screen, the secure
+  attention screen and an elevation prompt, pictures flowing through each with no rebuild.
+- **Mid-session**: the host ended -- the service's next host 2.05 s later and the guest
+  connecting again; the GPU's driver restarted -- 16.9 s without pictures, the first restart
+  since a boot, the session kept; the display driver updated -- 0.33 s, the session kept; a
+  logoff -- the session ended untold, the next session's host, the guest connecting again at
+  the logon screen. No watchdog, no stop error, every display device in order.
+- **Owners and others**: a size and a turn on a panel and on the host's display, turned back; a
+  panel's size left when the last guest left; an owner joining on a panel leaving its size; a
+  guest who is not an owner refused a size, a turn, a bitrate and a frame rate, each with its
+  line, and its switch of output taken; an established client showing such a guest none of the
+  three settings (the maintainer's observation).
+- **A program in exclusive fullscreen** at its own size on the host's display: kept, the stream
+  following it, the host's size back as it left. **A 320 pointer** drawn into the picture on the
+  host's display and on a panel.
+- **The controller**: an unelevated program's monitor plugged, put at a listed mode and one not
+  listed, and unplugged; the host's refused it; the frame interface answering it and nothing
+  taken; an owner refused a size and a turn on a monitor another program plugged; a kept monitor
+  streamed from the driver, an unlisted size and a turn put on it, both back after a reboot.
+- **Another vendor's virtual display**, an established host's own: captured through the
+  duplication, its size left at a guest's arrival, a listed size from an owner's settings put and
+  one it does not list refused.
+- **The package**: installed fresh by its script, the script making the device, and as an
+  update, each with no prompt and test signing off.
+- CI green on the dependency fix that closed the gate (`ca9d0c4`): two advisories published
+  during the gate had failed the supply-chain check, one fixed by a version, one with no fixed
+  version reachable, ignored with its reason. The Linux bar on it, the supply-chain check
+  included.
+
+### Found at the gate and fixed
+- A display gone past the wait for one taken for a refused configuration, and a refused mode of
+  the host's display never asked again: the two entries below.
+
+### Known and deferred
+- **A guest's switch of output outlives the guest**: the next guest, an owner asking for nothing,
+  arrives on the output the last one chose rather than the configured one. Noted, not judged.
+- **The encoder's time follows the GPU's memory clock**: about 1 ms at the card's high memory
+  state, 4 to 5 ms at its middle one, which a video playing on the host's display held it at.
+  Measured, not acted on.
+
+W3's gate is marked passed.
+
 ## 2026-10-24 - W3's gate: a refused mode of the host's display is asked again
 
 ### Fixed

@@ -24,7 +24,8 @@ showed each picture a composition old, decided, built and checked live; W3's gat
 *Amended 2026-10-22:* W4 -- the host's own input device -- added and planned at its interview; it
 is built once W2's and W3's gates are through. *Amended 2026-10-22, at W4's review:* the service
 installs no driver -- each of the host's drivers is installed by a script of its own -- and what
-needs a driver needs it installed.
+needs a driver needs it installed. *Amended 2026-10-24:* W3's gate passed on the development
+machine and W3 closed; W4's steps are next.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -1984,7 +1985,11 @@ on the LAN and one on a Windows machine:
   an owner's size and turn refused on a monitor another program plugged;
 - two other vendors' virtual displays streamed through desktop duplication, an established
   host's own among them; *amended 2026-10-21, at W3.11:* on one of them an owner's listed size put
-  and one it does not list refused, as on a panel;
+  and one it does not list refused, as on a panel; *amended 2026-10-24, the maintainer's
+  decision:* one, an established host's own, the second vendor dropped -- another vendor's virtual
+  display is a panel to the host: captured through the duplication, its size left as it is when a
+  guest arrives, and changed only by an owner's request from a client's settings, a listed size
+  put and one it does not list refused;
 - **the comparison decides the host's default**: in one session at 60, 120 and 240 Hz,
   composition to encoder input at p50, p95 and p99 for desktop duplication of the host's display
   and for the direct frame, with the hold's distribution and how often its bound fires; the
@@ -2024,6 +2029,10 @@ on the LAN and one on a Windows machine:
   -- the driver removed and installed again more than 20 s apart -- ends the guests with the
   capture's reason and drops none of their preferences, the next guest given the codec it asks
   for (found at this leg and fixed, [05 §2](05-host.md)).
+
+*Passed 2026-10-24* on the development machine, every leg as amended, the figures in the
+[changelog](changelog.md)'s entry of the day; two faults found at it were fixed the same day,
+a display gone past the wait for one and a refused mode of the host's display.
 
 ## Phase W4 - The host's input device
 
@@ -2253,6 +2262,9 @@ library's demo:
 
 ## Change log
 
+- 2026-10-24: W3's gate passed; W3 closed.
+- 2026-10-24: W3's gate leg of other vendors' virtual displays cut to one, an established host's
+  own (the maintainer's decision): another vendor's virtual display is a panel to the host.
 - 2026-10-24: at W3's gate's logoff leg, a new session's logon screen refused the owner's size of
   the host's display for seconds, and the host asked no more while the stream ran: the owner
   signed in at the configured size. Fixed the same day: a running stream asks again every two
