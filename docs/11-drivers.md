@@ -214,6 +214,13 @@ an adapter's identifier changes across boots (§1.7).
   monitor's arrival and a program leaving fullscreen put back. Any other mode stands, and the
   stream follows it: a program's in exclusive fullscreen, one set from outside and not saved. A
   program asking for exactly the store's mode cannot be told from a restore, and is put over.
+  *Amended 2026-10-24, at W3's gate:* **a mode the system refused is asked again while a stream
+  runs**, every two seconds and one short attempt each time, until it takes or another is asked.
+  The mode was otherwise asked only as a stream was built: a new session's logon screen refused
+  an owner's size for seconds after a logoff, measured, and the owner signed in at the display's
+  configured size, though the same mode was put at once from the signed-in desktop. An attempt
+  waits no more than a tenth of a second, on the stream's own thread between two pictures, so a
+  system that goes on refusing costs a stream one short pause every two seconds.
 
 ### §1.6 Pictures
 

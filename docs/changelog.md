@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-24 - W3's gate: a refused mode of the host's display is asked again
+
+### Fixed
+- **A mode of the host's own display the system refused stayed refused for the whole stream**
+  ([11 §1.5](11-drivers.md)). The host puts its display's mode as a stream is built and asked
+  nothing more after; a new session's logon screen refused an owner's size for seconds after a
+  logoff, and the owner signed in at the display's configured size, though the same mode was put
+  at once from the signed-in desktop. A running stream now asks again every two seconds while a
+  mode stands refused, one attempt each time, waiting no more than a tenth of a second; a mode
+  that takes is a resize, which the stream follows as before.
+
+### Checked
+- A test of when a running stream asks again: at once when the hold was never asked, not inside
+  two seconds of the last asking, at two seconds, and never with nothing refused. Broken on
+  purpose twice and seen to fail: with no period, and with the refusal ignored.
+- Live, the service on the change, headless: a logoff and an owner's client joining the new
+  session's logon screen. The system refused the owner's size again as the stream was built, and
+  the stream's next asking put it 0.4 s later -- two seconds after the first asking began; the
+  owner signed in at its size.
+- Windows: format, lints and ASCII clean, tests 1428 passed, none failed, 152 ignored. Linux, on
+  a clean clone with the change applied: ASCII and format clean, the three lint passes and the
+  fuzz targets' check clean, tests 1414 passed and 88 ignored, the two that fail being the
+  dual-stack resolution tests a machine without a second address family fails before the change
+  as after it.
+
 ## 2026-10-24 - W3's gate: a display gone past the wait costs no guest a preference
 
 ### Fixed

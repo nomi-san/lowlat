@@ -2253,6 +2253,10 @@ library's demo:
 
 ## Change log
 
+- 2026-10-24: at W3's gate's logoff leg, a new session's logon screen refused the owner's size of
+  the host's display for seconds, and the host asked no more while the stream ran: the owner
+  signed in at the configured size. Fixed the same day: a running stream asks again every two
+  seconds while a mode stands refused ([11 §1.5](11-drivers.md)).
 - 2026-10-24: at W3's gate, a display gone past the wait for one (the display driver removed and
   installed again under a seated guest, 21 s) was answered as a refused configuration: the guest
   was kept though the line said it was ended, and the second codec was taken off for every guest
