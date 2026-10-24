@@ -61,6 +61,11 @@ Rules:
   rebuilds. And **the host's own display is plugged again while the stream waits** for a
   display, so its driver updated, restarted or ended under a stream costs a rebuild rather than
   the guests ([11 §1.8](11-drivers.md)).
+  *Amended 2026-10-24, at W3's gate:* **a display that does not come back within the wait ends
+  the guests and takes none of their preferences off.** The wait's deadline is not a
+  configuration the device refused: an output a guest asked for that never lit goes back to the
+  one before it, and otherwise every guest is ended with the capture's reason; the second codec,
+  ten-bit colour and full chroma stay what the guests asked for, for them and every guest after.
   *Added 2026-10-19, at W2.7's gate:* **AMD's encoder is let go without being ended once its
   device is gone.** Ending it then copies on the device, and AMD's driver faults the process
   rather than refusing; what the encoder holds stays held for the process's life, once per

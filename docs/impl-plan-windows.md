@@ -2020,7 +2020,10 @@ on the LAN and one on a Windows machine:
   frame loses nothing at a switch;
 - the test-signed package installing silently with no test mode, by its script (*amended
   2026-10-22*: the service installs no driver); CI building the driver; both CI jobs and the Linux
-  bar.
+  bar; *amended 2026-10-24, at the gate:* a display gone past the wait for one under a seated guest
+  -- the driver removed and installed again more than 20 s apart -- ends the guests with the
+  capture's reason and drops none of their preferences, the next guest given the codec it asks
+  for (found at this leg and fixed, [05 §2](05-host.md)).
 
 ## Phase W4 - The host's input device
 
@@ -2250,6 +2253,12 @@ library's demo:
 
 ## Change log
 
+- 2026-10-24: at W3's gate, a display gone past the wait for one (the display driver removed and
+  installed again under a seated guest, 21 s) was answered as a refused configuration: the guest
+  was kept though the line said it was ended, and the second codec was taken off for every guest
+  after it. Fixed the same day: the wait's deadline drops no preference, sends a guest's request
+  for an output that never lit back to the one before it, and otherwise ends the guests with the
+  capture's reason ([05 §2](05-host.md)). The gate's package leg amended to check it.
 - 2026-10-23: W4.0 measured on this machine: the absolute range spans the primary display alone,
   so an absolute position on any other output goes through the batch input call (the
   maintainer's decision; [11 §2](11-drivers.md) amended); a move on one collection stays ahead of

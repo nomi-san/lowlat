@@ -3,6 +3,41 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-24 - W3's gate: a display gone past the wait costs no guest a preference
+
+### Fixed
+- **A display that did not come back within the wait for one took the guests' preferences off**
+  ([05 §2](05-host.md)). The wait's deadline ended in the same failure as an encoder refusing a
+  configuration, and that failure is answered by taking the highest preference off and
+  remembering it: the guests were kept, though the line said they were ended, and every guest
+  after them was held off the second codec, ten-bit colour and full chroma until a guest moved the
+  capture or the host started again. Seen live with the host's display driver removed under a
+  seated guest and installed again 21 s later. The deadline has an exit of its own now: nothing
+  comes off; an output a guest asked for that never lit goes back to the one before it; otherwise
+  every guest is ended with the capture's reason, as the deadline promised. On both platforms.
+
+### Added
+- **The demo asks a bitrate**: `LOWLAT_MODES` takes `<n>mbps` beside sizes and turns, each sent
+  alone as a settings panel sends it ([examples/client/README.md](../examples/client/README.md)).
+  W3's gate asks it as a guest who is not an owner.
+
+### Checked
+- Two tests: a display gone past the wait ends the seated guest with the capture's reason and
+  leaves the codec, the depth, the chroma and the refusals as they were; an output that never lit
+  goes back, ends nobody and clears the refusals. Each broken on purpose and seen to fail: with
+  the old answer (a preference off and remembered, nobody ended), with a preference off while the
+  guests are ended, and with the refusals carried back.
+- Live, the service on the change: the display driver removed under a guest seated on the second
+  codec and installed again 28 s later. 20.2 s into the wait the guest was ended with the
+  capture's reason, its client saying the screen could not be captured; the stream stayed on the
+  second codec; the host's display came back with the driver; the guest connecting again was
+  given the second codec.
+- Windows: format, lints and ASCII clean, tests 1427 passed, none failed, 152 ignored. Linux, on
+  a clean clone with the change applied: ASCII and format clean, the three lint passes and the
+  fuzz targets' check clean, tests 1414 passed and 88 ignored, the two that fail being the
+  dual-stack resolution tests a machine without a second address family fails before the change
+  as after it.
+
 ## 2026-10-23 - W4.0 on the machine: installed, checked and measured
 
 ### Changed
