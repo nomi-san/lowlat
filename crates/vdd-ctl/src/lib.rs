@@ -397,10 +397,23 @@ impl Controller {
     /// the system's display configuration when the monitor lists it, by a
     /// replug with the mode added first when it does not.
     pub fn set_mode(&mut self, slot: u8, mode: Mode) -> Result<Monitor, Error> {
+        self.set_mode_within(slot, mode, BOUND)
+    }
+
+    /// [`Controller::set_mode`] waiting for the system no longer than `bound`.
+    /// **For a caller that must not wait**: a stream asking again between two
+    /// pictures for a mode the system refused a moment ago makes one attempt
+    /// and hears the answer.
+    pub fn set_mode_within(
+        &mut self,
+        slot: u8,
+        mode: Mode,
+        bound: Duration,
+    ) -> Result<Monitor, Error> {
         if !mode.is_valid() {
             return Err(Error::Mode);
         }
-        let deadline = Instant::now() + BOUND;
+        let deadline = Instant::now() + bound;
         let entry = self.entry(slot)?;
         let kept = entry.flags & Entry::KEPT != 0;
         if !kept && entry.flags & Entry::OWNED == 0 {

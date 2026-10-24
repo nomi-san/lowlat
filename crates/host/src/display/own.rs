@@ -6,7 +6,9 @@
 //! **Its calls wait for the system**, up to the controller's bound, so they
 //! run on the stream's own thread and never on a caller's.
 
-use lowlat_vdd_ctl::{Controller, Error, Lifetime, MAX_MONITORS, Mode};
+use std::time::Duration;
+
+use lowlat_vdd_ctl::{BOUND, Controller, Error, Lifetime, MAX_MONITORS, Mode};
 
 use super::sys::publish_own;
 
@@ -31,6 +33,9 @@ pub(crate) struct Own {
     left: Option<Mode>,
     /// Why the last attempt failed, said once rather than every pass.
     refused: Option<Error>,
+    /// A size and refresh the system refused to put, asked again by
+    /// [`Own::retry`] until it takes or another is asked.
+    pending: Option<(u32, u32, Option<u32>)>,
 }
 
 impl Own {
@@ -57,6 +62,34 @@ impl Own {
     /// is a mode another put** ([`put_over`]): a program's in exclusive
     /// fullscreen stands, and the stream follows it.
     pub(crate) fn hold(&mut self, width: u32, height: u32, refresh: Option<u32>) -> bool {
+        self.hold_within(width, height, refresh, BOUND)
+    }
+
+    /// Whether a mode the system refused waits to be asked again.
+    pub(crate) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// **Ask again for the mode the system refused**, waiting for it no
+    /// longer than `bound`. The hold is otherwise asked as a stream is built,
+    /// and a refusal that passes -- a new session's logon screen refused the
+    /// owner's size for seconds after a logoff, measured -- left the display
+    /// at another mode for the whole stream. Answers whether it is as wanted
+    /// now; false with nothing pending.
+    pub(crate) fn retry(&mut self, bound: Duration) -> bool {
+        let Some((width, height, refresh)) = self.pending else {
+            return false;
+        };
+        self.hold_within(width, height, refresh, bound)
+    }
+
+    fn hold_within(
+        &mut self,
+        width: u32,
+        height: u32,
+        refresh: Option<u32>,
+        bound: Duration,
+    ) -> bool {
         let first = Mode::new(width, height, refresh.unwrap_or(FIRST_HZ));
         if !first.is_valid() {
             self.refuse("a mode no monitor of this display may be", Error::Mode);
@@ -100,6 +133,7 @@ impl Own {
         if monitor.active && monitor.mode == mode {
             self.asked = ask;
             self.left = None;
+            self.pending = None;
             return true;
         }
         let saved = lowlat_vdd_ctl::saved_mode(&monitor);
@@ -115,7 +149,7 @@ impl Own {
             }
             return false;
         }
-        match controller.set_mode(slot, mode) {
+        match controller.set_mode_within(slot, mode, bound) {
             Ok(now) => {
                 lowlat_common::log_info!(
                     "display: the host's own display put at {mode}, was {} {}",
@@ -128,10 +162,12 @@ impl Own {
                 self.asked = ask;
                 self.left = None;
                 self.refused = None;
+                self.pending = None;
                 true
             }
             Err(error) => {
                 self.refuse("the host's own display could not be put at its mode", error);
+                self.pending = ask;
                 false
             }
         }
@@ -220,6 +256,7 @@ impl Own {
         if plugged {
             self.asked = ask;
             self.left = None;
+            self.pending = None;
         }
         plugged
     }

@@ -26,6 +26,8 @@ impl Own {
         _joining: Option<Declared>,
     ) {
     }
+
+    pub(super) fn streaming(&mut self) {}
 }
 
 /// Wait for something to scan out, and report what shape it is: its size, and
@@ -453,6 +455,7 @@ fn run_vulkan(
         roster,
         &mut encoder,
         Some(&mut desktop),
+        None,
     ))
 }
 
@@ -610,6 +613,7 @@ fn run_open(
         roster,
         &mut encoder,
         desktop.as_mut(),
+        None,
     )
 }
 
@@ -752,6 +756,7 @@ fn run_vendor(
         roster,
         &mut encoder,
         desktop.as_mut(),
+        None,
     )
 }
 

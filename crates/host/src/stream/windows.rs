@@ -22,6 +22,14 @@ use crate::display::{Capturable, Display, Register, Registration, VIRTUAL};
 /// How often the host's own display is looked at while nobody is seated.
 const OWN_LOOK_MS: f64 = 1000.0;
 
+/// How often a running stream asks again for a mode of the host's own display
+/// the system refused.
+const OWN_RETRY_MS: f64 = 2000.0;
+
+/// How long one such asking waits for the system: one attempt, on the stream's
+/// own thread between two pictures.
+const OWN_RETRY_BOUND: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The host's own display, as the stream's thread keeps it
 /// (docs/impl-plan-windows.md W3): plugged when the configuration names it,
 /// or allows it and nothing else is lit; held at its mode; sized for a guest
@@ -53,6 +61,20 @@ impl Own {
     pub(super) fn prepare(&mut self, shared: &Shared, config: &Config, joining: Option<Declared>) {
         self.looked = Some(Time::now());
         self.reconcile(shared, config, joining);
+    }
+
+    /// One pass of a running stream: **a mode the system refused is asked
+    /// again**, every [`OWN_RETRY_MS`] and one attempt each time. A built
+    /// stream asks the hold nothing more, so a refusal that passes would leave
+    /// the display at another mode until something rebuilt; a mode put
+    /// changes the display, and the stream follows that by a rebuild of its
+    /// own.
+    pub(super) fn streaming(&mut self) {
+        if !asks_again(self.display.pending(), self.looked.map(clock::elapsed_ms)) {
+            return;
+        }
+        self.looked = Some(Time::now());
+        self.display.retry(OWN_RETRY_BOUND);
     }
 
     /// One pass while a stream waits for its display: the same as nobody
@@ -90,6 +112,14 @@ impl Own {
         let (width, height) = own_size(current, asked, joining);
         self.display.hold(width, height, refresh);
     }
+}
+
+/// **Whether a running stream asks the hold again now**: a mode the system
+/// refused is pending, and the hold was last asked `since_ms` ago, or never --
+/// at most once in [`OWN_RETRY_MS`], so a system that goes on refusing costs
+/// one attempt in each.
+fn asks_again(pending: bool, since_ms: Option<f64>) -> bool {
+    pending && since_ms.is_none_or(|ms| ms >= OWN_RETRY_MS)
 }
 
 /// The vendors whose own encoders this platform builds.
@@ -340,7 +370,7 @@ fn run_display(
         ..config
     };
     if output.adapter.vendor == AMD {
-        return run_amd(shared, arrivals, config, roster, &device, &output);
+        return run_amd(shared, arrivals, config, roster, own, &device, &output);
     }
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
@@ -403,6 +433,7 @@ fn run_display(
         roster,
         &mut encoder,
         Some(&mut desktop),
+        Some(own),
     )
 }
 
@@ -413,6 +444,7 @@ fn run_amd(
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
+    own: &mut Own,
     device: &Arc<lowlat_encode::d3d11::Device>,
     output: &lowlat_drivers::d3d11::Output,
 ) -> Exit {
@@ -487,6 +519,7 @@ fn run_amd(
         roster,
         &mut encoder,
         Some(&mut desktop),
+        Some(own),
     )
 }
 
@@ -560,7 +593,7 @@ fn run_vendor(
         config.quality,
         config.quality.min_qp()
     );
-    encode_loop(shared, arrivals, config, roster, &mut encoder, None)
+    encode_loop(shared, arrivals, config, roster, &mut encoder, None, None)
 }
 
 /// [`run_vendor`] on an AMD GPU: AMD's own encoder on `device`, the
@@ -610,7 +643,7 @@ fn synthetic_amd(
         config.quality,
         config.quality.min_qp()
     );
-    encode_loop(shared, arrivals, config, roster, &mut encoder, None)
+    encode_loop(shared, arrivals, config, roster, &mut encoder, None, None)
 }
 
 impl FromDevice for lowlat_encode::nvenc::Encoder<'_> {
@@ -629,5 +662,37 @@ impl FromDevice for lowlat_encode::amf::Encoder<'_> {
             Registration::Captured(texture) => self.submit_texture(texture, force_keyframe).is_ok(),
             Registration::Nvenc(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A mode the system refused is asked again while the stream runs, and
+    /// at its pace**: at once when the hold was never asked, never sooner than
+    /// a period after the last asking, and not at all with nothing pending --
+    /// so a stream whose host's display took its mode pays nothing, and one
+    /// the system goes on refusing pays one short attempt a period.
+    #[test]
+    fn a_refused_mode_is_asked_again_once_a_period_while_streaming() {
+        assert!(asks_again(true, None), "a refusal never asked again");
+        assert!(
+            !asks_again(true, Some(0.0)),
+            "asked again on the heels of the last asking"
+        );
+        assert!(
+            !asks_again(true, Some(OWN_RETRY_MS - 1.0)),
+            "asked again inside the period"
+        );
+        assert!(
+            asks_again(true, Some(OWN_RETRY_MS)),
+            "not asked again once the period passed"
+        );
+        assert!(
+            !asks_again(false, Some(10.0 * OWN_RETRY_MS)),
+            "asked with nothing pending"
+        );
+        assert!(!asks_again(false, None), "asked with nothing pending");
     }
 }

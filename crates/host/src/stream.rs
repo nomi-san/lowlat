@@ -3540,8 +3540,10 @@ fn encode_loop<E: Encoder + FromDevice>(
     roster: &mut Roster,
     encoder: &mut E,
     display: Option<&mut crate::display::Display>,
+    own: Option<&mut sys::Own>,
 ) -> Exit {
     let mut display = display;
+    let mut own = own;
     // Read once, on the way in: the loop only has to notice that it moved.
     let asked_at = shared.output_asked.load(Ordering::Acquire);
     // **Said once, here, where both backends meet.** The picture's size is
@@ -4062,6 +4064,12 @@ fn encode_loop<E: Encoder + FromDevice>(
                 }
             }
 
+            // **A mode of the host's own display the system refused is asked
+            // again** while the stream runs, which otherwise asks only as it
+            // is built; one that takes is a resize, answered just below.
+            if let Some(own) = own.as_deref_mut() {
+                own.streaming();
+            }
             // **Before anything is encoded from it.** A frame taken at the
             // new size and coded by an encoder built for the old one is the
             // picture in a corner of a stale frame, which is what a peer sees
@@ -5189,7 +5197,15 @@ mod tests {
                         mute: false,
                     };
                     let mut roster = Roster::default();
-                    encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder, None);
+                    encode_loop(
+                        &owned,
+                        &arrivals,
+                        config,
+                        &mut roster,
+                        &mut encoder,
+                        None,
+                        None,
+                    );
                 })
                 .expect("thread");
             Self {
@@ -6289,6 +6305,7 @@ mod tests {
             &mut roster,
             &mut fake_encoder(),
             None,
+            None,
         );
         assert!(
             ticker.join().expect("ticker"),
@@ -6310,6 +6327,7 @@ mod tests {
             config,
             &mut roster,
             &mut fake_encoder(),
+            None,
             None,
         );
         assert!(
@@ -6582,6 +6600,7 @@ mod tests {
             &mut roster,
             &mut fake_encoder(),
             None,
+            None,
         );
         ticker.join().expect("ticker");
         assert_eq!(roster.active.len(), 2, "both guests did not seat");
@@ -6631,6 +6650,7 @@ mod tests {
             &mut roster,
             &mut fake_encoder(),
             None,
+            None,
         );
         assert!(ticker.join().expect("ticker"), "nothing was delivered");
         shared.stopping.store(0, Ordering::Release);
@@ -6650,6 +6670,7 @@ mod tests {
             test_config(Codec::H265),
             &mut roster,
             &mut mute,
+            None,
             None,
         );
         watchdog.join().expect("watchdog");
@@ -6843,6 +6864,7 @@ mod tests {
             &mut roster,
             &mut fake_encoder(),
             None,
+            None,
         );
         done.store(1, Ordering::Release);
         watchdog.join().expect("watchdog");
@@ -6868,6 +6890,7 @@ mod tests {
             test_config(Codec::H265),
             &mut roster,
             &mut fake_encoder(),
+            None,
             None,
         );
         assert!(
@@ -6947,6 +6970,7 @@ mod tests {
             &mut roster,
             &mut encoder,
             None,
+            None,
         );
         assert!(
             ticker.join().expect("ticker"),
@@ -6994,6 +7018,7 @@ mod tests {
             test_config(Codec::H264),
             &mut roster,
             &mut encoder,
+            None,
             None,
         );
         done.store(1, Ordering::Release);
@@ -7044,6 +7069,7 @@ mod tests {
                 test_config(Codec::H264),
                 &mut roster,
                 &mut encoder,
+                None,
                 None,
             );
             watchdog.join().expect("watchdog");
