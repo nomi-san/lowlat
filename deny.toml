@@ -24,6 +24,16 @@ ignore = [
     # compiler than the workspace's minimum, so the minimum is the thing to
     # raise, deliberately and on its own.
     { id = "RUSTSEC-2026-0009", reason = "unreachable: format only, no parsing of untrusted input" },
+    # `crypto-bigint` 0.5.5, reached through `elliptic-curve` 0.13 under the
+    # DTLS record layer and the browser transport's certificate. The advisory
+    # is secret-dependent branches in arithmetic meant to be constant-time,
+    # which a peer timing many handshakes might observe, depending on the
+    # compiler and the CPU. It is fixed in 0.7.6 alone, which wants the 0.14
+    # line of the elliptic-curve crates, and the DTLS layer's latest release
+    # (0.8) still depends on 0.13, so no fixed version can be reached. P-256
+    # here signs only that transport's identity, a key made for the process's
+    # life. Remove this once the DTLS layer moves to the 0.14 line.
+    { id = "RUSTSEC-2026-0387", reason = "no fixed release reachable: the DTLS layer (dimpl 0.8) pins elliptic-curve 0.13 and crypto-bigint 0.5" },
 ]
 
 [licenses]
