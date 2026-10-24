@@ -30,6 +30,17 @@ impl Own {
     pub(super) fn streaming(&mut self) {}
 }
 
+/// The hold on the GPU's memory clock, which only Windows takes: nothing to
+/// load or give back.
+#[derive(Debug, Default)]
+pub(super) struct MemoryClock {}
+
+impl MemoryClock {
+    pub(super) fn new(_asked: bool) -> Self {
+        Self {}
+    }
+}
+
 /// Wait for something to scan out, and report what shape it is: its size, and
 /// how many times a second it presents.
 fn await_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
@@ -62,6 +73,7 @@ pub(super) fn build(
     config: &Config,
     roster: &mut Roster,
     _own: &mut Own,
+    _clock: &MemoryClock,
 ) -> Exit {
     // **Resolved on every rebuild, not once.** A display can move to
     // another card while this is running, and the rebuild that follows it

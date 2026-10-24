@@ -231,7 +231,15 @@ pub struct lowlat_host_config {
     pub size: u32,
     /// The base a guest's port bind walks from. **Default: 9000.**
     pub base_port: u16,
-    pub reserved: u16,
+    /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
+    /// floor for as long as it runs (minor 31): the driver's light-load
+    /// memory states bound the encoder, 4 to 5 ms a picture at 1080p against
+    /// 1 to 2 above them (docs/05-host.md section 4.2). **Default: off**,
+    /// since it changes the machine and needs the administrator; `lowlatd`
+    /// turns it on. Windows alone acts on it; elsewhere it is accepted and
+    /// does nothing. Settled when hosting starts.
+    pub hold_memory_clock: bool,
+    pub reserved: u8,
     /// Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
     /// quietly reduced. **Default: 4.**
     pub max_guests: u32,
@@ -316,6 +324,7 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
     lowlat_host_config {
         size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
         base_port: 9000,
+        hold_memory_clock: false,
         reserved: 0,
         max_guests: 4,
         codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
@@ -745,6 +754,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
             output: (!output.is_empty()).then(|| output.to_string()),
             virtual_fallback: cfg.virtual_fallback,
             wake_display: cfg.wake_display,
+            hold_memory_clock: cfg.hold_memory_clock,
             own_display,
         }),
     })
@@ -2858,6 +2868,7 @@ mod start_tests {
         lowlat_host_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
             base_port: 9000,
+            hold_memory_clock: false,
             reserved: 0,
             max_guests: 4,
             codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,

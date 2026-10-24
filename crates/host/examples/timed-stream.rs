@@ -55,6 +55,7 @@ fn main() {
         display: std::env::var("LOWLAT_SYNTH").is_err(),
         virtual_fallback: false,
         wake_display: false,
+        hold_memory_clock: false,
         own_display: lowlat_host::stream::OwnDisplay::default(),
         width: 1920,
         height: 1080,

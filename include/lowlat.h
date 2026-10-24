@@ -49,7 +49,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 30
+#define LOWLAT_ABI_MINOR 31
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -1036,7 +1036,15 @@ typedef struct lowlat_host_config {
     uint32_t size;
     /// The base a guest's port bind walks from. **Default: 9000.**
     uint16_t base_port;
-    uint16_t reserved;
+    /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
+    /// floor for as long as it runs (minor 31): the driver's light-load
+    /// memory states bound the encoder, 4 to 5 ms a picture at 1080p against
+    /// 1 to 2 above them (docs/05-host.md section 4.2). **Default: off**,
+    /// since it changes the machine and needs the administrator; `lowlatd`
+    /// turns it on. Windows alone acts on it; elsewhere it is accepted and
+    /// does nothing. Settled when hosting starts.
+    bool hold_memory_clock;
+    uint8_t reserved;
     /// Advertised capacity. Above `LOWLAT_GUESTS_MAX` is refused rather than
     /// quietly reduced. **Default: 4.**
     uint32_t max_guests;

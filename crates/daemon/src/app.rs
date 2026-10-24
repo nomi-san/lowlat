@@ -1713,6 +1713,7 @@ mod tests {
                 display: false,
                 virtual_fallback: false,
                 wake_display: false,
+                hold_memory_clock: false,
                 own_display: lowlat_host::stream::OwnDisplay::default(),
                 width: 320,
                 height: 240,

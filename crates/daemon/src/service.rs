@@ -974,6 +974,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // is woken by a guest's first input, and a connection lights
             // nothing at the desk by itself.
             wake_display: flag_set("--wake-display"),
+            // **On, where the library's default is off.** The service runs the
+            // host as the administrator, which a hold needs; a host started by
+            // hand without it says so as each stream starts, and streams on.
+            hold_memory_clock: true,
             own_display: lowlat_host::stream::OwnDisplay::default(),
         }),
     });

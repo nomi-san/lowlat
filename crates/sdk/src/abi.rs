@@ -171,7 +171,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 30;
+pub const LOWLAT_ABI_MINOR: u32 = 31;
 
 /// Major and minor, packed.
 ///

@@ -27,6 +27,9 @@ pub mod lavc;
 /// The system's media framework's decoders, reached on Windows alone.
 #[cfg(windows)]
 pub mod mf;
+/// NVIDIA's management library, reached on Windows alone.
+#[cfg(windows)]
+pub mod nvml;
 /// The open stack's video interface, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod va;

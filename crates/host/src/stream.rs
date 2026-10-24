@@ -1271,6 +1271,15 @@ pub struct Config {
     /// defaults**, since a connection would light the desk's monitors by
     /// itself. Settled when hosting starts; only Windows acts on it.
     pub wake_display: bool,
+    /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
+    /// floor for as long as it runs.
+    ///
+    /// **The driver's light-load memory states bound the encoder**: at
+    /// 1080p, 4 to 5 ms a picture in the middle one against 1 to 2 above it
+    /// (docs/05-host.md section 4.2). **Off in the library's defaults**,
+    /// since it changes the machine and needs the administrator. Settled
+    /// when hosting starts; only Windows acts on it.
+    pub hold_memory_clock: bool,
     /// What the host's own display is asked to be when hosting starts: the
     /// first value of the live setting ([`Stream::set_own_display`]).
     pub own_display: OwnDisplay,
@@ -2155,6 +2164,10 @@ fn run(
     // plugged before anybody connects where the configuration wants it, and
     // gone when the host ends (docs/impl-plan-windows.md W3).
     let mut own = sys::Own::default();
+    // **So does the hold on the GPU's memory clock**, taken by each stream
+    // for as long as it runs where the host is asked to (docs/05-host.md
+    // section 4.2); one a host before this one left held is given back here.
+    let clock = sys::MemoryClock::new(config.hold_memory_clock);
     loop {
         // Waiting rather than holding hardware. A host advertises itself long
         // before anyone connects, and an encoder open across that whole time
@@ -2206,7 +2219,7 @@ fn run(
         // can move the codec and the depth underneath it, and only the loop
         // knows which it is coding right now.
         publish_colour(shared, &config);
-        let exit = sys::build(shared, arrivals, &config, &mut roster, &mut own);
+        let exit = sys::build(shared, arrivals, &config, &mut roster, &mut own, &clock);
         match exit {
             Exit::Stopped => return,
             Exit::NoDisplay => {
@@ -4990,6 +5003,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 320,
             height: 240,
@@ -5132,6 +5146,7 @@ mod tests {
                 display: false,
                 virtual_fallback: false,
                 wake_display: false,
+                hold_memory_clock: false,
                 own_display: OwnDisplay::default(),
                 width: 320,
                 height: 240,
@@ -5430,6 +5445,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 320,
             height: 240,
@@ -7466,6 +7482,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,
@@ -7572,6 +7589,7 @@ mod tests {
             display,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width,
             height,
@@ -7756,6 +7774,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,
@@ -7789,6 +7808,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
             height: 1080,

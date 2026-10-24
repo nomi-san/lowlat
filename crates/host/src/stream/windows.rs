@@ -132,6 +132,119 @@ fn encodes_on(adapter: &lowlat_drivers::d3d11::Adapter) -> bool {
     matches!(adapter.vendor, NVIDIA | AMD) && adapter.decodes_here()
 }
 
+/// **The memory clock of the NVIDIA GPU a stream runs on, held for as long as
+/// the stream runs**, where the host is asked to (docs/05-host.md section
+/// 4.2): NVIDIA's management library, loaded with the stream's thread and kept
+/// for it, so a rebuild costs a call rather than a load.
+#[derive(Debug, Default)]
+pub(super) struct MemoryClock {
+    nvml: Option<lowlat_drivers::nvml::Nvml>,
+}
+
+impl MemoryClock {
+    /// Loaded where asked, every NVIDIA GPU's memory clock given back to its
+    /// driver first: **a hold outlives the process that took it**, so a host
+    /// that ended without its stream's end left one held.
+    pub(super) fn new(asked: bool) -> Self {
+        if !asked {
+            return Self::default();
+        }
+        let nvml = match lowlat_drivers::nvml::Nvml::load() {
+            Ok(nvml) => nvml,
+            Err(error) => {
+                lowlat_common::log_info!("stream: memory clock left to the driver, {error}");
+                return Self::default();
+            }
+        };
+        let gpus = nvml.count().unwrap_or(0);
+        let mut refused = None;
+        for index in 0..gpus {
+            if let Err(error) = nvml
+                .gpu(index)
+                .and_then(|gpu| nvml.release_memory_clock(gpu))
+            {
+                refused = Some(error);
+            }
+        }
+        match refused {
+            None => lowlat_common::log_info!(
+                "stream: memory clock held while a stream runs, given back first on {gpus} NVIDIA GPU(s)"
+            ),
+            Some(error) => lowlat_common::log_info!(
+                "stream: memory clock not given back on every one of {gpus} NVIDIA GPU(s), {error}"
+            ),
+        }
+        Self { nvml: Some(nvml) }
+    }
+
+    /// Held on `adapter`'s GPU until what is answered is dropped, between the
+    /// floor and the ceiling [`memory_floor`] gives; `None`, said why, where
+    /// it cannot be.
+    fn hold(&self, adapter: &lowlat_drivers::d3d11::Adapter) -> Option<Held<'_>> {
+        let nvml = self.nvml.as_ref()?;
+        let left = |why: &dyn core::fmt::Display| {
+            lowlat_common::log_info!(
+                "stream: memory clock left to the driver on {}, {why}",
+                adapter.description
+            );
+        };
+        let gpu = nvml
+            .matching(adapter.vendor, adapter.device, adapter.subsystem)
+            .map_err(|error| left(&error))
+            .ok()?;
+        let mut listed = [0; 32];
+        let clocks = nvml
+            .memory_clocks(gpu, &mut listed)
+            .map_err(|error| left(&error))
+            .ok()?;
+        let Some((floor, ceiling)) = memory_floor(clocks) else {
+            left(&"it lists no memory clock");
+            return None;
+        };
+        nvml.hold_memory_clock(gpu, floor, ceiling)
+            .map_err(|error| left(&error))
+            .ok()?;
+        lowlat_common::log_info!(
+            "stream: memory clock held at {floor} to {ceiling} MHz on {}",
+            adapter.description
+        );
+        Some(Held { nvml, gpu })
+    }
+}
+
+/// A stream's hold on its GPU's memory clock, given back as the stream ends.
+#[derive(Debug)]
+struct Held<'n> {
+    nvml: &'n lowlat_drivers::nvml::Nvml,
+    gpu: lowlat_drivers::nvml::Gpu,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        match self.nvml.release_memory_clock(self.gpu) {
+            Ok(()) => lowlat_common::log_info!("stream: memory clock given back to the driver"),
+            Err(error) => {
+                lowlat_common::log_warn!("stream: memory clock not given back, {error}");
+            }
+        }
+    }
+}
+
+/// The floor and the ceiling a stream holds a GPU's memory clock between,
+/// among the clocks it lists: the lowest at or above half its top, and the
+/// top. **Below half are the light-load states, where memory bounds the
+/// encoder**: at 1080p, 5 ms a picture at 810 MHz of a top of 14001 against 2
+/// at 7001 (docs/05-host.md section 4.2).
+fn memory_floor(clocks: &[u32]) -> Option<(u32, u32)> {
+    let top = clocks.iter().copied().max()?;
+    let floor = clocks
+        .iter()
+        .copied()
+        .filter(|&clock| clock >= top / 2)
+        .min()?;
+    Some((floor, top))
+}
+
 /// Build the stream's device and encoder for `config` and run it until it
 /// exits: with a display, everything on the device of the output's own
 /// adapter, with that GPU's encoder; without one, the encoder of the first
@@ -144,6 +257,7 @@ pub(super) fn build(
     config: &Config,
     roster: &mut Roster,
     own: &mut Own,
+    clock: &MemoryClock,
 ) -> Exit {
     lowlat_common::log_info!(
         "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
@@ -164,9 +278,9 @@ pub(super) fn build(
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     }
     if config.display {
-        run_display(shared, arrivals, config.clone(), roster, own)
+        run_display(shared, arrivals, config.clone(), roster, own, clock)
     } else {
-        run_vendor(shared, arrivals, config.clone(), roster)
+        run_vendor(shared, arrivals, config.clone(), roster, clock)
     }
 }
 
@@ -277,6 +391,7 @@ fn run_display(
     config: Config,
     roster: &mut Roster,
     own: &mut Own,
+    clock: &MemoryClock,
 ) -> Exit {
     let wanted = config.output.as_deref();
     // **A display that is asleep or switched off is waited for**, as on
@@ -376,6 +491,8 @@ fn run_display(
         lowlat_common::log_error!("stream: encoder runtime unavailable");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    // **Before the encoder, so it is given back after it.**
+    let _held = clock.hold(&output.adapter);
     // **Declared before the encoder, so it outlives it.** Its targets are
     // registered with the encoder's session, which takes the registrations
     // back as it goes; the textures must still be there when it does.
@@ -530,6 +647,7 @@ fn run_vendor(
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
+    clock: &MemoryClock,
 ) -> Exit {
     let Ok(d3d11) = lowlat_encode::d3d11::D3d11::load() else {
         lowlat_common::log_error!("stream: graphics libraries unavailable, nothing will encode");
@@ -562,6 +680,7 @@ fn run_vendor(
         lowlat_common::log_error!("stream: encoder runtime unavailable");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    let _held = clock.hold(&adapter);
     let session = match api.open_session(Arc::new(device)) {
         Ok(session) => session,
         Err(error) => {
@@ -694,5 +813,113 @@ mod tests {
             "asked with nothing pending"
         );
         assert!(!asks_again(false, None), "asked with nothing pending");
+    }
+
+    /// **The floor is the lowest clock at or above half the top**: on the
+    /// development machine's GPU its middle state's 7001 MHz under a top of
+    /// 14001, never the light-load 810 and 405; another generation's 5001
+    /// under 9501, whatever order the clocks are listed in.
+    #[test]
+    fn a_stream_floors_the_memory_clock_at_the_lowest_clock_from_half_its_top() {
+        assert_eq!(
+            memory_floor(&[14001, 13801, 7001, 810, 405]),
+            Some((7001, 14001))
+        );
+        assert_eq!(
+            memory_floor(&[405, 9501, 5001, 810, 9251]),
+            Some((5001, 9501))
+        );
+        assert_eq!(memory_floor(&[7001]), Some((7001, 7001)));
+        assert_eq!(memory_floor(&[]), None);
+    }
+
+    /// **Held, the memory clock stays at or above its floor under an
+    /// encoder's load, and given back it falls below**: the second half is
+    /// what shows the first is the hold's and not the load's. As the
+    /// administrator, on an NVIDIA GPU nothing else is loading:
+    /// `cargo test -p lowlat-host --lib a_held_memory_clock -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "requires the vendor driver and the administrator"]
+    fn a_held_memory_clock_stays_at_its_floor_under_an_encoder() {
+        use lowlat_encode::Encoder as _;
+        use std::time::{Duration, Instant};
+
+        let d3d11 = lowlat_encode::d3d11::D3d11::load().expect("the graphics libraries");
+        let adapter = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|adapter| adapter.vendor == NVIDIA && encodes_on(adapter))
+            .expect("an NVIDIA GPU");
+        let clock = MemoryClock::new(true);
+        let nvml = clock.nvml.as_ref().expect("the management library");
+        let gpu = nvml
+            .matching(adapter.vendor, adapter.device, adapter.subsystem)
+            .expect("the adapter's GPU");
+        let mut listed = [0; 32];
+        let (floor, _) = memory_floor(nvml.memory_clocks(gpu, &mut listed).expect("its clocks"))
+            .expect("a floor");
+        let device = Arc::new(d3d11.open(adapter.luid).expect("a device"));
+        let api = lowlat_encode::nvenc::Api::load().expect("the encoder runtime");
+        let session = api.open_session(device).expect("a session");
+        let mut encoder = session
+            .initialize(lowlat_encode::nvenc::Config {
+                codec: lowlat_encode::nvenc::Codec::H264,
+                width: 1920,
+                height: 1080,
+                fps: 60,
+                bitrate_bps: 10_000_000,
+                min_qp: 5,
+                thorough: false,
+                chroma: lowlat_encode::nvenc::Chroma::Yuv420,
+                depth: lowlat_encode::nvenc::Depth::Eight,
+            })
+            .expect("an encoder");
+        let mut source = lowlat_capture::synthetic::Synthetic::new(1920, 1080);
+        // Forty seconds at sixty a second, the clock read every tenth of one
+        // from the fifth second on, past the climb an encoder's start makes.
+        let mut run = |name: &str| {
+            let period = Duration::from_secs(1) / 60;
+            let (mut lowest, mut times) = (u32::MAX, Vec::with_capacity(2400));
+            let mut next = Instant::now();
+            for index in 0..2400 {
+                lowlat_common::clock::precise_sleep(next.saturating_duration_since(Instant::now()));
+                next += period;
+                let frame = source.acquire();
+                let began = Instant::now();
+                encoder.submit(&frame, index == 0).expect("a submit");
+                encoder.wait_finished(Duration::from_millis(100));
+                while !matches!(
+                    encoder.poll().expect("a poll"),
+                    lowlat_encode::Poll::Ready { .. }
+                ) {
+                    std::hint::spin_loop();
+                }
+                times.push(began.elapsed());
+                if index >= 300 && index % 6 == 0 {
+                    lowest = lowest.min(nvml.memory_clock(gpu).expect("the clock now"));
+                }
+            }
+            times.sort_unstable();
+            println!(
+                "{name}: memory clock at least {lowest} MHz, encode p50 {:?} p99 {:?}",
+                times[times.len() / 2],
+                times[times.len() * 99 / 100]
+            );
+            lowest
+        };
+        let held = clock.hold(&adapter).expect("the hold");
+        let lowest_held = run("held");
+        drop(held);
+        let lowest_free = run("given back");
+        assert!(
+            lowest_held >= floor,
+            "held, the clock fell to {lowest_held} MHz, below the floor of {floor}"
+        );
+        assert!(
+            lowest_free < floor,
+            "given back, the clock never fell below the floor of {floor} MHz: the load held \
+             it, so the held half showed nothing"
+        );
     }
 }
