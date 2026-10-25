@@ -135,6 +135,15 @@ script, lets users change it, so an unelevated program keeps a display, and lets
 own account read it; the host's configuration beside it stays readable by the system account and
 administrators alone ([07 §10](07-platforms.md)). The GPU is named by vendor and device, since
 an adapter's identifier changes across boots (§1.7).
+*Amended 2026-10-25, at W3.13 ([impl-plan-windows.md](impl-plan-windows.md)):* **or by its maker,
+or as the power-saving one.** A maker's number alone (`gpu 10de`) takes the first GPU of that
+maker in the system's high-performance order, so a card replaced by another of its maker's keeps
+the choice; `gpu igpu` takes the first GPU in the system's minimum-power order, the integrated one
+where a machine has one. A choice with nothing here falls back to the high-performance GPU with a
+warning, and a driver from before either reads the line as one it cannot read and keeps that
+default. The commands take a maker by name -- `nvidia`, `amd`, `intel` -- and keep its number. The
+library's settings say an exact GPU alone: a maker's choice or the power-saving one reads as zero
+there, and written back as read it stands.
 
 ### §1.5 Modes
 
@@ -399,9 +408,9 @@ other order brought a removed one back at the driver's next start.
 `lowlatd display` drives the same controller, so a person with no program of their own manages
 displays from a shell: `list`; `add WxH[@Hz] [--restore] [--slot N]`; `hold WxH[@Hz] [--slot
 N] [--for SECONDS]`, a bound monitor for as long as the command runs; `remove SLOT`; `mode SLOT
-WxH[@Hz]`; and the file's settings, `modes [add|remove WxH@Hz]`, `gpu [auto|VVVV:DDDD]`,
-`pointer [hardware|drawn]` and `edid [FILE|none]`. A display a person adds is kept, since a
-command's process ends with it. A tray is later.
+WxH[@Hz]`; and the file's settings, `modes [add|remove WxH@Hz]`, `gpu
+[auto|igpu|nvidia|amd|intel|VVVV|VVVV:DDDD]`, `pointer [hardware|drawn]` and `edid [FILE|none]`.
+A display a person adds is kept, since a command's process ends with it. A tray is later.
 
 *Added 2026-10-17, at W3.6:* **the program `lowlat-vdd` takes the same commands**, through the
 same code, for a machine that runs no host; and a library built with the third half alone is the

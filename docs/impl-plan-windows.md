@@ -2181,6 +2181,16 @@ a display gone past the wait for one and a refused mode of the host's display.
   high-performance order is the RTX, the Arc, then the Radeon. On a machine without an
   integrated GPU the minimum-power order still has a first, so `igpu` there is the GPU the system
   ranks lowest in power, logged as chosen.
+  *Built 2026-10-25, its live check still to run*: the file's choice is an exact GPU, a maker or
+  the power-saving GPU, read and written in the file's own words; the driver walks the order the
+  choice says; the commands read a maker's name and give everything else to the file's own
+  reader, so the two cannot disagree. **The library is left as it is** (the maintainer's
+  decision): its settings say an exact GPU or none, a maker's choice and the power-saving one
+  read as none, and settings written back as read keep the choice the file holds, where writing
+  them would otherwise have turned it into the high-performance GPU. Checked: the file's round
+  trips for every form; which GPUs each choice takes; the commands' names and the lines they
+  refuse; the library's write-back; and on the development machine the minimum-power order --
+  the processor's Radeon first, the RTX and the Arc after -- each check broken once.
 
 ## Phase W4 - The host's input device
 

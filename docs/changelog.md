@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-25 - W3.13 built: the displays' GPU by its maker, or the power-saving one
+
+### Changed
+- **`gpu` takes `nvidia`, `amd`, `intel` and `igpu`** beside `auto` and an exact GPU's
+  `VVVV:DDDD` ([11 §1.4](11-drivers.md), [impl-plan-windows.md](impl-plan-windows.md) W3.13). A
+  maker is kept in the file as its number (`gpu 10de`) and taken as the first GPU of that maker in
+  the system's high-performance order, at every start of the driver; `igpu` is the first GPU in
+  the system's minimum-power order. A choice with nothing here falls back to the high-performance
+  GPU with a warning; a driver from before reads either line as one it cannot read, and keeps
+  that default.
+- The library's settings are unchanged (the maintainer's decision): they say an exact GPU or
+  none, and written back as read they keep whatever the file holds.
+
+### Measured
+- On the development machine the minimum-power order is the processor's Radeon, then the RTX,
+  then the Arc; the high-performance order the RTX, the Arc, the Radeon. The system marks the
+  Radeon the integrated GPU of a hybrid machine.
+
 ## 2026-10-25 - The rate a stream runs at, logged; the collapse at 120 a second was the content
 
 ### Changed
