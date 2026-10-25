@@ -27,6 +27,9 @@ pub mod nvenc;
 mod upload;
 #[cfg(target_os = "linux")]
 pub mod vaapi;
+/// Intel's encoder, on the device of the output it encodes (Windows).
+#[cfg(windows)]
+pub mod vpl;
 #[cfg(target_os = "linux")]
 pub mod vulkan;
 

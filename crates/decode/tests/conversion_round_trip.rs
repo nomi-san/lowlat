@@ -24,7 +24,7 @@ use lowlat_drivers::ffi::d3d11::{
     DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC, ID3D11Resource, ID3D11Texture2D,
 };
 use lowlat_drivers::vcall;
-use lowlat_encode::{Poll, amf, nvenc};
+use lowlat_encode::{Poll, amf, nvenc, vpl};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -34,10 +34,11 @@ const PICTURES: usize = 60;
 /// The vendors whose own encoders these are, as their adapters report them.
 const NVIDIA: u32 = 0x10de;
 const AMD: u32 = 0x1002;
+const INTEL: u32 = 0x8086;
 /// Targets in rotation, one per picture the encoder may hold: as many on
-/// either encoder.
+/// every encoder.
 const TARGETS: usize = nvenc::IN_FLIGHT;
-const _: () = assert!(amf::IN_FLIGHT == TARGETS);
+const _: () = assert!(amf::IN_FLIGHT == TARGETS && vpl::IN_FLIGHT == TARGETS);
 
 /// Saturated colours that tell one matrix from another.
 const COLOURS: [[u8; 3]; 8] = [
@@ -218,6 +219,59 @@ fn round_trip(vendor: u32, codec: Codec, layout: Layout) -> (f64, f64, f64) {
                     amf::Depth::Eight
                 },
                 source: amf::Source::Yuv,
+            },
+        )
+        .expect("an encoder");
+        let inputs: Vec<usize> = targets
+            .iter()
+            .map(|target| {
+                encoder
+                    .register_texture(target.texture())
+                    .expect("the target registered")
+            })
+            .collect();
+        return compare(&decoding, codec, layout, |index| {
+            let slot = convert(index);
+            encoder
+                .submit_registered(inputs[slot], index == 0)
+                .expect("submit");
+            unit(&mut encoder)
+        });
+    }
+    if vendor == INTEL {
+        let runtime = lowlat_drivers::vpl::Vpl::for_adapter(&adapter).expect("Intel's runtime");
+        let index = d3d11
+            .plain_index(adapter.luid)
+            .expect("the enumeration")
+            .expect("the adapter");
+        let session = runtime
+            .encoder_session(&device, index)
+            .expect("an encoder's session");
+        let mut encoder = vpl::Encoder::new(
+            &session,
+            &device,
+            vpl::Config {
+                codec: if codec == Codec::H264 {
+                    vpl::Codec::H264
+                } else {
+                    vpl::Codec::H265
+                },
+                width: WIDTH,
+                height: HEIGHT,
+                fps: 60,
+                bitrate_bps: 40_000_000,
+                min_qp: lowlat_encode::DEFAULT_MIN_QP,
+                thorough: false,
+                chroma: if full {
+                    vpl::Chroma::Yuv444
+                } else {
+                    vpl::Chroma::Yuv420
+                },
+                depth: if ten_bit {
+                    vpl::Depth::Ten
+                } else {
+                    vpl::Depth::Eight
+                },
             },
         )
         .expect("an encoder");
@@ -477,4 +531,39 @@ fn hevc_from_the_conversion_comes_back_through_amds_encoder() {
 #[ignore = "requires AMD's GPU and runtime"]
 fn ten_bit_hevc_from_the_conversion_comes_back_through_amds_encoder() {
     check("amd hevc p010", AMD, Codec::H265, Layout::P010);
+}
+
+/// **Intel's encoder reading the conversion's targets**, registered with it:
+/// the same pictures back through the same targets, in every layout the
+/// conversion writes.
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn h264_from_the_conversion_comes_back_through_intels_encoder() {
+    check("intel h264 nv12", INTEL, Codec::H264, Layout::Nv12);
+}
+
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn hevc_from_the_conversion_comes_back_through_intels_encoder() {
+    check("intel hevc nv12", INTEL, Codec::H265, Layout::Nv12);
+}
+
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn ten_bit_hevc_from_the_conversion_comes_back_through_intels_encoder() {
+    check("intel hevc p010", INTEL, Codec::H265, Layout::P010);
+}
+
+/// **Full chroma on an Intel GPU**, from the packed word at eight bits.
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn full_chroma_hevc_from_the_packed_word_comes_back_through_intels_encoder() {
+    check("intel hevc ayuv", INTEL, Codec::H265, Layout::Ayuv);
+}
+
+/// **Full chroma at ten bits on an Intel GPU**, from the packed ten-bit word.
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn ten_bit_full_chroma_hevc_from_the_packed_word_comes_back_through_intels_encoder() {
+    check("intel hevc y410", INTEL, Codec::H265, Layout::Y410);
 }
