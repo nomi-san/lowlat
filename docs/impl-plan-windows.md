@@ -31,7 +31,8 @@ checked on the development machine, and closed; what the gate asked and was not 
 its entry.
 *Amended 2026-10-25:* W3.13 -- the
 virtual displays' GPU named by its maker, or as the power-saving one -- added after W3 closed; it
-is built after W2.8.
+is built after W2.8. *Amended 2026-10-25:* W3.13 built, checked and closed; two findings beside it
+are named in its entry.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2162,7 +2163,7 @@ on the LAN and one on a Windows machine:
 [changelog](changelog.md)'s entry of the day; two faults found at it were fixed the same day,
 a display gone past the wait for one and a refused mode of the host's display.
 
-- [ ] **W3.13 the virtual displays' GPU named by its maker, or as the power-saving one**: `gpu`
+- [x] **W3.13 the virtual displays' GPU named by its maker, or as the power-saving one**: `gpu`
   takes `nvidia`, `amd` or `intel` beside `auto` and `VVVV:DDDD` -- kept in the file as the
   maker's number alone, and matched when the driver starts to the first GPU of that maker in the
   system's high-performance order, so a card replaced by another of its maker's keeps the choice
@@ -2191,6 +2192,14 @@ a display gone past the wait for one and a refused mode of the host's display.
   trips for every form; which GPUs each choice takes; the commands' names and the lines they
   refuse; the library's write-back; and on the development machine the minimum-power order --
   the processor's Radeon first, the RTX and the Arc after -- each check broken once.
+  *Checked 2026-10-25* ([changelog](changelog.md)): the driver installed, a monitor held on it
+  moved by each name -- `nvidia` to the RTX, `intel` to the Arc, `amd` and `igpu` to the Radeon.
+  **Found with it**: `auto` put the monitor on the Arc, while every process of the signed-in user
+  ranks the RTX first in the high-performance order -- since the RTX's driver was restarted, where
+  before it gave the RTX; where it comes from is not yet known. And **the host's own display did
+  not come back after the driver's update** while the host captured another output, so a guest
+  could no longer ask for it until the host restarted ([06](06-api.md) `output`).
+  *Closed 2026-10-25.*
 
 ## Phase W4 - The host's input device
 
@@ -2427,6 +2436,9 @@ library's demo:
   drawn on Intel's GPUs, the duplication's wait not entered while Intel's encoder holds a
   picture, H.264's remote-gaming tuning taken at the gate; a rate change under congestion at 120
   a second not passed, the shared control's; an output asked during a rebuild fixed.
+- 2026-10-25: W3.13 built, checked and closed: a monitor moved by each name; `auto` found on the
+  Arc where the user's processes rank the RTX first, and the host's own display found not to come
+  back after a driver update while another output was captured.
 - 2026-10-25: W3.13 added after W3 closed: the virtual displays' GPU named by its maker
   (`nvidia`, `amd`, `intel`) or as the power-saving one (`igpu`, checked on the development
   machine first); no `dgpu`, which `auto` already is.

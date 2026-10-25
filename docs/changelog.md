@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2026-10-25 - W3.13 built: the displays' GPU by its maker, or the power-saving one
+## 2026-10-25 - W3.13 built and checked: the displays' GPU by its maker, or the power-saving one
 
 ### Changed
 - **`gpu` takes `nvidia`, `amd`, `intel` and `igpu`** beside `auto` and an exact GPU's
@@ -20,6 +20,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - On the development machine the minimum-power order is the processor's Radeon, then the RTX,
   then the Arc; the high-performance order the RTX, the Arc, the Radeon. The system marks the
   Radeon the integrated GPU of a hybrid machine.
+
+### Checked
+- The driver installed on the development machine, a monitor held on it moved by each name:
+  `nvidia` to the RTX, `intel` to the Arc, `amd` and `igpu` to the Radeon.
+
+### Found
+- **`auto` put the monitor on the Arc**, while every process of the signed-in user ranks the RTX
+  first in the high-performance order. It gave the RTX until the RTX's driver was restarted
+  earlier the same day; where the driver's answer comes from is not yet known. A maker's name now
+  holds the RTX through such a restart.
+- **The host's own display did not come back after the driver's update** while the host captured
+  another output: plugged again only when it is the output asked for, and offered only while
+  plugged, it could no longer be asked for until the host restarted.
 
 ## 2026-10-25 - The rate a stream runs at, logged; the collapse at 120 a second was the content
 
