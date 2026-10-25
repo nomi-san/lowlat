@@ -240,6 +240,18 @@ unsafe fn symbol<T: Copy>(library: &Library, name: &CStr) -> Result<T> {
     unsafe { library.symbol(name) }.ok_or(Error::MissingSymbol)
 }
 
+/// Whether `adapter`'s own driver names the current runtime, the one
+/// [`Vpl::for_adapter`] opens first: read from the driver's key alone,
+/// nothing loaded.
+pub fn has_current(adapter: &Adapter) -> bool {
+    adapter.vendor == INTEL
+        && Registry::load().is_ok_and(|registry| {
+            registry
+                .driver_value(adapter.device, CURRENT_FOLDER)
+                .is_some()
+        })
+}
+
 impl Vpl {
     /// The runtime for `adapter`: the current one where its driver names
     /// one, the older one otherwise.
@@ -1163,7 +1175,9 @@ mod tests {
     /// **The runtime is found in the folder the adapter's own driver names**
     /// -- a present device's key, never the class's keys in order -- and it
     /// opens, with every entry point a decoder and an encoder call; a session
-    /// on a device of ours with its lock on, and the device handed over.
+    /// on a device of ours with its lock on, and the device handed over. The
+    /// same key answers whether the current runtime is there with nothing
+    /// loaded, and no other maker's GPU has one.
     #[test]
     #[ignore = "requires an Intel GPU"]
     fn the_runtime_is_found_by_the_adapter_and_takes_our_device() {
@@ -1176,6 +1190,16 @@ mod tests {
             .expect("an Intel GPU");
         let vpl = Vpl::for_adapter(&adapter).expect("the runtime");
         assert_eq!(vpl.runtime(), Runtime::Current);
+        assert!(has_current(&adapter), "the current runtime not named");
+        // Another maker's GPU names none, whatever Intel's driver says.
+        if let Some(other) = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|a| a.decodes_here() && a.vendor != INTEL)
+        {
+            assert!(!has_current(&other), "{} named Intel's", other.description);
+        }
         let index = d3d11
             .plain_index(adapter.luid)
             .expect("the enumeration")
