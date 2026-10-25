@@ -6,7 +6,8 @@
 //! when asked and only then, each with its parameter sets and no delimiter,
 //! across a rate changed on every picture, which never waits on the picture
 //! in the engine; the engine takes one picture at a time; the wait wakes on
-//! the picture; and nothing is allocated per picture on the loop's side.
+//! the picture; nothing is allocated per picture on the loop's side; and what
+//! the part codes is asked with nothing built, the answer the build's.
 //! Needs Intel's GPU and runtime, so off by
 //! default: `cargo test -p lowlat-decode --test vpl_round_trip -- --ignored
 //! --nocapture --test-threads 1`.
@@ -692,4 +693,69 @@ fn a_picture_allocates_nothing_on_the_loops_side() {
             }
         });
     }
+}
+
+/// **What the part codes is asked with nothing built, and the answer is the
+/// build's**: the census's question -- HEVC's full chroma from the packed
+/// word at eight and ten bits -- and the first codec at an ordinary picture,
+/// past the width and the rate of pictures it builds at on some parts, and at
+/// full chroma, which it never codes here; each answered by the census and
+/// by a build on the same session, which must agree.
+#[test]
+#[ignore = "requires Intel's GPU and runtime"]
+fn what_the_part_codes_is_asked_with_nothing_built() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let adapter = intel(&d3d11);
+    let index = d3d11
+        .plain_index(adapter.luid)
+        .expect("the enumeration")
+        .expect("the adapter");
+    let runtime = Vpl::for_adapter(&adapter).expect("Intel's runtime");
+    let device = d3d11.open(adapter.luid).expect("a device");
+    let session = runtime
+        .encoder_session(&device, index)
+        .expect("an encoder's session");
+    let full = |depth| vpl::Config {
+        chroma: vpl::Chroma::Yuv444,
+        depth,
+        ..config(Codec::H265, false, false)
+    };
+    let first = config(Codec::H264, false, false);
+    let asked = [
+        ("full chroma at eight bits", full(vpl::Depth::Eight)),
+        ("full chroma at ten bits", full(vpl::Depth::Ten)),
+        ("the first codec", first),
+        (
+            "the first codec 5120 wide",
+            vpl::Config {
+                width: 5120,
+                height: 1440,
+                ..first
+            },
+        ),
+        (
+            "the first codec at 200 a second",
+            vpl::Config { fps: 200, ..first },
+        ),
+        (
+            "the first codec at full chroma",
+            vpl::Config {
+                chroma: vpl::Chroma::Yuv444,
+                ..first
+            },
+        ),
+    ];
+    for (name, config) in asked {
+        let coded = vpl::codes(&session, &config);
+        let built = vpl::Encoder::new(&session, &device, config).is_ok();
+        println!(
+            "{}: {name}: coded {coded}, built {built}",
+            adapter.description
+        );
+        assert_eq!(coded, built, "{name}: the census and the build disagree");
+    }
+    assert!(
+        vpl::codes(&session, &first),
+        "the first codec at an ordinary picture refused"
+    );
 }

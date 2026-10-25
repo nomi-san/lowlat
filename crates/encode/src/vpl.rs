@@ -11,7 +11,10 @@
 //! thread of its own, unordered against the device's queue, so nothing on the
 //! device says a picture is done: a collect asks the runtime without waiting,
 //! and [`Encoder::wait_finished`] sleeps in the same call, on the loop's
-//! thread. The encoder starts no thread of its own.
+//! thread. The encoder starts no thread of its own. **That thread finishes
+//! the picture on the device's context**, so the frame source on the device
+//! is told while a picture is in the engine ([`Engine`]), to hold the device
+//! in no wait of its own meanwhile.
 //!
 //! **The engine takes one picture at a time**, at the depth that hands each
 //! picture out as soon as it is encoded: a second handed over while one is in
@@ -30,7 +33,9 @@
 //! built with and forbids a new sequence, so it is never a keyframe.
 
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
+use std::sync::Arc;
 
 use lowlat_drivers::d3d11::{Com, Device};
 use lowlat_drivers::vcall;
@@ -437,6 +442,23 @@ impl Params {
     }
 }
 
+/// Whether the encoder on `session` codes `config`, as the build would ask
+/// it -- a size, a rate of pictures or a layout the part does not code is
+/// refused -- with nothing built: what a census asks.
+pub fn codes(session: &Session<'_>, config: &Config) -> bool {
+    if config.codec == Codec::H264
+        && (config.depth == Depth::Ten || config.chroma == Chroma::Yuv444)
+    {
+        return false;
+    }
+    let Ok(mut params) = Params::new(config) else {
+        return false;
+    };
+    // SAFETY: the buffers the parameters name are their own, live for the
+    // call.
+    unsafe { session.query_encoder(params.named(false)) }.is_ok()
+}
+
 /// A texture the encoder reads and the surface made of it, which the runtime
 /// locks and writes while a picture of it is in flight: reached through its
 /// pointer alone, and freed only once the encoder is closed.
@@ -538,6 +560,23 @@ struct InFlight {
     done: bool,
 }
 
+/// Whether the engine is still at a picture, for the frame source on the
+/// encoder's device ([`Encoder::engine`]). **The runtime finishes each
+/// picture on that device's context**, so a wait elsewhere that holds the
+/// device -- the desktop duplication's -- holds the picture up for as long
+/// as it runs.
+#[derive(Debug, Clone)]
+pub struct Engine(Arc<AtomicBool>);
+
+impl Engine {
+    /// True from a picture's submit until a collect or a wait finds it
+    /// encoded.
+    pub fn busy(&self) -> bool {
+        // Set and read on the encoder's own thread: no order to keep.
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 /// An encoder, on the session and the device it borrows.
 pub struct Encoder<'s> {
     session: &'s Session<'s>,
@@ -548,6 +587,8 @@ pub struct Encoder<'s> {
     info: mfxFrameInfo,
     /// Submitted and not yet collected.
     in_engine: Option<InFlight>,
+    /// Whether that picture is still being encoded, as [`Engine`] says it.
+    busy: Arc<AtomicBool>,
     output: Output,
     /// A rate asked for while a picture was in the engine, made before the
     /// next goes in.
@@ -625,6 +666,7 @@ impl<'s> Encoder<'s> {
             params,
             info,
             in_engine: None,
+            busy: Arc::new(AtomicBool::new(false)),
             output,
             wanted: None,
             slot,
@@ -639,6 +681,11 @@ impl<'s> Encoder<'s> {
     /// Pictures submitted and not yet collected: one at most.
     pub fn in_flight(&self) -> usize {
         usize::from(self.in_engine.is_some())
+    }
+
+    /// Whether the engine is at a picture, as the frame source sees it.
+    pub fn engine(&self) -> Engine {
+        Engine(Arc::clone(&self.busy))
     }
 
     /// `texture`, which something else on the encoder's device writes -- a
@@ -732,6 +779,7 @@ impl<'s> Encoder<'s> {
                     pending,
                     done: false,
                 });
+                self.busy.store(true, Ordering::Relaxed);
                 Ok(())
             }
             Encoded::Busy => Err(Error::QueueFull),
@@ -753,6 +801,7 @@ impl<'s> Encoder<'s> {
                 return Ok(Poll::Pending);
             }
         }
+        self.busy.store(false, Ordering::Relaxed);
         self.in_engine = None;
         // SAFETY: the runtime has finished the picture, and writes the
         // bitstream again only once a picture is handed over again -- by a
@@ -803,6 +852,9 @@ impl<'s> Encoder<'s> {
                 .session
                 .sync_encoded(&in_engine.pending, wait_ms)
                 .unwrap_or(false);
+            if in_engine.done {
+                self.busy.store(false, Ordering::Relaxed);
+            }
         }
         true
     }
