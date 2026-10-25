@@ -381,14 +381,16 @@ impl Params {
         options3.TargetChromaFormatPlus1 = if full { YUV444 + 1 } else { YUV420 + 1 };
         options3.TargetBitDepthLuma = depth;
         options3.TargetBitDepthChroma = depth;
-        // **HEVC's remote-gaming tuning**: the same pictures, sooner. The
-        // first codec's changes its rate control and sends a picture set
-        // again mid-stream. HEVC's predicted pictures stay the runtime's
-        // low-delay bidirectional ones, which every part codes -- some hang
-        // their engine on plain predicted ones.
-        if config.codec == Codec::H265 {
-            options3.ScenarioInfo = REMOTE_GAMING;
-        }
+        // **The runtime's remote-gaming tuning, in both codecs**: the same
+        // pictures, sooner -- the first codec's encode halved at 120 a
+        // second, where without it some pictures outlast the interval and the
+        // next is refused -- and the first codec's rate held at its target.
+        // That codec's picture sets come several at once with each IDR, its
+        // slices choosing among them, which every decoder tried takes.
+        // HEVC's predicted pictures stay the runtime's low-delay
+        // bidirectional ones, which every part codes -- some hang their engine
+        // on plain predicted ones.
+        options3.ScenarioInfo = REMOTE_GAMING;
         let signal = &mut params.signal;
         signal.Header = header::<mfxExtVideoSignalInfo>(MFX_EXTBUFF_VIDEO_SIGNAL_INFO);
         signal.VideoFormat = UNSPECIFIED_FORMAT;
