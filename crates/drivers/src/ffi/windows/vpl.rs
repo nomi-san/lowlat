@@ -140,6 +140,7 @@ where
 }
 pub const MFX_IMPL_NAME_LEN: u32 = 32;
 pub type mfxU8 = ::std::os::raw::c_uchar;
+pub type mfxI16 = ::std::os::raw::c_short;
 pub type mfxU16 = ::std::os::raw::c_ushort;
 pub type mfxU32 = ::std::os::raw::c_uint;
 pub type mfxI32 = ::std::os::raw::c_int;
@@ -177,6 +178,32 @@ const _: () = {
     ["Alignment of mfxStructVersion"][::std::mem::align_of::<mfxStructVersion>() - 2usize];
     ["Offset of field: mfxStructVersion::Version"]
         [::std::mem::offset_of!(mfxStructVersion, Version) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxI16Pair {
+    pub x: mfxI16,
+    pub y: mfxI16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxI16Pair"][::std::mem::size_of::<mfxI16Pair>() - 4usize];
+    ["Alignment of mfxI16Pair"][::std::mem::align_of::<mfxI16Pair>() - 2usize];
+    ["Offset of field: mfxI16Pair::x"][::std::mem::offset_of!(mfxI16Pair, x) - 0usize];
+    ["Offset of field: mfxI16Pair::y"][::std::mem::offset_of!(mfxI16Pair, y) - 2usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxHDLPair {
+    pub first: mfxHDL,
+    pub second: mfxHDL,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxHDLPair"][::std::mem::size_of::<mfxHDLPair>() - 16usize];
+    ["Alignment of mfxHDLPair"][::std::mem::align_of::<mfxHDLPair>() - 8usize];
+    ["Offset of field: mfxHDLPair::first"][::std::mem::offset_of!(mfxHDLPair, first) - 0usize];
+    ["Offset of field: mfxHDLPair::second"][::std::mem::offset_of!(mfxHDLPair, second) - 8usize];
 };
 pub const MFX_ERR_NONE: mfxStatus = 0;
 pub const MFX_ERR_UNKNOWN: mfxStatus = -1;
@@ -2080,10 +2107,585 @@ pub const MFX_LEVEL_VVC_155: _bindgen_ty_15 = 255;
 pub const MFX_TIER_VVC_MAIN: _bindgen_ty_15 = 0;
 pub const MFX_TIER_VVC_HIGH: _bindgen_ty_15 = 256;
 pub type _bindgen_ty_15 = ::std::os::raw::c_int;
+pub const MFX_GOP_CLOSED: _bindgen_ty_16 = 1;
+pub const MFX_GOP_STRICT: _bindgen_ty_16 = 2;
+pub type _bindgen_ty_16 = ::std::os::raw::c_int;
+pub const MFX_TARGETUSAGE_1: _bindgen_ty_17 = 1;
+pub const MFX_TARGETUSAGE_2: _bindgen_ty_17 = 2;
+pub const MFX_TARGETUSAGE_3: _bindgen_ty_17 = 3;
+pub const MFX_TARGETUSAGE_4: _bindgen_ty_17 = 4;
+pub const MFX_TARGETUSAGE_5: _bindgen_ty_17 = 5;
+pub const MFX_TARGETUSAGE_6: _bindgen_ty_17 = 6;
+pub const MFX_TARGETUSAGE_7: _bindgen_ty_17 = 7;
+pub const MFX_TARGETUSAGE_UNKNOWN: _bindgen_ty_17 = 0;
+pub const MFX_TARGETUSAGE_BEST_QUALITY: _bindgen_ty_17 = 1;
+pub const MFX_TARGETUSAGE_BALANCED: _bindgen_ty_17 = 4;
+pub const MFX_TARGETUSAGE_BEST_SPEED: _bindgen_ty_17 = 7;
+pub type _bindgen_ty_17 = ::std::os::raw::c_int;
+pub const MFX_RATECONTROL_CBR: _bindgen_ty_18 = 1;
+pub const MFX_RATECONTROL_VBR: _bindgen_ty_18 = 2;
+pub const MFX_RATECONTROL_CQP: _bindgen_ty_18 = 3;
+pub const MFX_RATECONTROL_AVBR: _bindgen_ty_18 = 4;
+pub const MFX_RATECONTROL_RESERVED1: _bindgen_ty_18 = 5;
+pub const MFX_RATECONTROL_RESERVED2: _bindgen_ty_18 = 6;
+pub const MFX_RATECONTROL_RESERVED3: _bindgen_ty_18 = 100;
+pub const MFX_RATECONTROL_RESERVED4: _bindgen_ty_18 = 7;
+pub const MFX_RATECONTROL_LA: _bindgen_ty_18 = 8;
+pub const MFX_RATECONTROL_ICQ: _bindgen_ty_18 = 9;
+pub const MFX_RATECONTROL_VCM: _bindgen_ty_18 = 10;
+pub const MFX_RATECONTROL_LA_ICQ: _bindgen_ty_18 = 11;
+pub const MFX_RATECONTROL_LA_HRD: _bindgen_ty_18 = 13;
+pub const MFX_RATECONTROL_QVBR: _bindgen_ty_18 = 14;
+pub type _bindgen_ty_18 = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxExtCodingOption {
+    pub Header: mfxExtBuffer,
+    pub reserved1: mfxU16,
+    pub RateDistortionOpt: mfxU16,
+    pub MECostType: mfxU16,
+    pub MESearchType: mfxU16,
+    pub MVSearchWindow: mfxI16Pair,
+    pub EndOfSequence: mfxU16,
+    pub FramePicture: mfxU16,
+    pub CAVLC: mfxU16,
+    pub reserved2: [mfxU16; 2usize],
+    pub RecoveryPointSEI: mfxU16,
+    pub ViewOutput: mfxU16,
+    pub NalHrdConformance: mfxU16,
+    pub SingleSeiNalUnit: mfxU16,
+    pub VuiVclHrdParameters: mfxU16,
+    pub RefPicListReordering: mfxU16,
+    pub ResetRefList: mfxU16,
+    pub RefPicMarkRep: mfxU16,
+    pub FieldOutput: mfxU16,
+    pub IntraPredBlockSize: mfxU16,
+    pub InterPredBlockSize: mfxU16,
+    pub MVPrecision: mfxU16,
+    pub MaxDecFrameBuffering: mfxU16,
+    pub AUDelimiter: mfxU16,
+    pub EndOfStream: mfxU16,
+    pub PicTimingSEI: mfxU16,
+    pub VuiNalHrdParameters: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtCodingOption"][::std::mem::size_of::<mfxExtCodingOption>() - 64usize];
+    ["Alignment of mfxExtCodingOption"][::std::mem::align_of::<mfxExtCodingOption>() - 4usize];
+    ["Offset of field: mfxExtCodingOption::Header"]
+        [::std::mem::offset_of!(mfxExtCodingOption, Header) - 0usize];
+    ["Offset of field: mfxExtCodingOption::reserved1"]
+        [::std::mem::offset_of!(mfxExtCodingOption, reserved1) - 8usize];
+    ["Offset of field: mfxExtCodingOption::RateDistortionOpt"]
+        [::std::mem::offset_of!(mfxExtCodingOption, RateDistortionOpt) - 10usize];
+    ["Offset of field: mfxExtCodingOption::MECostType"]
+        [::std::mem::offset_of!(mfxExtCodingOption, MECostType) - 12usize];
+    ["Offset of field: mfxExtCodingOption::MESearchType"]
+        [::std::mem::offset_of!(mfxExtCodingOption, MESearchType) - 14usize];
+    ["Offset of field: mfxExtCodingOption::MVSearchWindow"]
+        [::std::mem::offset_of!(mfxExtCodingOption, MVSearchWindow) - 16usize];
+    ["Offset of field: mfxExtCodingOption::EndOfSequence"]
+        [::std::mem::offset_of!(mfxExtCodingOption, EndOfSequence) - 20usize];
+    ["Offset of field: mfxExtCodingOption::FramePicture"]
+        [::std::mem::offset_of!(mfxExtCodingOption, FramePicture) - 22usize];
+    ["Offset of field: mfxExtCodingOption::CAVLC"]
+        [::std::mem::offset_of!(mfxExtCodingOption, CAVLC) - 24usize];
+    ["Offset of field: mfxExtCodingOption::reserved2"]
+        [::std::mem::offset_of!(mfxExtCodingOption, reserved2) - 26usize];
+    ["Offset of field: mfxExtCodingOption::RecoveryPointSEI"]
+        [::std::mem::offset_of!(mfxExtCodingOption, RecoveryPointSEI) - 30usize];
+    ["Offset of field: mfxExtCodingOption::ViewOutput"]
+        [::std::mem::offset_of!(mfxExtCodingOption, ViewOutput) - 32usize];
+    ["Offset of field: mfxExtCodingOption::NalHrdConformance"]
+        [::std::mem::offset_of!(mfxExtCodingOption, NalHrdConformance) - 34usize];
+    ["Offset of field: mfxExtCodingOption::SingleSeiNalUnit"]
+        [::std::mem::offset_of!(mfxExtCodingOption, SingleSeiNalUnit) - 36usize];
+    ["Offset of field: mfxExtCodingOption::VuiVclHrdParameters"]
+        [::std::mem::offset_of!(mfxExtCodingOption, VuiVclHrdParameters) - 38usize];
+    ["Offset of field: mfxExtCodingOption::RefPicListReordering"]
+        [::std::mem::offset_of!(mfxExtCodingOption, RefPicListReordering) - 40usize];
+    ["Offset of field: mfxExtCodingOption::ResetRefList"]
+        [::std::mem::offset_of!(mfxExtCodingOption, ResetRefList) - 42usize];
+    ["Offset of field: mfxExtCodingOption::RefPicMarkRep"]
+        [::std::mem::offset_of!(mfxExtCodingOption, RefPicMarkRep) - 44usize];
+    ["Offset of field: mfxExtCodingOption::FieldOutput"]
+        [::std::mem::offset_of!(mfxExtCodingOption, FieldOutput) - 46usize];
+    ["Offset of field: mfxExtCodingOption::IntraPredBlockSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption, IntraPredBlockSize) - 48usize];
+    ["Offset of field: mfxExtCodingOption::InterPredBlockSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption, InterPredBlockSize) - 50usize];
+    ["Offset of field: mfxExtCodingOption::MVPrecision"]
+        [::std::mem::offset_of!(mfxExtCodingOption, MVPrecision) - 52usize];
+    ["Offset of field: mfxExtCodingOption::MaxDecFrameBuffering"]
+        [::std::mem::offset_of!(mfxExtCodingOption, MaxDecFrameBuffering) - 54usize];
+    ["Offset of field: mfxExtCodingOption::AUDelimiter"]
+        [::std::mem::offset_of!(mfxExtCodingOption, AUDelimiter) - 56usize];
+    ["Offset of field: mfxExtCodingOption::EndOfStream"]
+        [::std::mem::offset_of!(mfxExtCodingOption, EndOfStream) - 58usize];
+    ["Offset of field: mfxExtCodingOption::PicTimingSEI"]
+        [::std::mem::offset_of!(mfxExtCodingOption, PicTimingSEI) - 60usize];
+    ["Offset of field: mfxExtCodingOption::VuiNalHrdParameters"]
+        [::std::mem::offset_of!(mfxExtCodingOption, VuiNalHrdParameters) - 62usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxExtCodingOption2 {
+    pub Header: mfxExtBuffer,
+    pub IntRefType: mfxU16,
+    pub IntRefCycleSize: mfxU16,
+    pub IntRefQPDelta: mfxI16,
+    pub MaxFrameSize: mfxU32,
+    pub MaxSliceSize: mfxU32,
+    pub BitrateLimit: mfxU16,
+    pub MBBRC: mfxU16,
+    pub ExtBRC: mfxU16,
+    pub LookAheadDepth: mfxU16,
+    pub Trellis: mfxU16,
+    pub RepeatPPS: mfxU16,
+    pub BRefType: mfxU16,
+    pub AdaptiveI: mfxU16,
+    pub AdaptiveB: mfxU16,
+    pub LookAheadDS: mfxU16,
+    pub NumMbPerSlice: mfxU16,
+    pub SkipFrame: mfxU16,
+    pub MinQPI: mfxU8,
+    pub MaxQPI: mfxU8,
+    pub MinQPP: mfxU8,
+    pub MaxQPP: mfxU8,
+    pub MinQPB: mfxU8,
+    pub MaxQPB: mfxU8,
+    pub FixedFrameRate: mfxU16,
+    pub DisableDeblockingIdc: mfxU16,
+    pub DisableVUI: mfxU16,
+    pub BufferingPeriodSEI: mfxU16,
+    pub EnableMAD: mfxU16,
+    pub UseRawRef: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtCodingOption2"][::std::mem::size_of::<mfxExtCodingOption2>() - 68usize];
+    ["Alignment of mfxExtCodingOption2"][::std::mem::align_of::<mfxExtCodingOption2>() - 4usize];
+    ["Offset of field: mfxExtCodingOption2::Header"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, Header) - 0usize];
+    ["Offset of field: mfxExtCodingOption2::IntRefType"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, IntRefType) - 8usize];
+    ["Offset of field: mfxExtCodingOption2::IntRefCycleSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, IntRefCycleSize) - 10usize];
+    ["Offset of field: mfxExtCodingOption2::IntRefQPDelta"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, IntRefQPDelta) - 12usize];
+    ["Offset of field: mfxExtCodingOption2::MaxFrameSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MaxFrameSize) - 16usize];
+    ["Offset of field: mfxExtCodingOption2::MaxSliceSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MaxSliceSize) - 20usize];
+    ["Offset of field: mfxExtCodingOption2::BitrateLimit"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, BitrateLimit) - 24usize];
+    ["Offset of field: mfxExtCodingOption2::MBBRC"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MBBRC) - 26usize];
+    ["Offset of field: mfxExtCodingOption2::ExtBRC"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, ExtBRC) - 28usize];
+    ["Offset of field: mfxExtCodingOption2::LookAheadDepth"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, LookAheadDepth) - 30usize];
+    ["Offset of field: mfxExtCodingOption2::Trellis"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, Trellis) - 32usize];
+    ["Offset of field: mfxExtCodingOption2::RepeatPPS"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, RepeatPPS) - 34usize];
+    ["Offset of field: mfxExtCodingOption2::BRefType"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, BRefType) - 36usize];
+    ["Offset of field: mfxExtCodingOption2::AdaptiveI"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, AdaptiveI) - 38usize];
+    ["Offset of field: mfxExtCodingOption2::AdaptiveB"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, AdaptiveB) - 40usize];
+    ["Offset of field: mfxExtCodingOption2::LookAheadDS"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, LookAheadDS) - 42usize];
+    ["Offset of field: mfxExtCodingOption2::NumMbPerSlice"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, NumMbPerSlice) - 44usize];
+    ["Offset of field: mfxExtCodingOption2::SkipFrame"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, SkipFrame) - 46usize];
+    ["Offset of field: mfxExtCodingOption2::MinQPI"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MinQPI) - 48usize];
+    ["Offset of field: mfxExtCodingOption2::MaxQPI"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MaxQPI) - 49usize];
+    ["Offset of field: mfxExtCodingOption2::MinQPP"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MinQPP) - 50usize];
+    ["Offset of field: mfxExtCodingOption2::MaxQPP"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MaxQPP) - 51usize];
+    ["Offset of field: mfxExtCodingOption2::MinQPB"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MinQPB) - 52usize];
+    ["Offset of field: mfxExtCodingOption2::MaxQPB"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, MaxQPB) - 53usize];
+    ["Offset of field: mfxExtCodingOption2::FixedFrameRate"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, FixedFrameRate) - 54usize];
+    ["Offset of field: mfxExtCodingOption2::DisableDeblockingIdc"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, DisableDeblockingIdc) - 56usize];
+    ["Offset of field: mfxExtCodingOption2::DisableVUI"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, DisableVUI) - 58usize];
+    ["Offset of field: mfxExtCodingOption2::BufferingPeriodSEI"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, BufferingPeriodSEI) - 60usize];
+    ["Offset of field: mfxExtCodingOption2::EnableMAD"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, EnableMAD) - 62usize];
+    ["Offset of field: mfxExtCodingOption2::UseRawRef"]
+        [::std::mem::offset_of!(mfxExtCodingOption2, UseRawRef) - 64usize];
+};
+pub const MFX_SCENARIO_UNKNOWN: _bindgen_ty_26 = 0;
+pub const MFX_SCENARIO_DISPLAY_REMOTING: _bindgen_ty_26 = 1;
+pub const MFX_SCENARIO_VIDEO_CONFERENCE: _bindgen_ty_26 = 2;
+pub const MFX_SCENARIO_ARCHIVE: _bindgen_ty_26 = 3;
+pub const MFX_SCENARIO_LIVE_STREAMING: _bindgen_ty_26 = 4;
+pub const MFX_SCENARIO_CAMERA_CAPTURE: _bindgen_ty_26 = 5;
+pub const MFX_SCENARIO_VIDEO_SURVEILLANCE: _bindgen_ty_26 = 6;
+pub const MFX_SCENARIO_GAME_STREAMING: _bindgen_ty_26 = 7;
+pub const MFX_SCENARIO_REMOTE_GAMING: _bindgen_ty_26 = 8;
+pub type _bindgen_ty_26 = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct mfxExtCodingOption3 {
+    pub Header: mfxExtBuffer,
+    pub NumSliceI: mfxU16,
+    pub NumSliceP: mfxU16,
+    pub NumSliceB: mfxU16,
+    pub WinBRCMaxAvgKbps: mfxU16,
+    pub WinBRCSize: mfxU16,
+    pub QVBRQuality: mfxU16,
+    pub EnableMBQP: mfxU16,
+    pub IntRefCycleDist: mfxU16,
+    pub DirectBiasAdjustment: mfxU16,
+    pub GlobalMotionBiasAdjustment: mfxU16,
+    pub MVCostScalingFactor: mfxU16,
+    pub MBDisableSkipMap: mfxU16,
+    pub WeightedPred: mfxU16,
+    pub WeightedBiPred: mfxU16,
+    pub AspectRatioInfoPresent: mfxU16,
+    pub OverscanInfoPresent: mfxU16,
+    pub OverscanAppropriate: mfxU16,
+    pub TimingInfoPresent: mfxU16,
+    pub BitstreamRestriction: mfxU16,
+    pub LowDelayHrd: mfxU16,
+    pub MotionVectorsOverPicBoundaries: mfxU16,
+    pub reserved1: [mfxU16; 2usize],
+    pub ScenarioInfo: mfxU16,
+    pub ContentInfo: mfxU16,
+    pub PRefType: mfxU16,
+    pub FadeDetection: mfxU16,
+    pub reserved2: [mfxU16; 2usize],
+    pub GPB: mfxU16,
+    pub MaxFrameSizeI: mfxU32,
+    pub MaxFrameSizeP: mfxU32,
+    pub reserved3: [mfxU32; 3usize],
+    pub EnableQPOffset: mfxU16,
+    pub QPOffset: [mfxI16; 8usize],
+    pub NumRefActiveP: [mfxU16; 8usize],
+    pub NumRefActiveBL0: [mfxU16; 8usize],
+    pub NumRefActiveBL1: [mfxU16; 8usize],
+    pub reserved6: mfxU16,
+    pub TransformSkip: mfxU16,
+    pub TargetChromaFormatPlus1: mfxU16,
+    pub TargetBitDepthLuma: mfxU16,
+    pub TargetBitDepthChroma: mfxU16,
+    pub BRCPanicMode: mfxU16,
+    pub LowDelayBRC: mfxU16,
+    pub EnableMBForceIntra: mfxU16,
+    pub AdaptiveMaxFrameSize: mfxU16,
+    pub RepartitionCheckEnable: mfxU16,
+    pub reserved5: [mfxU16; 3usize],
+    pub EncodedUnitsInfo: mfxU16,
+    pub EnableNalUnitType: mfxU16,
+    pub __bindgen_anon_1: mfxExtCodingOption3__bindgen_ty_1,
+    pub AdaptiveCQM: mfxU16,
+    pub AdaptiveRef: mfxU16,
+    pub reserved: [mfxU16; 161usize],
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union mfxExtCodingOption3__bindgen_ty_1 {
+    pub ExtBrcAdaptiveLTR: mfxU16,
+    pub AdaptiveLTR: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtCodingOption3__bindgen_ty_1"]
+        [::std::mem::size_of::<mfxExtCodingOption3__bindgen_ty_1>() - 2usize];
+    ["Alignment of mfxExtCodingOption3__bindgen_ty_1"]
+        [::std::mem::align_of::<mfxExtCodingOption3__bindgen_ty_1>() - 2usize];
+    ["Offset of field: mfxExtCodingOption3__bindgen_ty_1::ExtBrcAdaptiveLTR"]
+        [::std::mem::offset_of!(mfxExtCodingOption3__bindgen_ty_1, ExtBrcAdaptiveLTR) - 0usize];
+    ["Offset of field: mfxExtCodingOption3__bindgen_ty_1::AdaptiveLTR"]
+        [::std::mem::offset_of!(mfxExtCodingOption3__bindgen_ty_1, AdaptiveLTR) - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtCodingOption3"][::std::mem::size_of::<mfxExtCodingOption3>() - 512usize];
+    ["Alignment of mfxExtCodingOption3"][::std::mem::align_of::<mfxExtCodingOption3>() - 4usize];
+    ["Offset of field: mfxExtCodingOption3::Header"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, Header) - 0usize];
+    ["Offset of field: mfxExtCodingOption3::NumSliceI"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumSliceI) - 8usize];
+    ["Offset of field: mfxExtCodingOption3::NumSliceP"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumSliceP) - 10usize];
+    ["Offset of field: mfxExtCodingOption3::NumSliceB"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumSliceB) - 12usize];
+    ["Offset of field: mfxExtCodingOption3::WinBRCMaxAvgKbps"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, WinBRCMaxAvgKbps) - 14usize];
+    ["Offset of field: mfxExtCodingOption3::WinBRCSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, WinBRCSize) - 16usize];
+    ["Offset of field: mfxExtCodingOption3::QVBRQuality"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, QVBRQuality) - 18usize];
+    ["Offset of field: mfxExtCodingOption3::EnableMBQP"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, EnableMBQP) - 20usize];
+    ["Offset of field: mfxExtCodingOption3::IntRefCycleDist"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, IntRefCycleDist) - 22usize];
+    ["Offset of field: mfxExtCodingOption3::DirectBiasAdjustment"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, DirectBiasAdjustment) - 24usize];
+    ["Offset of field: mfxExtCodingOption3::GlobalMotionBiasAdjustment"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, GlobalMotionBiasAdjustment) - 26usize];
+    ["Offset of field: mfxExtCodingOption3::MVCostScalingFactor"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, MVCostScalingFactor) - 28usize];
+    ["Offset of field: mfxExtCodingOption3::MBDisableSkipMap"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, MBDisableSkipMap) - 30usize];
+    ["Offset of field: mfxExtCodingOption3::WeightedPred"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, WeightedPred) - 32usize];
+    ["Offset of field: mfxExtCodingOption3::WeightedBiPred"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, WeightedBiPred) - 34usize];
+    ["Offset of field: mfxExtCodingOption3::AspectRatioInfoPresent"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, AspectRatioInfoPresent) - 36usize];
+    ["Offset of field: mfxExtCodingOption3::OverscanInfoPresent"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, OverscanInfoPresent) - 38usize];
+    ["Offset of field: mfxExtCodingOption3::OverscanAppropriate"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, OverscanAppropriate) - 40usize];
+    ["Offset of field: mfxExtCodingOption3::TimingInfoPresent"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, TimingInfoPresent) - 42usize];
+    ["Offset of field: mfxExtCodingOption3::BitstreamRestriction"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, BitstreamRestriction) - 44usize];
+    ["Offset of field: mfxExtCodingOption3::LowDelayHrd"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, LowDelayHrd) - 46usize];
+    ["Offset of field: mfxExtCodingOption3::MotionVectorsOverPicBoundaries"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, MotionVectorsOverPicBoundaries) - 48usize];
+    ["Offset of field: mfxExtCodingOption3::reserved1"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved1) - 50usize];
+    ["Offset of field: mfxExtCodingOption3::ScenarioInfo"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, ScenarioInfo) - 54usize];
+    ["Offset of field: mfxExtCodingOption3::ContentInfo"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, ContentInfo) - 56usize];
+    ["Offset of field: mfxExtCodingOption3::PRefType"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, PRefType) - 58usize];
+    ["Offset of field: mfxExtCodingOption3::FadeDetection"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, FadeDetection) - 60usize];
+    ["Offset of field: mfxExtCodingOption3::reserved2"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved2) - 62usize];
+    ["Offset of field: mfxExtCodingOption3::GPB"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, GPB) - 66usize];
+    ["Offset of field: mfxExtCodingOption3::MaxFrameSizeI"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, MaxFrameSizeI) - 68usize];
+    ["Offset of field: mfxExtCodingOption3::MaxFrameSizeP"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, MaxFrameSizeP) - 72usize];
+    ["Offset of field: mfxExtCodingOption3::reserved3"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved3) - 76usize];
+    ["Offset of field: mfxExtCodingOption3::EnableQPOffset"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, EnableQPOffset) - 88usize];
+    ["Offset of field: mfxExtCodingOption3::QPOffset"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, QPOffset) - 90usize];
+    ["Offset of field: mfxExtCodingOption3::NumRefActiveP"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumRefActiveP) - 106usize];
+    ["Offset of field: mfxExtCodingOption3::NumRefActiveBL0"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumRefActiveBL0) - 122usize];
+    ["Offset of field: mfxExtCodingOption3::NumRefActiveBL1"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, NumRefActiveBL1) - 138usize];
+    ["Offset of field: mfxExtCodingOption3::reserved6"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved6) - 154usize];
+    ["Offset of field: mfxExtCodingOption3::TransformSkip"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, TransformSkip) - 156usize];
+    ["Offset of field: mfxExtCodingOption3::TargetChromaFormatPlus1"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, TargetChromaFormatPlus1) - 158usize];
+    ["Offset of field: mfxExtCodingOption3::TargetBitDepthLuma"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, TargetBitDepthLuma) - 160usize];
+    ["Offset of field: mfxExtCodingOption3::TargetBitDepthChroma"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, TargetBitDepthChroma) - 162usize];
+    ["Offset of field: mfxExtCodingOption3::BRCPanicMode"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, BRCPanicMode) - 164usize];
+    ["Offset of field: mfxExtCodingOption3::LowDelayBRC"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, LowDelayBRC) - 166usize];
+    ["Offset of field: mfxExtCodingOption3::EnableMBForceIntra"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, EnableMBForceIntra) - 168usize];
+    ["Offset of field: mfxExtCodingOption3::AdaptiveMaxFrameSize"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, AdaptiveMaxFrameSize) - 170usize];
+    ["Offset of field: mfxExtCodingOption3::RepartitionCheckEnable"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, RepartitionCheckEnable) - 172usize];
+    ["Offset of field: mfxExtCodingOption3::reserved5"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved5) - 174usize];
+    ["Offset of field: mfxExtCodingOption3::EncodedUnitsInfo"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, EncodedUnitsInfo) - 180usize];
+    ["Offset of field: mfxExtCodingOption3::EnableNalUnitType"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, EnableNalUnitType) - 182usize];
+    ["Offset of field: mfxExtCodingOption3::AdaptiveCQM"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, AdaptiveCQM) - 186usize];
+    ["Offset of field: mfxExtCodingOption3::AdaptiveRef"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, AdaptiveRef) - 188usize];
+    ["Offset of field: mfxExtCodingOption3::reserved"]
+        [::std::mem::offset_of!(mfxExtCodingOption3, reserved) - 190usize];
+};
+pub const MFX_CODINGOPTION_UNKNOWN: _bindgen_ty_31 = 0;
+pub const MFX_CODINGOPTION_ON: _bindgen_ty_31 = 16;
+pub const MFX_CODINGOPTION_OFF: _bindgen_ty_31 = 32;
+pub const MFX_CODINGOPTION_ADAPTIVE: _bindgen_ty_31 = 48;
+pub type _bindgen_ty_31 = ::std::os::raw::c_int;
 pub const MFX_BITSTREAM_NO_FLAG: _bindgen_ty_32 = 0;
 pub const MFX_BITSTREAM_COMPLETE_FRAME: _bindgen_ty_32 = 1;
 pub const MFX_BITSTREAM_EOS: _bindgen_ty_32 = 2;
 pub type _bindgen_ty_32 = ::std::os::raw::c_int;
+pub const MFX_EXTBUFF_CODING_OPTION: _bindgen_ty_33 = 1347372099;
+pub const MFX_EXTBUFF_CODING_OPTION_SPSPPS: _bindgen_ty_33 = 1347637059;
+pub const MFX_EXTBUFF_VPP_DONOTUSE: _bindgen_ty_33 = 1163089230;
+pub const MFX_EXTBUFF_VPP_AUXDATA: _bindgen_ty_33 = 1146639681;
+pub const MFX_EXTBUFF_VPP_DENOISE2: _bindgen_ty_33 = 843664964;
+pub const MFX_EXTBUFF_VPP_DENOISE: _bindgen_ty_33 = 1397313092;
+pub const MFX_EXTBUFF_VPP_SCENE_ANALYSIS: _bindgen_ty_33 = 1498170195;
+pub const MFX_EXTBUFF_VPP_SCENE_CHANGE: _bindgen_ty_33 = 1498170195;
+pub const MFX_EXTBUFF_VPP_PROCAMP: _bindgen_ty_33 = 1347240272;
+pub const MFX_EXTBUFF_VPP_DETAIL: _bindgen_ty_33 = 542393668;
+pub const MFX_EXTBUFF_VIDEO_SIGNAL_INFO: _bindgen_ty_33 = 1313428310;
+pub const MFX_EXTBUFF_VIDEO_SIGNAL_INFO_IN: _bindgen_ty_33 = 1229542230;
+pub const MFX_EXTBUFF_VIDEO_SIGNAL_INFO_OUT: _bindgen_ty_33 = 1330205526;
+pub const MFX_EXTBUFF_VPP_DOUSE: _bindgen_ty_33 = 1163089220;
+pub const MFX_EXTBUFF_AVC_REFLIST_CTRL: _bindgen_ty_33 = 1414745170;
+pub const MFX_EXTBUFF_VPP_FRAME_RATE_CONVERSION: _bindgen_ty_33 = 541282886;
+pub const MFX_EXTBUFF_PICTURE_TIMING_SEI: _bindgen_ty_33 = 1163088976;
+pub const MFX_EXTBUFF_AVC_TEMPORAL_LAYERS: _bindgen_ty_33 = 1280136257;
+pub const MFX_EXTBUFF_CODING_OPTION2: _bindgen_ty_33 = 844055619;
+pub const MFX_EXTBUFF_VPP_IMAGE_STABILIZATION: _bindgen_ty_33 = 1112822601;
+pub const MFX_EXTBUFF_ENCODER_CAPABILITY: _bindgen_ty_33 = 1346588229;
+pub const MFX_EXTBUFF_ENCODER_RESET_OPTION: _bindgen_ty_33 = 1330794053;
+pub const MFX_EXTBUFF_ENCODED_FRAME_INFO: _bindgen_ty_33 = 1229344325;
+pub const MFX_EXTBUFF_VPP_COMPOSITE: _bindgen_ty_33 = 1347240790;
+pub const MFX_EXTBUFF_VPP_VIDEO_SIGNAL_INFO: _bindgen_ty_33 = 1230198358;
+pub const MFX_EXTBUFF_ENCODER_ROI: _bindgen_ty_33 = 1229935173;
+pub const MFX_EXTBUFF_VPP_DEINTERLACING: _bindgen_ty_33 = 1229213782;
+pub const MFX_EXTBUFF_AVC_REFLISTS: _bindgen_ty_33 = 1398033490;
+pub const MFX_EXTBUFF_DEC_VIDEO_PROCESSING: _bindgen_ty_33 = 1447249220;
+pub const MFX_EXTBUFF_VPP_FIELD_PROCESSING: _bindgen_ty_33 = 1330794566;
+pub const MFX_EXTBUFF_CODING_OPTION3: _bindgen_ty_33 = 860832835;
+pub const MFX_EXTBUFF_CHROMA_LOC_INFO: _bindgen_ty_33 = 1313426499;
+pub const MFX_EXTBUFF_MBQP: _bindgen_ty_33 = 1347502669;
+pub const MFX_EXTBUFF_MB_FORCE_INTRA: _bindgen_ty_33 = 1229341261;
+pub const MFX_EXTBUFF_HEVC_TILES: _bindgen_ty_33 = 1412773426;
+pub const MFX_EXTBUFF_MB_DISABLE_SKIP_MAP: _bindgen_ty_33 = 1297302605;
+pub const MFX_EXTBUFF_HEVC_PARAM: _bindgen_ty_33 = 1345664562;
+pub const MFX_EXTBUFF_DECODED_FRAME_INFO: _bindgen_ty_33 = 1229342020;
+pub const MFX_EXTBUFF_TIME_CODE: _bindgen_ty_33 = 1145261396;
+pub const MFX_EXTBUFF_HEVC_REGION: _bindgen_ty_33 = 1379218994;
+pub const MFX_EXTBUFF_PRED_WEIGHT_TABLE: _bindgen_ty_33 = 1415008325;
+pub const MFX_EXTBUFF_DIRTY_RECTANGLES: _bindgen_ty_33 = 1229935172;
+pub const MFX_EXTBUFF_MOVING_RECTANGLES: _bindgen_ty_33 = 1229935181;
+pub const MFX_EXTBUFF_CODING_OPTION_VPS: _bindgen_ty_33 = 1347833667;
+pub const MFX_EXTBUFF_VPP_ROTATION: _bindgen_ty_33 = 542396242;
+pub const MFX_EXTBUFF_ENCODED_SLICES_INFO: _bindgen_ty_33 = 1230196293;
+pub const MFX_EXTBUFF_VPP_SCALING: _bindgen_ty_33 = 1279480662;
+pub const MFX_EXTBUFF_HEVC_REFLIST_CTRL: _bindgen_ty_33 = 1414745170;
+pub const MFX_EXTBUFF_HEVC_REFLISTS: _bindgen_ty_33 = 1398033490;
+pub const MFX_EXTBUFF_HEVC_TEMPORAL_LAYERS: _bindgen_ty_33 = 1280136257;
+pub const MFX_EXTBUFF_VPP_MIRRORING: _bindgen_ty_33 = 1381124429;
+pub const MFX_EXTBUFF_MV_OVER_PIC_BOUNDARIES: _bindgen_ty_33 = 1112561229;
+pub const MFX_EXTBUFF_VPP_COLORFILL: _bindgen_ty_33 = 1179403094;
+pub const MFX_EXTBUFF_DECODE_ERROR_REPORT: _bindgen_ty_33 = 1381123396;
+pub const MFX_EXTBUFF_VPP_COLOR_CONVERSION: _bindgen_ty_33 = 1129530198;
+pub const MFX_EXTBUFF_CONTENT_LIGHT_LEVEL_INFO: _bindgen_ty_33 = 1397312588;
+pub const MFX_EXTBUFF_MASTERING_DISPLAY_COLOUR_VOLUME: _bindgen_ty_33 = 1398162244;
+pub const MFX_EXTBUFF_MASTERING_DISPLAY_COLOUR_VOLUME_IN: _bindgen_ty_33 = 1230390084;
+pub const MFX_EXTBUFF_MASTERING_DISPLAY_COLOUR_VOLUME_OUT: _bindgen_ty_33 = 1331053380;
+pub const MFX_EXTBUFF_ENCODED_UNITS_INFO: _bindgen_ty_33 = 1230327365;
+pub const MFX_EXTBUFF_VPP_MCTF: _bindgen_ty_33 = 1179927373;
+pub const MFX_EXTBUFF_VP9_SEGMENTATION: _bindgen_ty_33 = 1195725625;
+pub const MFX_EXTBUFF_VP9_TEMPORAL_LAYERS: _bindgen_ty_33 = 1280136249;
+pub const MFX_EXTBUFF_VP9_PARAM: _bindgen_ty_33 = 1380012089;
+pub const MFX_EXTBUFF_AVC_ROUNDING_OFFSET: _bindgen_ty_33 = 1329876562;
+pub const MFX_EXTBUFF_PARTIAL_BITSTREAM_PARAM: _bindgen_ty_33 = 1347371600;
+pub const MFX_EXTBUFF_ENCODER_IPCM_AREA: _bindgen_ty_33 = 1380795216;
+pub const MFX_EXTBUFF_INSERT_HEADERS: _bindgen_ty_33 = 1163022419;
+pub const MFX_EXTBUFF_DEVICE_AFFINITY_MASK: _bindgen_ty_33 = 1296449860;
+pub const MFX_EXTBUFF_CROPS: _bindgen_ty_33 = 1347375683;
+pub const MFX_EXTBUFF_AV1_BITSTREAM_PARAM: _bindgen_ty_33 = 1396846913;
+pub const MFX_EXTBUFF_AV1_RESOLUTION_PARAM: _bindgen_ty_33 = 1397895489;
+pub const MFX_EXTBUFF_AV1_TILE_PARAM: _bindgen_ty_33 = 1280586049;
+pub const MFX_EXTBUFF_AV1_SEGMENTATION: _bindgen_ty_33 = 1195725617;
+pub const MFX_EXTBUFF_AV1_FILM_GRAIN_PARAM: _bindgen_ty_33 = 1195782465;
+pub const MFX_EXTBUFF_HYPER_MODE_PARAM: _bindgen_ty_33 = 1297111368;
+pub const MFX_EXTBUFF_UNIVERSAL_TEMPORAL_LAYERS: _bindgen_ty_33 = 1347245141;
+pub const MFX_EXTBUFF_UNIVERSAL_REFLIST_CTRL: _bindgen_ty_33 = 1414745170;
+pub const MFX_EXTBUFF_VPP_3DLUT: _bindgen_ty_33 = 1414284372;
+pub const MFX_EXTBUFF_ALLOCATION_HINTS: _bindgen_ty_33 = 1212369985;
+pub const MFX_EXTBUFF_VPP_AI_SUPER_RESOLUTION: _bindgen_ty_33 = 1381187926;
+pub const MFX_EXTBUFF_VPP_AI_FRAME_INTERPOLATION: _bindgen_ty_33 = 1229341014;
+pub const MFX_EXTBUFF_ENCODED_QUALITY_INFO_MODE: _bindgen_ty_33 = 1297174085;
+pub const MFX_EXTBUFF_ENCODED_QUALITY_INFO_OUTPUT: _bindgen_ty_33 = 1330728517;
+pub const MFX_EXTBUFF_AV1_SCREEN_CONTENT_TOOLS: _bindgen_ty_33 = 1128485681;
+pub const MFX_EXTBUFF_ALPHA_CHANNEL_ENC_CTRL: _bindgen_ty_33 = 1128612673;
+pub const MFX_EXTBUFF_ALPHA_CHANNEL_SURFACE: _bindgen_ty_33 = 1179861825;
+pub type _bindgen_ty_33 = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxPayload {
+    pub CtrlFlags: mfxU32,
+    pub reserved: [mfxU32; 3usize],
+    pub Data: *mut mfxU8,
+    pub NumBit: mfxU32,
+    pub Type: mfxU16,
+    pub BufSize: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxPayload"][::std::mem::size_of::<mfxPayload>() - 32usize];
+    ["Alignment of mfxPayload"][::std::mem::align_of::<mfxPayload>() - 8usize];
+    ["Offset of field: mfxPayload::CtrlFlags"]
+        [::std::mem::offset_of!(mfxPayload, CtrlFlags) - 0usize];
+    ["Offset of field: mfxPayload::reserved"]
+        [::std::mem::offset_of!(mfxPayload, reserved) - 4usize];
+    ["Offset of field: mfxPayload::Data"][::std::mem::offset_of!(mfxPayload, Data) - 16usize];
+    ["Offset of field: mfxPayload::NumBit"][::std::mem::offset_of!(mfxPayload, NumBit) - 24usize];
+    ["Offset of field: mfxPayload::Type"][::std::mem::offset_of!(mfxPayload, Type) - 28usize];
+    ["Offset of field: mfxPayload::BufSize"][::std::mem::offset_of!(mfxPayload, BufSize) - 30usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxEncodeCtrl {
+    pub Header: mfxExtBuffer,
+    pub reserved: [mfxU32; 4usize],
+    pub reserved1: mfxU16,
+    pub MfxNalUnitType: mfxU16,
+    pub SkipFrame: mfxU16,
+    pub QP: mfxU16,
+    pub FrameType: mfxU16,
+    pub NumExtParam: mfxU16,
+    pub NumPayload: mfxU16,
+    pub reserved2: mfxU16,
+    pub ExtParam: *mut *mut mfxExtBuffer,
+    pub Payload: *mut *mut mfxPayload,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxEncodeCtrl"][::std::mem::size_of::<mfxEncodeCtrl>() - 56usize];
+    ["Alignment of mfxEncodeCtrl"][::std::mem::align_of::<mfxEncodeCtrl>() - 8usize];
+    ["Offset of field: mfxEncodeCtrl::Header"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, Header) - 0usize];
+    ["Offset of field: mfxEncodeCtrl::reserved"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, reserved) - 8usize];
+    ["Offset of field: mfxEncodeCtrl::reserved1"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, reserved1) - 24usize];
+    ["Offset of field: mfxEncodeCtrl::MfxNalUnitType"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, MfxNalUnitType) - 26usize];
+    ["Offset of field: mfxEncodeCtrl::SkipFrame"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, SkipFrame) - 28usize];
+    ["Offset of field: mfxEncodeCtrl::QP"][::std::mem::offset_of!(mfxEncodeCtrl, QP) - 30usize];
+    ["Offset of field: mfxEncodeCtrl::FrameType"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, FrameType) - 32usize];
+    ["Offset of field: mfxEncodeCtrl::NumExtParam"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, NumExtParam) - 34usize];
+    ["Offset of field: mfxEncodeCtrl::NumPayload"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, NumPayload) - 36usize];
+    ["Offset of field: mfxEncodeCtrl::reserved2"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, reserved2) - 38usize];
+    ["Offset of field: mfxEncodeCtrl::ExtParam"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, ExtParam) - 40usize];
+    ["Offset of field: mfxEncodeCtrl::Payload"]
+        [::std::mem::offset_of!(mfxEncodeCtrl, Payload) - 48usize];
+};
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct mfxFrameAllocRequest {
@@ -2128,4 +2730,138 @@ const _: () = {
         [::std::mem::offset_of!(mfxFrameAllocRequest, NumFrameSuggested) - 88usize];
     ["Offset of field: mfxFrameAllocRequest::reserved2"]
         [::std::mem::offset_of!(mfxFrameAllocRequest, reserved2) - 90usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxFrameAllocResponse {
+    pub AllocId: mfxU32,
+    pub reserved: [mfxU32; 3usize],
+    pub mids: *mut mfxMemId,
+    pub NumFrameActual: mfxU16,
+    pub reserved2: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxFrameAllocResponse"][::std::mem::size_of::<mfxFrameAllocResponse>() - 32usize];
+    ["Alignment of mfxFrameAllocResponse"]
+        [::std::mem::align_of::<mfxFrameAllocResponse>() - 8usize];
+    ["Offset of field: mfxFrameAllocResponse::AllocId"]
+        [::std::mem::offset_of!(mfxFrameAllocResponse, AllocId) - 0usize];
+    ["Offset of field: mfxFrameAllocResponse::reserved"]
+        [::std::mem::offset_of!(mfxFrameAllocResponse, reserved) - 4usize];
+    ["Offset of field: mfxFrameAllocResponse::mids"]
+        [::std::mem::offset_of!(mfxFrameAllocResponse, mids) - 16usize];
+    ["Offset of field: mfxFrameAllocResponse::NumFrameActual"]
+        [::std::mem::offset_of!(mfxFrameAllocResponse, NumFrameActual) - 24usize];
+    ["Offset of field: mfxFrameAllocResponse::reserved2"]
+        [::std::mem::offset_of!(mfxFrameAllocResponse, reserved2) - 26usize];
+};
+pub const MFX_FRAMETYPE_UNKNOWN: _bindgen_ty_37 = 0;
+pub const MFX_FRAMETYPE_I: _bindgen_ty_37 = 1;
+pub const MFX_FRAMETYPE_P: _bindgen_ty_37 = 2;
+pub const MFX_FRAMETYPE_B: _bindgen_ty_37 = 4;
+pub const MFX_FRAMETYPE_S: _bindgen_ty_37 = 8;
+pub const MFX_FRAMETYPE_REF: _bindgen_ty_37 = 64;
+pub const MFX_FRAMETYPE_IDR: _bindgen_ty_37 = 128;
+pub const MFX_FRAMETYPE_xI: _bindgen_ty_37 = 256;
+pub const MFX_FRAMETYPE_xP: _bindgen_ty_37 = 512;
+pub const MFX_FRAMETYPE_xB: _bindgen_ty_37 = 1024;
+pub const MFX_FRAMETYPE_xS: _bindgen_ty_37 = 2048;
+pub const MFX_FRAMETYPE_xREF: _bindgen_ty_37 = 16384;
+pub const MFX_FRAMETYPE_xIDR: _bindgen_ty_37 = 32768;
+pub type _bindgen_ty_37 = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxExtVideoSignalInfo {
+    pub Header: mfxExtBuffer,
+    pub VideoFormat: mfxU16,
+    pub VideoFullRange: mfxU16,
+    pub ColourDescriptionPresent: mfxU16,
+    pub ColourPrimaries: mfxU16,
+    pub TransferCharacteristics: mfxU16,
+    pub MatrixCoefficients: mfxU16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtVideoSignalInfo"][::std::mem::size_of::<mfxExtVideoSignalInfo>() - 20usize];
+    ["Alignment of mfxExtVideoSignalInfo"]
+        [::std::mem::align_of::<mfxExtVideoSignalInfo>() - 4usize];
+    ["Offset of field: mfxExtVideoSignalInfo::Header"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, Header) - 0usize];
+    ["Offset of field: mfxExtVideoSignalInfo::VideoFormat"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, VideoFormat) - 8usize];
+    ["Offset of field: mfxExtVideoSignalInfo::VideoFullRange"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, VideoFullRange) - 10usize];
+    ["Offset of field: mfxExtVideoSignalInfo::ColourDescriptionPresent"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, ColourDescriptionPresent) - 12usize];
+    ["Offset of field: mfxExtVideoSignalInfo::ColourPrimaries"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, ColourPrimaries) - 14usize];
+    ["Offset of field: mfxExtVideoSignalInfo::TransferCharacteristics"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, TransferCharacteristics) - 16usize];
+    ["Offset of field: mfxExtVideoSignalInfo::MatrixCoefficients"]
+        [::std::mem::offset_of!(mfxExtVideoSignalInfo, MatrixCoefficients) - 18usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxExtEncoderResetOption {
+    pub Header: mfxExtBuffer,
+    pub StartNewSequence: mfxU16,
+    pub reserved: [mfxU16; 11usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxExtEncoderResetOption"]
+        [::std::mem::size_of::<mfxExtEncoderResetOption>() - 32usize];
+    ["Alignment of mfxExtEncoderResetOption"]
+        [::std::mem::align_of::<mfxExtEncoderResetOption>() - 4usize];
+    ["Offset of field: mfxExtEncoderResetOption::Header"]
+        [::std::mem::offset_of!(mfxExtEncoderResetOption, Header) - 0usize];
+    ["Offset of field: mfxExtEncoderResetOption::StartNewSequence"]
+        [::std::mem::offset_of!(mfxExtEncoderResetOption, StartNewSequence) - 8usize];
+    ["Offset of field: mfxExtEncoderResetOption::reserved"]
+        [::std::mem::offset_of!(mfxExtEncoderResetOption, reserved) - 10usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct mfxFrameAllocator {
+    pub reserved: [mfxU32; 4usize],
+    pub pthis: mfxHDL,
+    pub Alloc: ::std::option::Option<
+        unsafe extern "C" fn(
+            pthis: mfxHDL,
+            request: *mut mfxFrameAllocRequest,
+            response: *mut mfxFrameAllocResponse,
+        ) -> mfxStatus,
+    >,
+    pub Lock: ::std::option::Option<
+        unsafe extern "C" fn(pthis: mfxHDL, mid: mfxMemId, ptr: *mut mfxFrameData) -> mfxStatus,
+    >,
+    pub Unlock: ::std::option::Option<
+        unsafe extern "C" fn(pthis: mfxHDL, mid: mfxMemId, ptr: *mut mfxFrameData) -> mfxStatus,
+    >,
+    pub GetHDL: ::std::option::Option<
+        unsafe extern "C" fn(pthis: mfxHDL, mid: mfxMemId, handle: *mut mfxHDL) -> mfxStatus,
+    >,
+    pub Free: ::std::option::Option<
+        unsafe extern "C" fn(pthis: mfxHDL, response: *mut mfxFrameAllocResponse) -> mfxStatus,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of mfxFrameAllocator"][::std::mem::size_of::<mfxFrameAllocator>() - 64usize];
+    ["Alignment of mfxFrameAllocator"][::std::mem::align_of::<mfxFrameAllocator>() - 8usize];
+    ["Offset of field: mfxFrameAllocator::reserved"]
+        [::std::mem::offset_of!(mfxFrameAllocator, reserved) - 0usize];
+    ["Offset of field: mfxFrameAllocator::pthis"]
+        [::std::mem::offset_of!(mfxFrameAllocator, pthis) - 16usize];
+    ["Offset of field: mfxFrameAllocator::Alloc"]
+        [::std::mem::offset_of!(mfxFrameAllocator, Alloc) - 24usize];
+    ["Offset of field: mfxFrameAllocator::Lock"]
+        [::std::mem::offset_of!(mfxFrameAllocator, Lock) - 32usize];
+    ["Offset of field: mfxFrameAllocator::Unlock"]
+        [::std::mem::offset_of!(mfxFrameAllocator, Unlock) - 40usize];
+    ["Offset of field: mfxFrameAllocator::GetHDL"]
+        [::std::mem::offset_of!(mfxFrameAllocator, GetHDL) - 48usize];
+    ["Offset of field: mfxFrameAllocator::Free"]
+        [::std::mem::offset_of!(mfxFrameAllocator, Free) - 56usize];
 };

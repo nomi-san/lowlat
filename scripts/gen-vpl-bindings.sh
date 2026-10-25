@@ -43,11 +43,21 @@ bindgen "$work/vpl.h" \
     `# A decoder's parameters, its units in and its pictures out.` \
     --allowlist-type 'mfx(VideoParam|InfoMFX|FrameInfo|FrameId|FrameAllocRequest|Bitstream)' \
     --allowlist-type 'mfx(FrameSurface1|FrameSurfaceInterface|FrameData)' \
+    `# An encoder's: the allocator its inputs are named through, a picture's` \
+    `# control, the coding options and the colour description it is built` \
+    `# with, and the option a live change carries.` \
+    --allowlist-type 'mfx(FrameAllocator|HDLPair|EncodeCtrl)' \
+    --allowlist-type 'mfxExt(CodingOption|CodingOption2|CodingOption3|VideoSignalInfo)' \
+    --allowlist-type 'mfxExtEncoderResetOption' \
     `# The constants those are filled and answered with.` \
     --allowlist-item 'MFX_(ERR|WRN)_.*' \
     --allowlist-item 'MFX_(CODEC|FOURCC|CHROMAFORMAT|PICSTRUCT|IOPATTERN|BITSTREAM)_.*' \
     --allowlist-item 'MFX_(IMPL|ACCEL_MODE|HANDLE|RESOURCE)_.*' \
     --allowlist-item 'MFX_(PROFILE_AVC|PROFILE_HEVC|EXTBUFF_THREADS_PARAM).*' \
+    --allowlist-item 'MFX_(FRAMETYPE|RATECONTROL|CODINGOPTION|GOP|TARGETUSAGE|SCENARIO)_.*' \
+    `# One enumeration in the header holds every extension buffer's identity,` \
+    `# and an enumeration is generated whole.` \
+    --allowlist-item 'MFX_EXTBUFF_(CODING_OPTION[23]?|VIDEO_SIGNAL_INFO|ENCODER_RESET_OPTION)' \
     -o "$out/vpl.rs" \
     -- --target=x86_64-pc-windows-msvc -I "$inc"
 
