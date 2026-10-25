@@ -1,5 +1,5 @@
 //! What a stream is built on, on Windows: the encoder of the captured
-//! output's GPU -- NVIDIA's own or AMD's own -- on that output's D3D11
+//! output's GPU -- NVIDIA's, AMD's or Intel's own -- on that output's D3D11
 //! device, fed by the display's conversion, or by the synthetic source where
 //! no display is asked for. The loop above is written once; a platform writes
 //! this module.
@@ -125,11 +125,19 @@ fn asks_again(pending: bool, since_ms: Option<f64>) -> bool {
 /// The vendors whose own encoders this platform builds.
 const NVIDIA: u32 = 0x10de;
 const AMD: u32 = 0x1002;
+const INTEL: u32 = 0x8086;
 
-/// Whether this platform builds an encoder on `adapter`: NVIDIA's or AMD's
-/// own, on a GPU of theirs that renders.
+/// Whether this platform builds an encoder on `adapter`: NVIDIA's, AMD's or
+/// Intel's own, on a GPU of theirs that renders -- Intel's where its driver
+/// names the current runtime; the parts only the older one reaches have no
+/// encoder here.
 fn encodes_on(adapter: &lowlat_drivers::d3d11::Adapter) -> bool {
-    matches!(adapter.vendor, NVIDIA | AMD) && adapter.decodes_here()
+    adapter.decodes_here()
+        && match adapter.vendor {
+            NVIDIA | AMD => true,
+            INTEL => lowlat_drivers::vpl::has_current(adapter),
+            _ => false,
+        }
 }
 
 /// **The memory clock of the NVIDIA GPU a stream runs on, held for as long as
@@ -315,6 +323,9 @@ pub(super) fn chroma_census(config: &Config) -> Result<(), &'static str> {
     let Ok(device) = d3d11.open(output.adapter.luid) else {
         return Err("the vendor's device, which would not open");
     };
+    if output.adapter.vendor == INTEL {
+        return intel_chroma(&d3d11, &device, &output.adapter, config);
+    }
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         return Ok(());
     };
@@ -325,6 +336,35 @@ pub(super) fn chroma_census(config: &Config) -> Result<(), &'static str> {
         return Err("the vendor encoder, which would not report its capabilities");
     };
     if !caps.yuv444 || (config.ten_bit && !caps.ten_bit) {
+        return Err("the vendor encoder, which codes no full chroma at this depth");
+    }
+    Ok(())
+}
+
+/// Intel's answer to [`chroma_census`]: its encoder on `device` asked whether
+/// it codes the second codec's full chroma from the packed word at the
+/// running depth, at the output's size and pace, with nothing built.
+fn intel_chroma(
+    d3d11: &lowlat_encode::d3d11::D3d11,
+    device: &lowlat_encode::d3d11::Device,
+    adapter: &lowlat_drivers::d3d11::Adapter,
+    config: &Config,
+) -> Result<(), &'static str> {
+    let Ok(runtime) = lowlat_drivers::vpl::Vpl::for_adapter(adapter) else {
+        return Err("the vendor encoder, whose runtime would not load");
+    };
+    let Some(index) = d3d11.plain_index(adapter.luid).ok().flatten() else {
+        return Err("the vendor encoder, whose GPU the system does not list");
+    };
+    let Ok(session) = runtime.encoder_session(device, index) else {
+        return Err("the vendor encoder, which would not open a session");
+    };
+    let asked = lowlat_encode::vpl::Config {
+        codec: lowlat_encode::vpl::Codec::H265,
+        chroma: lowlat_encode::vpl::Chroma::Yuv444,
+        ..intel_config(config)
+    };
+    if !lowlat_encode::vpl::codes(&session, &asked) {
         return Err("the vendor encoder, which codes no full chroma at this depth");
     }
     Ok(())
@@ -382,6 +422,34 @@ fn amd_config(config: &Config, source: lowlat_encode::amf::Source) -> lowlat_enc
     }
 }
 
+/// Intel's encoder's configuration for `config`: built at the configured
+/// rate, the ceiling, which the rate's buffer is made from.
+fn intel_config(config: &Config) -> lowlat_encode::vpl::Config {
+    lowlat_encode::vpl::Config {
+        codec: match config.codec {
+            Codec::H264 => lowlat_encode::vpl::Codec::H264,
+            Codec::H265 => lowlat_encode::vpl::Codec::H265,
+        },
+        width: config.width,
+        height: config.height,
+        fps: config.fps,
+        bitrate_bps: start_bps(config),
+        min_qp: config.quality.min_qp(),
+        thorough: config.quality.thorough(),
+        // As NVIDIA's: granted per session, past the census.
+        chroma: if config.chroma_444 {
+            lowlat_encode::vpl::Chroma::Yuv444
+        } else {
+            lowlat_encode::vpl::Chroma::Yuv420
+        },
+        depth: if config.ten_bit {
+            lowlat_encode::vpl::Depth::Ten
+        } else {
+            lowlat_encode::vpl::Depth::Eight
+        },
+    }
+}
+
 /// The desktop: the output first, then its adapter, the device on it, the
 /// encoder at the output's size, and only then the duplication and the
 /// encoder's inputs on that device (docs/impl-plan-windows.md W2).
@@ -420,12 +488,12 @@ fn run_display(
             None => None,
         };
         if clock::elapsed_ms(began) >= DISPLAY_WAIT.as_secs_f64() * 1000.0 {
-            // **The encoder follows the output**, and only NVIDIA's and AMD's
-            // own are built here: an output another GPU renders is refused
-            // rather than copied across, which would measure the copy. A
-            // virtual display's output is listed under the GPU that renders
-            // it, so it is that GPU's like any other, and refused only where
-            // that GPU stays one without an encoder here.
+            // **The encoder follows the output**, and only the vendors' own --
+            // NVIDIA's, AMD's and Intel's -- are built here: an output another
+            // GPU renders is refused rather than copied across, which would
+            // measure the copy. A virtual display's output is listed under the
+            // GPU that renders it, so it is that GPU's like any other, and
+            // refused only where that GPU stays one without an encoder here.
             if let Some(output) = elsewhere {
                 lowlat_common::log_error!(
                     "stream: {} is on {}, which has no encoder this host builds",
@@ -486,6 +554,9 @@ fn run_display(
     };
     if output.adapter.vendor == AMD {
         return run_amd(shared, arrivals, config, roster, own, &device, &output);
+    }
+    if output.adapter.vendor == INTEL {
+        return run_intel(shared, arrivals, config, roster, own, &device, &output);
     }
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
@@ -640,6 +711,107 @@ fn run_amd(
     )
 }
 
+/// Intel's runtime for `adapter` and a session of it on `device`, for an
+/// encoder reading textures of ours; said why where either cannot be had.
+fn intel_session<'r>(
+    runtime: &'r lowlat_drivers::vpl::Vpl,
+    device: &'r lowlat_encode::d3d11::Device,
+    adapter: &lowlat_drivers::d3d11::Adapter,
+) -> Option<lowlat_drivers::vpl::Session<'r>> {
+    // **The runtime numbers adapters in the plain enumeration**, never the
+    // high-performance order the adapters are found in.
+    let index = match lowlat_encode::d3d11::D3d11::load()
+        .and_then(|d3d11| d3d11.plain_index(adapter.luid))
+    {
+        Ok(Some(index)) => index,
+        Ok(None) => {
+            lowlat_common::log_error!("stream: {} is not enumerated", adapter.description);
+            return None;
+        }
+        Err(error) => {
+            lowlat_common::log_error!("stream: the adapters could not be enumerated, {error}");
+            return None;
+        }
+    };
+    match runtime.encoder_session(device, index) {
+        Ok(session) => Some(session),
+        Err(error) => {
+            lowlat_common::log_error!("stream: Intel's runtime would not take the device, {error}");
+            None
+        }
+    }
+}
+
+/// [`run_display`] on an Intel GPU: Intel's own encoder on the output's
+/// device, reading the display's conversion.
+fn run_intel(
+    shared: &Arc<Shared>,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+    own: &mut Own,
+    device: &Arc<lowlat_encode::d3d11::Device>,
+    output: &lowlat_drivers::d3d11::Output,
+) -> Exit {
+    let runtime = match lowlat_drivers::vpl::Vpl::for_adapter(&output.adapter) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            lowlat_common::log_error!("stream: Intel's encoder runtime unavailable, {error}");
+            return Exit::Failed(status::ENCODER_UNAVAILABLE);
+        }
+    };
+    let Some(session) = intel_session(&runtime, device, &output.adapter) else {
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
+    };
+    let mut encoder =
+        match lowlat_encode::vpl::Encoder::new(&session, device, intel_config(&config)) {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                lowlat_common::log_error!("stream: encoder could not be configured, {error}");
+                return Exit::Failed(status::ENCODER_UNAVAILABLE);
+            }
+        };
+    lowlat_common::log_info!(
+        "stream: quality={:?}, quantiser floor {}",
+        config.quality,
+        config.quality.min_qp()
+    );
+    let mut desktop = match Display::open(
+        device,
+        &output.name,
+        Layout::of(config.ten_bit, config.chroma_444),
+        (config.width, config.height),
+        Register::Intel(&mut encoder),
+    ) {
+        Ok(desktop) => desktop,
+        Err(crate::display::Error::NoOutput) => {
+            return Exit::Rediscover("the output moved before it could be opened");
+        }
+        Err(error) => {
+            lowlat_common::log_error!("stream: the display could not be opened, {error}");
+            return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+        }
+    };
+    if config.wake_display {
+        desktop.wake();
+    }
+    lowlat_common::log_info!(
+        "stream: encoding {} on {} ({}) with Intel's encoder",
+        output.name,
+        output.adapter.description,
+        output.adapter.luid
+    );
+    encode_loop(
+        shared,
+        arrivals,
+        config,
+        roster,
+        &mut encoder,
+        Some(&mut desktop),
+        Some(own),
+    )
+}
+
 /// No display: the encoder of the first GPU with one, on a device of its
 /// own, the generator its source.
 fn run_vendor(
@@ -675,6 +847,9 @@ fn run_vendor(
     };
     if adapter.vendor == AMD {
         return synthetic_amd(shared, arrivals, config, roster, &device, &adapter);
+    }
+    if adapter.vendor == INTEL {
+        return synthetic_intel(shared, arrivals, config, roster, &device, &adapter);
     }
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
@@ -765,11 +940,57 @@ fn synthetic_amd(
     encode_loop(shared, arrivals, config, roster, &mut encoder, None, None)
 }
 
+/// [`run_vendor`] on an Intel GPU: Intel's own encoder on `device`, the
+/// generator's frames written into its input.
+fn synthetic_intel(
+    shared: &Arc<Shared>,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+    device: &lowlat_encode::d3d11::Device,
+    adapter: &lowlat_drivers::d3d11::Adapter,
+) -> Exit {
+    let runtime = match lowlat_drivers::vpl::Vpl::for_adapter(adapter) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            lowlat_common::log_error!("stream: Intel's encoder runtime unavailable, {error}");
+            return Exit::Failed(status::ENCODER_UNAVAILABLE);
+        }
+    };
+    let Some(session) = intel_session(&runtime, device, adapter) else {
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
+    };
+    lowlat_common::log_info!(
+        "stream: encoding on {} ({}) with Intel's encoder",
+        adapter.description,
+        adapter.luid
+    );
+    shared.publish_picture(config.width, config.height);
+    let config = Config {
+        fps: settle_pace(shared, shared.asked_fps(), 0),
+        ..config
+    };
+    let mut encoder =
+        match lowlat_encode::vpl::Encoder::new(&session, device, intel_config(&config)) {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                lowlat_common::log_error!("stream: encoder could not be configured, {error}");
+                return Exit::Failed(status::ENCODER_UNAVAILABLE);
+            }
+        };
+    lowlat_common::log_info!(
+        "stream: quality={:?}, quantiser floor {}",
+        config.quality,
+        config.quality.min_qp()
+    );
+    encode_loop(shared, arrivals, config, roster, &mut encoder, None, None)
+}
+
 impl FromDevice for lowlat_encode::nvenc::Encoder<'_> {
     fn submit_from_device(&mut self, registration: &Registration, force_keyframe: bool) -> bool {
         match registration {
             Registration::Nvenc(input) => self.submit_registered(input, force_keyframe).is_ok(),
-            Registration::Amd(_) | Registration::Captured(_) => false,
+            Registration::Amd(_) | Registration::Captured(_) | Registration::Intel(_) => false,
         }
     }
 }
@@ -779,7 +1000,16 @@ impl FromDevice for lowlat_encode::amf::Encoder<'_> {
         match registration {
             Registration::Amd(input) => self.submit_registered(*input, force_keyframe).is_ok(),
             Registration::Captured(texture) => self.submit_texture(texture, force_keyframe).is_ok(),
-            Registration::Nvenc(_) => false,
+            Registration::Nvenc(_) | Registration::Intel(_) => false,
+        }
+    }
+}
+
+impl FromDevice for lowlat_encode::vpl::Encoder<'_> {
+    fn submit_from_device(&mut self, registration: &Registration, force_keyframe: bool) -> bool {
+        match registration {
+            Registration::Intel(input) => self.submit_registered(*input, force_keyframe).is_ok(),
+            Registration::Nvenc(_) | Registration::Amd(_) | Registration::Captured(_) => false,
         }
     }
 }

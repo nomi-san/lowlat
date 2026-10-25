@@ -112,8 +112,8 @@ impl From<duplication::Error> for Error {
 /// inputs, registered once.
 ///
 /// **An enum, as on Linux**: NVIDIA's encoder hands an input back for each
-/// texture, and AMD's keeps its inputs and answers with a place among them. A
-/// backend takes its own and refuses the other.
+/// texture, and AMD's and Intel's keep their inputs and answer with a place
+/// among them. A backend takes its own and refuses the others.
 pub enum Registration {
     /// An input registered with NVIDIA's encoder.
     Nvenc(lowlat_encode::nvenc::Input),
@@ -121,6 +121,8 @@ pub enum Registration {
     Amd(usize),
     /// A texture of the capture's own, which AMD's encoder reads as it is.
     Captured(Com<ID3D11Texture2D>),
+    /// The place of an input Intel's encoder keeps.
+    Intel(usize),
 }
 
 impl core::fmt::Debug for Registration {
@@ -129,6 +131,7 @@ impl core::fmt::Debug for Registration {
             Self::Nvenc(_) => f.write_str("Nvenc"),
             Self::Amd(input) => write!(f, "Amd({input})"),
             Self::Captured(_) => f.write_str("Captured"),
+            Self::Intel(input) => write!(f, "Intel({input})"),
         }
     }
 }
@@ -143,6 +146,8 @@ pub enum Register<'a, 'c> {
     /// converted and nothing registered: its engine is watched instead, so a
     /// texture is never let go while it reads.
     Captured(lowlat_encode::amf::Engine),
+    /// Intel's, which keeps them and answers each with a place.
+    Intel(&'a mut lowlat_encode::vpl::Encoder<'c>),
 }
 
 impl core::fmt::Debug for Register<'_, '_> {
@@ -151,6 +156,7 @@ impl core::fmt::Debug for Register<'_, '_> {
             Self::Nvenc(_) => f.write_str("Nvenc"),
             Self::Amd(_) => f.write_str("Amd"),
             Self::Captured(_) => f.write_str("Captured"),
+            Self::Intel(_) => f.write_str("Intel"),
         }
     }
 }
@@ -164,6 +170,7 @@ impl Register<'_, '_> {
             Self::Nvenc(_) => lowlat_encode::nvenc::IN_FLIGHT,
             Self::Amd(_) => lowlat_encode::amf::IN_FLIGHT,
             Self::Captured(_) => 0,
+            Self::Intel(_) => lowlat_encode::vpl::IN_FLIGHT,
         }
     }
 
@@ -178,6 +185,10 @@ impl Register<'_, '_> {
                 .map(Registration::Amd)
                 .map_err(|_| Error::Register),
             Self::Captured(_) => Err(Error::Register),
+            Self::Intel(encoder) => encoder
+                .register_texture(texture)
+                .map(Registration::Intel)
+                .map_err(|_| Error::Register),
         }
     }
 }
@@ -1213,6 +1224,8 @@ pub struct Display {
     /// The capture's own texture read by the encoder, in place of the
     /// conversion and its targets.
     in_place: Option<InPlace>,
+    /// Intel's engine, which finishes each picture on this device.
+    encoding: Option<lowlat_encode::vpl::Engine>,
     converter: Converter,
     targets: Vec<Target>,
     registrations: Vec<Registration>,
@@ -1431,7 +1444,11 @@ impl Display {
                 torn: 0,
                 owe_keyframe: false,
             }),
-            Register::Nvenc(_) | Register::Amd(_) => None,
+            Register::Nvenc(_) | Register::Amd(_) | Register::Intel(_) => None,
+        };
+        let encoding = match &register {
+            Register::Intel(encoder) => Some(encoder.engine()),
+            Register::Nvenc(_) | Register::Amd(_) | Register::Captured(_) => None,
         };
         let own = own().is_some_and(|own| own.eq_ignore_ascii_case(&output.name));
         let mut display = Self {
@@ -1440,6 +1457,7 @@ impl Display {
             turned: core::cell::Cell::new(false),
             kept: None,
             in_place,
+            encoding,
             converter,
             targets,
             registrations,
@@ -2266,6 +2284,20 @@ impl Display {
                 reason = "a positive wait of at most a refresh or the loop's timeout"
             )]
             let wait = budget.min(bound).ceil().max(1.0) as u32;
+            // **Nothing is waited for while Intel's engine is at a picture**:
+            // its runtime finishes the picture on this device, which the
+            // duplication's wait holds, so the picture stalls for as long as
+            // the wait runs -- 3.8 to 11 ms at the median at 1080p, the next
+            // picture refused meanwhile. The duplication keeps what is
+            // composed, the latest taken once the picture is done.
+            if self
+                .encoding
+                .as_ref()
+                .is_some_and(lowlat_encode::vpl::Engine::busy)
+            {
+                std::thread::sleep(core::time::Duration::from_millis(1));
+                continue;
+            }
             // **Nothing is taken while the encoder reads in place**: taking the
             // next frame gives the held one back, and the system writes the
             // desktop's changes into the same texture once it is back.
@@ -2679,16 +2711,17 @@ mod tests {
     }
 
     /// **The desktop as the loop drives it, without a network**: an output
-    /// opened on its own adapter's device with its GPU's encoder -- NVIDIA's
-    /// or AMD's own -- the first present taken at once, then the loop's own
-    /// sequence -- wait for a present, acquire, collect the conversion, submit
-    /// the last converted picture, collect the encode -- for `LOWLAT_TICKS`
-    /// ticks (default 240) at the display's own pace. Every tick must present
-    /// within a refresh or two of asking, a still desktop included; the first
-    /// picture must be the desktop and every submit an access unit.
-    /// `LOWLAT_OUTPUT` names the output (the primary), `LOWLAT_LAYOUT` the
-    /// layout (nv12, p010, ayuv, y410). Needs an interactive desktop: `cargo
-    /// test -p lowlat-host display -- --ignored --nocapture`.
+    /// opened on its own adapter's device with its GPU's encoder -- NVIDIA's,
+    /// AMD's or Intel's own -- the first present taken at once, then the
+    /// loop's own sequence -- wait for a present, acquire, collect the
+    /// conversion, submit the last converted picture, collect the encode --
+    /// for `LOWLAT_TICKS` ticks (default 240) at the display's own pace. Every
+    /// tick must present within a refresh or two of asking, a still desktop
+    /// included; the first picture must be the desktop and every submit an
+    /// access unit. `LOWLAT_OUTPUT` names the output (the primary),
+    /// `LOWLAT_LAYOUT` the layout (nv12, p010, ayuv, y410). Needs an
+    /// interactive desktop: `cargo test -p lowlat-host display -- --ignored
+    /// --nocapture`.
     #[test]
     #[ignore = "requires a GPU with an encoder, a display and an interactive desktop"]
     fn the_desktop_converts_and_encodes_at_the_displays_pace() {
@@ -2761,9 +2794,37 @@ mod tests {
                     Registration::Captured(texture) => {
                         encoder.submit_texture(texture, force).is_ok()
                     }
-                    Registration::Nvenc(_) => false,
+                    Registration::Nvenc(_) | Registration::Intel(_) => false,
                 },
             );
+            return;
+        }
+        // Intel's, written out.
+        if output.adapter.vendor == 0x8086 {
+            let runtime =
+                lowlat_drivers::vpl::Vpl::for_adapter(&output.adapter).expect("Intel's runtime");
+            let index = d3d11
+                .plain_index(output.adapter.luid)
+                .expect("the enumeration")
+                .expect("the adapter");
+            let session = runtime
+                .encoder_session(&device, index)
+                .expect("an encoder's session");
+            let mut encoder = lowlat_encode::vpl::Encoder::new(
+                &session,
+                &device,
+                intel_config(width, height, hz, layout),
+            )
+            .expect("an encoder");
+            let mut display = Display::open(
+                &device,
+                &output.name,
+                layout,
+                (width, height),
+                Register::Intel(&mut encoder),
+            )
+            .expect("the display");
+            at_the_displays_pace(&mut display, &mut encoder, hz, on_intel);
             return;
         }
         let api = nvenc::Api::load().expect("the encoder's runtime");
@@ -2806,7 +2867,7 @@ mod tests {
             hz,
             |encoder, made, force| match made {
                 Registration::Nvenc(input) => encoder.submit_registered(input, force).is_ok(),
-                Registration::Amd(_) | Registration::Captured(_) => false,
+                Registration::Amd(_) | Registration::Captured(_) | Registration::Intel(_) => false,
             },
         );
     }
@@ -2841,13 +2902,56 @@ mod tests {
     ) -> bool {
         match made {
             Registration::Captured(texture) => encoder.submit_texture(texture, force).is_ok(),
-            Registration::Nvenc(_) | Registration::Amd(_) => false,
+            Registration::Nvenc(_) | Registration::Amd(_) | Registration::Intel(_) => false,
+        }
+    }
+
+    /// Intel's encoder for a `width` x `height` picture at `hz` in `layout`,
+    /// HEVC, as the tests here build it.
+    fn intel_config(
+        width: u32,
+        height: u32,
+        hz: u32,
+        layout: Layout,
+    ) -> lowlat_encode::vpl::Config {
+        use lowlat_encode::vpl::{Chroma, Codec, Config, Depth};
+        Config {
+            codec: Codec::H265,
+            width,
+            height,
+            fps: hz.max(1),
+            bitrate_bps: 20_000_000,
+            min_qp: lowlat_encode::DEFAULT_MIN_QP,
+            thorough: false,
+            chroma: if layout.full_chroma() {
+                Chroma::Yuv444
+            } else {
+                Chroma::Yuv420
+            },
+            depth: if matches!(layout, Layout::P010 | Layout::Y410) {
+                Depth::Ten
+            } else {
+                Depth::Eight
+            },
+        }
+    }
+
+    /// Intel's encoder handed a converted target, as the stream's own submit
+    /// hands it over.
+    fn on_intel(
+        encoder: &mut lowlat_encode::vpl::Encoder<'_>,
+        made: &Registration,
+        force: bool,
+    ) -> bool {
+        match made {
+            Registration::Intel(input) => encoder.submit_registered(*input, force).is_ok(),
+            Registration::Nvenc(_) | Registration::Amd(_) | Registration::Captured(_) => false,
         }
     }
 
     /// The loop's own sequence over `display` at `hz`, each converted picture
     /// handed to `encoder` through `submit` and its access unit collected:
-    /// [`the_desktop_converts_and_encodes_at_the_displays_pace`] for either
+    /// [`the_desktop_converts_and_encodes_at_the_displays_pace`] for any
     /// encoder.
     fn at_the_displays_pace<E: lowlat_encode::Encoder>(
         display: &mut Display,
@@ -3029,6 +3133,37 @@ mod tests {
             let torn = display.in_place.as_ref().map_or(0, |read| read.torn);
             println!("{torn} read half written");
             assert_eq!(torn, 0, "a picture on time was read half written");
+            return;
+        }
+        // Intel's, written out: the driver's monitor rendered on its GPU.
+        if output.adapter.vendor == 0x8086 {
+            let runtime =
+                lowlat_drivers::vpl::Vpl::for_adapter(&output.adapter).expect("Intel's runtime");
+            let index = d3d11
+                .plain_index(output.adapter.luid)
+                .expect("the enumeration")
+                .expect("the adapter");
+            let session = runtime
+                .encoder_session(&device, index)
+                .expect("an encoder's session");
+            let mut encoder = lowlat_encode::vpl::Encoder::new(
+                &session,
+                &device,
+                intel_config(width, height, hz, Layout::Nv12),
+            )
+            .expect("an encoder");
+            let mut display = Display::open_direct(
+                &device,
+                &output.name,
+                Layout::Nv12,
+                (width, height),
+                Register::Intel(&mut encoder),
+                monitor.slot,
+            )
+            .expect("the display, read from its driver");
+            at_the_displays_pace(&mut display, &mut encoder, hz, on_intel);
+            let again = display.direct.as_ref().map_or(0, |direct| direct.again);
+            println!("{again} converted again");
             return;
         }
         let api = nvenc::Api::load().expect("the encoder's runtime");

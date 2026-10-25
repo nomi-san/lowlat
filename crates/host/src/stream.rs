@@ -6807,8 +6807,9 @@ mod tests {
     }
 
     /// **The census answers for the captured output's encoder alone**: each
-    /// output of the desktop asked about by name -- granted or refused by the
-    /// vendor's encoder on an output of the vendor's GPU, refused naming the
+    /// output of the desktop asked about by name, at both depths -- granted
+    /// or refused by the vendor's encoder on an output of NVIDIA's GPU, and
+    /// on Intel's by Intel's encoder asked for the depth; refused naming the
     /// output's GPU on any other. Off by default because the answers are the
     /// machine's; one with outputs on two vendors' GPUs says the most.
     #[cfg(windows)]
@@ -6821,25 +6822,154 @@ mod tests {
             let adapter = crate::display::Display::locate(Some(&output.id))
                 .expect("a listed output")
                 .adapter;
-            let answer = sys::chroma_census(&capturing(&output.id));
-            println!("{} on {}: {answer:?}", output.id, adapter.description);
-            // The vendor's own GPU, written out.
-            if adapter.vendor == 0x10de {
-                if let Err(gate) = answer {
+            for ten_bit in [false, true] {
+                let answer = sys::chroma_census(&Config {
+                    ten_bit,
+                    ..capturing(&output.id)
+                });
+                println!(
+                    "{} on {}, ten-bit {ten_bit}: {answer:?}",
+                    output.id, adapter.description
+                );
+                // The vendors' own GPUs, written out.
+                if adapter.vendor == 0x10de {
+                    if let Err(gate) = answer {
+                        assert!(
+                            gate.contains("vendor encoder"),
+                            "{}: the refusal named {gate:?}",
+                            output.id
+                        );
+                    }
+                } else if adapter.vendor == 0x8086 && lowlat_drivers::vpl::has_current(&adapter) {
+                    if let Err(gate) = answer {
+                        assert!(
+                            gate.contains("at this depth"),
+                            "{}: refused before its encoder was asked, {gate:?}",
+                            output.id
+                        );
+                    }
+                } else {
                     assert!(
-                        gate.contains("vendor encoder"),
-                        "{}: the refusal named {gate:?}",
+                        answer.is_err_and(|gate| gate.contains("output's GPU")),
+                        "{}: not refused for its own GPU",
                         output.id
                     );
                 }
-            } else {
-                assert!(
-                    answer.is_err_and(|gate| gate.contains("output's GPU")),
-                    "{}: not refused for its own GPU",
-                    output.id
-                );
             }
         }
+    }
+
+    /// **A stream moved between outputs on two vendors' GPUs keeps its
+    /// guest**, each output encoded by its own GPU's encoder: a seat taken on
+    /// the first, the stream asked for the second and back, the guest never
+    /// ended, a keyframe after each move, and each output's pictures at its
+    /// pace -- every one sent (`full_fps`), so a still desktop counts, and an
+    /// encoder that takes one picture at a time never left with every other
+    /// one. The outputs from `LOWLAT_OUTPUTS` (`DISPLAY2,DISPLAY5`), else the
+    /// first two on different vendors' GPUs; `LOWLAT_CODEC=hevc` for the
+    /// second codec. Needs an interactive desktop.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires outputs on two vendors' GPUs and an interactive desktop"]
+    fn a_stream_moved_between_two_gpus_outputs_keeps_its_guest() {
+        use crate::display::Display;
+
+        let _timer = lowlat_common::clock::TimerResolution::raise();
+        let vendor = |id: &str| Display::locate(Some(id)).map(|output| output.adapter.vendor);
+        let outputs: Vec<String> = match std::env::var("LOWLAT_OUTPUTS") {
+            Ok(list) => list.split(',').map(str::to_owned).collect(),
+            Err(_) => {
+                let lit = Display::outputs();
+                let first = lit.first().expect("an output").id.clone();
+                let second = lit
+                    .iter()
+                    .map(|output| output.id.clone())
+                    .find(|id| vendor(id) != vendor(&first))
+                    .expect("an output on another vendor's GPU");
+                vec![first, second]
+            }
+        };
+        let codec = match std::env::var("LOWLAT_CODEC").as_deref() {
+            Ok("hevc" | "h265") => Codec::H265,
+            _ => Codec::H264,
+        };
+        let stream = Stream::start(Config {
+            display: true,
+            output: outputs.first().cloned(),
+            backend: None,
+            full_fps: true,
+            ..test_config(codec)
+        });
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+                Declared::default(),
+            )
+            .expect("a free seat");
+        let mut captured = 0;
+        for output in outputs.iter().chain(outputs.first()) {
+            let (width, height, hz) = Display::shape_of_display(Some(output)).expect("a shape");
+            if captured != 0 {
+                stream.select_output(Some(output.clone()));
+            }
+            // **The move is taken once the stream says it captures another
+            // output**; a keyframe after that is the new encoder's first
+            // picture, which the old one, asked for none, never made.
+            until_within(20_000.0, "the output captured", || {
+                while seat.next_frame().is_some() {}
+                stream.captured() != captured
+            });
+            captured = stream.captured();
+            until_within(5_000.0, "a keyframe after the move", || {
+                let mut keyframe = false;
+                while let Some(frame) = seat.next_frame() {
+                    keyframe |= is_keyframe(&frame);
+                }
+                keyframe
+            });
+            // Capture to collected, per picture as each arrives: this leg's
+            // own, where the stage report may still be the last leg's.
+            let began = lowlat_common::clock::Time::now();
+            let mut latency = Vec::with_capacity(2048);
+            until_within(10_000.0, "six seconds of pictures", || {
+                while seat.next_frame().is_some() {
+                    latency.push(seat.encode_latency_ms());
+                }
+                lowlat_common::clock::elapsed_ms(began) >= 6000.0
+            });
+            let rate = latency.len() as f64 * 1000.0 / lowlat_common::clock::elapsed_ms(began);
+            latency.sort_by(f64::total_cmp);
+            let rank = |percent: usize| {
+                latency
+                    .get(latency.len().saturating_sub(1) * percent / 100)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            println!(
+                "{output} {width}x{height}@{hz} on vendor {:#06x}: {rate:.1} pictures a second; \
+                 capture to collected p50/p99 {:.3}/{:.3} ms",
+                vendor(output).unwrap_or(0),
+                rank(50),
+                rank(99)
+            );
+            assert_eq!(seat.kicked(), None, "{output}: the guest was ended");
+            assert_eq!(
+                stream.picture(),
+                Some((width, height)),
+                "{output}: not its picture"
+            );
+            // **A still desktop's tick comes a refresh past its wait**, so its
+            // pace falls short of the refresh by the loop's own time; every
+            // other picture is half of it.
+            assert!(
+                rate >= 0.75 * f64::from(hz),
+                "{output}: {rate:.1} pictures a second at {hz} Hz"
+            );
+        }
+        drop(seat);
     }
 
     /// **A peer changes what it can decode with a message, not by
