@@ -65,8 +65,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ### Not run
 - An integrated part of Intel's current runtime and the parts only the older runtime reaches,
-  none at hand; an established client on Windows, none at the desk; both CI jobs, until the
-  branch is pushed.
+  none at hand; an established client on Windows, none at the desk. Both CI jobs are green on the
+  branch as pushed before the gate's fix, which passed the same checks on the development machine
+  and in a Linux environment.
 
 ## 2026-10-25 - W3.13 planned: the virtual displays' GPU by its maker
 

@@ -27,7 +27,8 @@ installs no driver -- each of the host's drivers is installed by a script of its
 needs a driver needs it installed. *Amended 2026-10-24:* W3's gate passed on the development
 machine and W3 closed; W4's steps are next. *Amended 2026-10-25:* W2.8, Intel's encoder, is added
 and planned at its interview; it waits on no other step. *Amended 2026-10-25:* W2.8 built and
-checked on the development machine; it closes once both CI jobs pass on the pushed branch.
+checked on the development machine, and closed; what the gate asked and was not run is named in
+its entry.
 *Amended 2026-10-25:* W3.13 -- the
 virtual displays' GPU named by its maker, or as the power-saving one -- added after W3 closed; it
 is built after W2.8.
@@ -1088,7 +1089,7 @@ once, here.
   gate words it**: the second machine's link could not be shaped from here, so its rate change
   and loss stand on its hardware checks and on the development machine's live legs.
   *Closed 2026-10-20.*
-- [ ] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
+- [x] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
   below, it has its own*): Intel's own runtime, found by the GPU and loaded at run time as the
   client's decoder loads it (W1.7), encoding on the D3D11 device of an output an Intel GPU renders
   -- a monitor through desktop duplication, the host's own display read straight from its driver --
@@ -1196,7 +1197,9 @@ once, here.
   rebuilt for another reason was never noticed, the loop counting the request while its name
   waited unread ([06](06-api.md) `output`). **Not run**: an integrated part of the current runtime
   and the older runtime's parts, none at hand; an established client on Windows, none at the
-  desk; both CI jobs wait for the branch's push.
+  desk. Both CI jobs green on the branch as pushed before the gate's fix, which passed the same
+  checks on the development machine and in a Linux environment.
+  *Closed 2026-10-25.*
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2400,6 +2403,7 @@ library's demo:
 
 ## Change log
 
+- 2026-10-25: W2.8 closed: both CI jobs green.
 - 2026-10-25: W2.8 built and checked on the development machine's Intel card: the conversion
   drawn on Intel's GPUs, the duplication's wait not entered while Intel's encoder holds a
   picture, H.264's remote-gaming tuning taken at the gate; a rate change under congestion at 120
