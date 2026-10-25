@@ -449,6 +449,12 @@ pub(crate) struct Shared {
     /// also how it asks for a change; this is the only place the number it
     /// actually gets is stated.
     allowed_bits: AtomicU32,
+    /// The rate the encoder was last handed, in the same unit, as `f32` bits.
+    ///
+    /// **What the controllers decided, where `allowed_bits` is only their
+    /// ceiling.** A stream under congestion runs below its ceiling, and
+    /// without this the one figure that says how far is the encoder's own.
+    applied_bits: AtomicU32,
     /// The same for one sound packet, in microseconds.
     ///
     /// **One encode serves the whole room here too**, so this is a property of
@@ -1433,6 +1439,7 @@ impl Stream {
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
             allowed_bits: AtomicU32::new(0),
+            applied_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -1985,6 +1992,15 @@ impl SeatHold {
     pub fn allowed_mbps(&self) -> f64 {
         f64::from(f32::from_bits(
             self.shared.allowed_bits.load(Ordering::Relaxed),
+        ))
+    }
+
+    /// What the encoder was last told to code at, in decimal megabits: the
+    /// controllers' answer under [`Self::allowed_mbps`]'s ceiling. Zero before
+    /// the rate loop has moved it once.
+    pub fn applied_mbps(&self) -> f64 {
+        f64::from(f32::from_bits(
+            self.shared.applied_bits.load(Ordering::Relaxed),
         ))
     }
 
@@ -4530,6 +4546,9 @@ fn tick_rate<E: Encoder>(
         // A live change. It reinitialises nothing and forces no refresh, which
         // is what keeps the stream unbroken across a reconfigure.
         let _ = encoder.reconfigure(bps);
+        shared
+            .applied_bits
+            .store(decimal_f32(rate_mbps).to_bits(), Ordering::Relaxed);
     }
     // **What each guest may send, published where it is decided.** It is the
     // same for every seat by construction -- the budget divides by the room --
@@ -4541,12 +4560,39 @@ fn tick_rate<E: Encoder>(
     // **Published after the tick, so the count includes this pass.** The
     // controllers are parallel to `active`, and each one belongs to the seat
     // at the same index.
-    for (entry, controller) in active.iter().zip(controllers.iter()) {
-        if let Some(seat) = shared.seats.get(entry.seat) {
-            seat.cg_events
-                .store(controller.total_decreases(), Ordering::Relaxed);
+    for ((entry, controller), sample) in active.iter().zip(controllers.iter()).zip(samples.iter()) {
+        let Some(seat) = shared.seats.get(entry.seat) else {
+            continue;
+        };
+        let total = controller.total_decreases();
+        // **Each cut said with what it was cut from**: the peak the next cut
+        // takes 0.7 of, and the throughput that peak follows, resends
+        // included. The applied rate alone cannot tell a cut that reached
+        // under a cap from one taken off a peak the resends lifted over it.
+        // Only a count that rose is a cut: a seat taken by a new guest still
+        // holds its last guest's count until this pass.
+        if total > seat.cg_events.swap(total, Ordering::Relaxed) {
+            lowlat_common::log_info!(
+                "stream: rate cut on seat {}, the encoder at {:.2} Mbit/s, the peak {:.2}, \
+                 sent {:.2}, window={} stale={}",
+                entry.seat,
+                decimal_f32(budget.applied_mbps()),
+                decimal_f32(controller.peak_mbps()),
+                decimal_f32(sample.measured_mbps),
+                sample.window,
+                sample.stale
+            );
         }
     }
+}
+
+/// A control-path rate as the decimal megabits a report states.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a rate in megabits, for a report; f32 range covers it"
+)]
+fn decimal_f32(rate_mib: f64) -> f32 {
+    crate::rate::to_decimal_mbps(rate_mib) as f32
 }
 
 /// Take a live video change if one was asked for.
@@ -5191,6 +5237,7 @@ mod tests {
                 encode_us: AtomicU32::new(0),
                 audio_encode_us: AtomicU32::new(0),
                 allowed_bits: AtomicU32::new(0),
+                applied_bits: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 refreshes: RefreshCells::default(),
                 suppressed: AtomicU32::new(0),
@@ -5282,6 +5329,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
             allowed_bits: AtomicU32::new(0),
+            applied_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -5561,6 +5609,70 @@ mod tests {
         assert_eq!(hold.cg_events(), 1, "a clean pass reset the count");
     }
 
+    /// **The rate the encoder runs at reaches the seat a guest reads**, cut
+    /// and climbing. The ceiling a guest already reports says nothing of a
+    /// stream held under it, which is the one state a congestion run needs
+    /// read; so the check is that the figure follows the encoder, not only
+    /// that one was published.
+    #[test]
+    fn the_rate_the_encoder_runs_at_reaches_the_seat_a_guest_reads() {
+        let (shared, stream, _joins) = parked();
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let hold = stream
+            .seats()
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+                Declared::default(),
+            )
+            .expect("a free seat");
+        let active = [seat_of(0)];
+        let mut guests = std::vec![gate::Guest::joining(10.0)];
+        let mut controllers = std::vec![Controller::new(1, 1.0, 10.0)];
+        let mut samples = Vec::new();
+        let mut budget = Budget::new(10.0, 1.0);
+        let mut encoder = fake_encoder();
+        let mut pass = |budget: &mut Budget, controllers: &mut [Controller]| {
+            tick_rate(
+                &shared,
+                &active,
+                &mut guests,
+                controllers,
+                &mut samples,
+                budget,
+                &mut encoder,
+            );
+        };
+        let as_published = |budget: &Budget| crate::rate::to_decimal_mbps(budget.applied_mbps());
+
+        assert!(hold.applied_mbps() == 0.0, "a rate before the loop ran");
+        let seat = shared.seats.first().expect("a seat");
+        seat.window.store(200, Ordering::Relaxed);
+        seat.stale.store(100, Ordering::Relaxed);
+        pass(&mut budget, &mut controllers);
+        assert!(budget.applied_mbps() > 0.0, "the cut applied nothing");
+        assert!(
+            (hold.applied_mbps() - as_published(&budget)).abs() < 1e-3,
+            "the seat reads {} where the encoder was handed {}",
+            hold.applied_mbps(),
+            as_published(&budget)
+        );
+
+        // Two increases on: the first snaps to the floor, the second climbs.
+        let cut = budget.applied_mbps();
+        seat.stale.store(0, Ordering::Relaxed);
+        for _ in 0..2 * lowlat_core::congestion::INCREASE_PERIOD {
+            pass(&mut budget, &mut controllers);
+        }
+        assert!(budget.applied_mbps() > cut, "nothing climbed");
+        assert!(
+            (hold.applied_mbps() - as_published(&budget)).abs() < 1e-3,
+            "the seat kept {} after the encoder moved to {}",
+            hold.applied_mbps(),
+            as_published(&budget)
+        );
+    }
+
     fn seat_of(index: usize) -> Active {
         let wake = lowlat_net::Wake::new().expect("wake");
         Active {
@@ -5715,6 +5827,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
             allowed_bits: AtomicU32::new(0),
+            applied_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -5843,6 +5956,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
             allowed_bits: AtomicU32::new(0),
+            applied_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),

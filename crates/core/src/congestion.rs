@@ -167,6 +167,13 @@ impl Controller {
         self.total_decreases
     }
 
+    /// The peak the next cut is taken from, unclamped. Surfaced for
+    /// diagnostics: it follows the measured throughput, resends included, so
+    /// it is the figure that says whether a cut can reach below a cap.
+    pub fn peak_mbps(&self) -> f64 {
+        self.peak_mbps
+    }
+
     /// Current rate, already clamped.
     pub fn rate_mbps(&self) -> f64 {
         self.current_mbps.clamp(self.min_mbps, self.max_mbps)
