@@ -1122,6 +1122,30 @@ once, here.
   restarted, the NVIDIA's driver restarted with the host's display on the Intel GPU, and the lock
   screen; the encode at p50, p95 and p99 against an established host's on the same monitor, at or
   below it at p50 and p95; both CI jobs and the Linux bar.
+  *Probed 2026-10-25, before any of it was built*, on the development machine's Intel card. The
+  conversion's targets go to the encoder as they are, through a frame allocator that hands it each
+  texture, with no copy; the runtime makes its own references and submits each picture from a thread
+  of its own. **The runtime's own wait is the only sign a picture is done**, and it returns with the
+  picture on the loop's thread; a fence on the device passes at once, the encode running on the
+  video engine unordered against the device's queue. **A live change moves the target, the peak and
+  the encoder's largest-picture limit, never its buffer, and with a buffer under five pictures
+  H.264's rate stays where a cut left it** -- so, amending the rate planned above, the buffer is made
+  at six pictures of the session's ceiling and each picture is bounded at min(768 kbit, 3.1
+  pictures) by that limit, moved with every live change; a change is made from the parameters the
+  encoder was built with, since one made from those it reports back starts H.264 again with a
+  keyframe. HEVC's predicted pictures stay the runtime's low-delay bidirectional slices, which
+  measured no larger or slower than plain predicted ones on this part, and HEVC takes the runtime's
+  remote-gaming tuning, the same pictures with the 95th percentile 0.9 to 1.6 ms lower; H.264's is
+  measured at the build, since it sends a picture set again mid-stream. The part's H.264 is no wider
+  than 4096 and no faster than 165 pictures a second, its HEVC reaching 8K and 240; HEVC refuses a
+  quantiser floor under 10 and keeps its own. One picture in flight, 1920x1080 encodes in 2.7 to 2.9
+  ms and 2560x1440 in 3.9 to 4.2 at the median; four in flight sustain about 630, 415 and 200
+  pictures a second at 1080p, 1440p and 4K in HEVC; ten bits and full chroma at both depths decode
+  as their source. **Decided after it: the host's conversion feeds Intel's encoder** (the
+  maintainer's decision), as it feeds NVIDIA's ([05 §3](05-host.md) unchanged): the runtime's own
+  conversion of the captured picture adds 0.8 to 2.8 ms inside the encode and takes its matrix from
+  the stated colour description the wrong way round -- BT.709 stated gives BT.601 levels -- where
+  the host's costs this card 0.9 ms at 1080p and 1.5 ms at 1440p.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2305,6 +2329,10 @@ library's demo:
 
 ## Change log
 
+- 2026-10-25: W2.8 probed: the host's conversion kept for Intel's encoder (the maintainer's
+  decision); the rate's buffer made from the session's ceiling with each picture bounded by the
+  encoder's own limit, amending the rate planned; the runtime's wait on the loop's thread; H.264's
+  limits on the part.
 - 2026-10-25: W2.8 added and planned at its interview: Intel's encoder, following the captured
   output's GPU, on the current runtime alone; the parts only the older runtime reaches a step of
   their own.

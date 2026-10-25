@@ -3,6 +3,48 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-25 - W2.8 probed: Intel's encoder, and a buffer its rate can come back through
+
+### Decided
+- **Intel's encoder takes the host's conversion**, as NVIDIA's does (the maintainer's decision;
+  [impl-plan-windows.md](impl-plan-windows.md) W2.8): NV12, P010, AYUV or Y410 handed to the
+  encoder as the conversion wrote them, each texture registered once and never copied, the colour
+  description stated. The runtime's own conversion of the captured picture was measured and not
+  taken: it adds 0.8 to 2.8 ms inside the encode, and it takes its matrix from the stated colour
+  description the wrong way round -- BT.709 stated gives BT.601 levels -- so it lands on BT.709 only
+  with no colour description in the stream.
+- **The rate**: variable, the peak at the target, **the buffer made at six pictures of the session's
+  ceiling**, and **each picture bounded at min(768 kbit, 3.1 pictures) by the encoder's own
+  largest-picture limit**, moved with every live change. The encoder refuses to change its buffer
+  live, and with a buffer under five pictures H.264's rate stays where a cut left it; a live change
+  is made from the parameters the encoder was built with.
+- **The wait**: the runtime's own wait for a picture, on the loop's thread; nothing on the device
+  stands for it.
+- HEVC's predicted pictures stay the runtime's low-delay bidirectional slices, and HEVC runs the
+  runtime's remote-gaming tuning.
+
+### Measured
+- On the development machine's Intel card, one picture in flight, paced, at the median: H.264 2.8
+  ms at 1920x1080 and 4.2 at 2560x1440; HEVC 2.7 and 3.9 (2.2 and 3.0 with the remote-gaming
+  tuning, the same pictures). A minute of HEVC at 1080p and 60 a second, no picture over 10 ms past
+  the encoder's first two, the 99th percentile 4.2 ms. Four in flight, HEVC: about 630, 415 and 200
+  pictures a second at 1080p, 1440p and 4K.
+- The host's conversion costs that card 0.9 ms at 1080p and 1.5 ms at 1440p, 0.7 and 1.2 with its
+  clocks up.
+- Bounded by the limit, the first keyframe took 54.4 KB where it took 94.5 KB unbounded, the encode
+  unchanged. Plain predicted HEVC slices measured within 0.3 % of the bytes and 0.1 ms of the time
+  of the bidirectional ones, at the same fidelity.
+- Ten bits from P010 and full chroma from AYUV and Y410 decode as their source at the fidelity of
+  eight-bit 4:2:0.
+
+### Found
+- H.264 on that card is no wider than 4096 and no faster than 165 pictures a second; HEVC reaches
+  8K and 240.
+- HEVC refuses a quantiser floor under 10 (22 at ten bits) and keeps its own.
+- An encoder's first picture takes 5 to 12 ms in H.264 and 11 to 33 in HEVC.
+- A live change made from the parameters the encoder reports back starts H.264 again with a
+  keyframe; made from those it was built with, it does not.
+
 ## 2026-10-25 - W2.8 planned: Intel's encoder on Windows
 
 ### Decided
