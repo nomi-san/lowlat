@@ -1193,7 +1193,14 @@ once, here.
   Linux bar. **A rate change under congestion did not pass, and not for the encoder**: a
   bottleneck at 7 Mbit/s collapsed the stream at 120 a second on Intel's encoder and NVIDIA's
   alike, where W2.7's AMD passed it at 60 -- the shared congestion control at 120, a step of its
-  own after this one. **Found and fixed at the gate**: an output asked for while the stream
+  own after this one. *Corrected 2026-10-25, after the gate:* **that collapse was the test
+  content, not the congestion control.** The colour noise repaints every square every refresh and
+  codes at about 9 Mbit/s at 120 a second whatever the encoder is asked -- asked 1, 2 and 4 Mbit/s
+  with no bottleneck it sent about 9 -- so no rate control fits it under 7, where at 60 the same
+  noise costs half and fits. With content whose bits follow the target, the same bottleneck at
+  120 settled within a second: 42 live cuts and none a keyframe, the pictures at 110 to 120 a
+  second, the round trip 45 ms at the median -- **the rate change under congestion passes**.
+  **Found and fixed at the gate**: an output asked for while the stream
   rebuilt for another reason was never noticed, the loop counting the request while its name
   waited unread ([06](06-api.md) `output`). **Not run**: an integrated part of the current runtime
   and the older runtime's parts, none at hand; an established client on Windows, none at the
@@ -2403,6 +2410,8 @@ library's demo:
 
 ## Change log
 
+- 2026-10-25: W2.8's congestion leg corrected: the collapse at 120 a second was the test
+  content's floor; with content that fits, the rate change under congestion passes at 120.
 - 2026-10-25: W2.8 closed: both CI jobs green.
 - 2026-10-25: W2.8 built and checked on the development machine's Intel card: the conversion
   drawn on Intel's GPUs, the duplication's wait not entered while Intel's encoder holds a

@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-25 - The rate a stream runs at, logged; the collapse at 120 a second was the content
+
+### Changed
+- **Each guest's periodic report states the rate the encoder runs at**, beside the ceiling it
+  already stated, and **every rate cut is logged** with the peak it was taken from, the
+  throughput that peak follows -- resends included -- and the send window: the figures a
+  congestion run has to read, where before the ceiling was the only rate said.
+
+### Found
+- **The collapse under a 7 Mbit/s bottleneck at 120 a second, at W2.8's gate, was the test
+  content's.** The colour noise repaints every square every refresh: asked 1, 2 and 4 Mbit/s with
+  no bottleneck, Intel's encoder sent about 9 at 120 a second, so nothing could fit it under 7.
+  Under the bottleneck the congestion control had the encoder at its 1 Mbit/s floor within 2.5 s,
+  at 60 and at 120 alike. With content whose bits follow the target -- fixed squares under a
+  grain that moves every pixel -- the same bottleneck at 120 settled within a second: 42 cuts,
+  none a keyframe, the pictures at 110 to 120 a second, the round trip 45 ms at the median
+  ([impl-plan-windows.md](impl-plan-windows.md) W2.8, corrected).
+- Open: a source that cannot fit the path is not shed to fit it. The resends take about half the
+  link, the round trip reaches 1.6 s and the picture stalls for seconds at a time.
+
 ## 2026-10-25 - W2.8 built and checked: Intel's encoder on Windows
 
 ### Built
@@ -52,7 +72,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **A bottleneck at 7 Mbit/s collapses the stream at 120 a second**, on Intel's encoder and
   NVIDIA's alike -- a few pictures a second at worst, loss to 41 %, the congestion control
   cutting twice a second -- where W2.7's AMD passed the same at 60: the shared congestion control
-  at 120, a step of its own after W2.8.
+  at 120, a step of its own after W2.8. *Corrected the same day:* the test content's, not the
+  congestion control's (the entry above).
 - Once, after the Intel's driver restart, a duplication refused while it was made again left the
   guest's picture black for 90 s; not seen in a second restart.
 
