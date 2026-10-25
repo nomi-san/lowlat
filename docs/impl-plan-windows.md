@@ -25,7 +25,8 @@ showed each picture a composition old, decided, built and checked live; W3's gat
 is built once W2's and W3's gates are through. *Amended 2026-10-22, at W4's review:* the service
 installs no driver -- each of the host's drivers is installed by a script of its own -- and what
 needs a driver needs it installed. *Amended 2026-10-24:* W3's gate passed on the development
-machine and W3 closed; W4's steps are next.
+machine and W3 closed; W4's steps are next. *Amended 2026-10-25:* W2.8, Intel's encoder, is added
+and planned at its interview; it waits on no other step.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -499,6 +500,10 @@ once, here.
   when its driver is told to, so that encoder is given pictures on its own device and measured as
   itself. The encoder follows the captured output's GPU: NVIDIA's on an NVIDIA GPU, AMD's on an
   AMD one. Intel's stays deferred.
+  *Amended 2026-10-25, at W2.8's plan:* **Intel's encoder joins them** (W2.8). The development
+  machine's Intel card now drives a monitor, and the host's own display renders there when its
+  driver is told to, so that encoder too is given pictures on its own device and measured as
+  itself. The encoder follows the captured output's GPU: NVIDIA's, AMD's or Intel's own.
 - **Desktop duplication, converted straight from the acquired image.** The conversion reads the
   duplicated image into the encoder's registered input and the frame is released as soon as the
   conversion is queued: no copy, so two passes after composition, the system's duplication copy
@@ -1079,6 +1084,44 @@ once, here.
   gate words it**: the second machine's link could not be shaped from here, so its rate change
   and loss stand on its hardware checks and on the development machine's live legs.
   *Closed 2026-10-20.*
+- [ ] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
+  below, it has its own*): Intel's own runtime, found by the GPU and loaded at run time as the
+  client's decoder loads it (W1.7), encoding on the D3D11 device of an output an Intel GPU renders
+  -- a monitor through desktop duplication, the host's own display read straight from its driver --
+  in H.264 and HEVC, and HEVC at ten bits and in full chroma where the part codes them. The encoder
+  follows the captured output's GPU.
+  *Decided at the interview:* **the current runtime alone.** It reaches Tiger Lake's integrated
+  graphics and every part after it, the discrete ones included; Broadwell to Ice Lake, which only
+  the older runtime reaches, are a step of their own once such a part is at hand to check it --
+  that runtime is opened another way and takes the host's textures another way, and the one older
+  part to hand codes H.264 alone. Until then an output such a part renders is refused, as an
+  output on a GPU with no encoder here is ([05 §4](05-host.md)). **No integrated part of the
+  current runtime is at hand**, so the development machine's discrete part stands for the runtime
+  and the gate names the integrated parts as not run.
+  *Planned with it:* the low-power engine where the part has one; the rate held as on the NVIDIA
+  encoder -- variable within a peak equal to the target, the same buffer of at most 3.1 frames and
+  768 kbit, the quantiser floor and the effort of [05 §4.1](05-host.md) -- and changed live with no
+  keyframe; keyframes only when asked, each with its parameter sets; **HEVC's predicted pictures
+  coded as the runtime codes them by default, as bidirectional slices whose two lists name the one
+  picture before** -- nothing reordered and no delay added -- since some of Intel's integrated parts
+  code no other kind; BT.709 in the video range, stated to the encoder; a finished picture collected
+  as it finishes rather than on a timer's tick; the library's interface unchanged, its vendor
+  encoder meaning the vendor of the output's GPU on Windows. **A probe comes first**, before any of
+  it is built: how the runtime says a picture is finished; how a texture of the host's reaches it,
+  and whether it is copied; the encode's time paced against back to back, and whether the GPU's
+  clocks fall between pictures; the parameter sets and the slice kinds it writes; live rate
+  changes; the part's ceiling at 1920x1080 and 2560x1440; ten bits and full chroma; and the
+  runtime's own conversion of the captured picture against the host's, which this step decides by
+  measurement as W2.7 did ([05 §3](05-host.md)).
+  Checked by: on the development machine, from the monitor on the Intel GPU at 1920x1080 and 120
+  and from the host's own display rendered there, ten minutes each of H.264 and HEVC to established
+  clients on macOS, Android and Windows and the library's demo, each decoding the bidirectional
+  slices; ten-bit HEVC and full chroma where the part codes them; once each mid-session, a rate
+  change under congestion with no keyframe, a keyframe after loss, a switch between the NVIDIA's
+  monitor and the Intel's with the guest kept and full chroma kept across it, the Intel's driver
+  restarted, the NVIDIA's driver restarted with the host's display on the Intel GPU, and the lock
+  screen; the encode at p50, p95 and p99 against an established host's on the same monitor, at or
+  below it at p50 and p95; both CI jobs and the Linux bar.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2262,6 +2305,9 @@ library's demo:
 
 ## Change log
 
+- 2026-10-25: W2.8 added and planned at its interview: Intel's encoder, following the captured
+  output's GPU, on the current runtime alone; the parts only the older runtime reaches a step of
+  their own.
 - 2026-10-24: a stream holds an NVIDIA GPU's memory clock at a floor while it runs (the
   maintainer's decision), after W3's gate found the encoder at 4 to 5 ms in the card's middle
   memory state against about 1 above it ([05 §4.2](05-host.md)).

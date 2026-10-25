@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-25 - W2.8 planned: Intel's encoder on Windows
+
+### Decided
+- **Intel's encoder joins NVIDIA's and AMD's on Windows** ([impl-plan-windows.md](impl-plan-windows.md)
+  W2.8): Intel's own runtime, found and loaded as the client's decoder finds it, on the D3D11
+  device of an output an Intel GPU renders, a monitor or the host's own display, in H.264 and HEVC
+  and HEVC at ten bits and in full chroma where the part codes them; the encoder follows the
+  captured output's GPU. A probe of the runtime comes before any of it is built.
+- **The current runtime alone**: Tiger Lake's integrated graphics and every part after it, the
+  discrete ones included. Broadwell to Ice Lake, which only the older runtime reaches, are a step
+  of their own once such a part is at hand to check it; until then an output they render is
+  refused, as before. No integrated part of the current runtime is at hand, so the development
+  machine's discrete part stands for the runtime.
+- **HEVC's predicted pictures as the runtime codes them by default**: bidirectional slices whose
+  two lists name the one picture before, nothing reordered and no delay added, since some of
+  Intel's integrated parts code no other kind.
+
 ## 2026-10-24 - A stream holds the GPU's memory clock
 
 ### Changed
