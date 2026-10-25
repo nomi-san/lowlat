@@ -1,16 +1,19 @@
 // Colour conversion on D3D11: the duplicated desktop, eight-bit BGRA, into the
-// layout an encoder takes, written through one view per plane.
+// layout an encoder takes, written through one view per plane -- by a compute
+// pass, or by a draw a plane into render-target views of the same planes.
 //
 // Compiled ahead of time, one variant per layout (scripts/gen-d3d11-convert.sh):
 // NV12 and P010, the two-plane 4:2:0 layouts at eight and ten bits; AYUV and
-// Y410, the packed full-chroma words at eight and ten. The rules are the Linux
-// conversion's: BT.709, limited range with the eight- and ten-bit constants
-// kept apart, chroma as the mean of each 2x2 block, the edge repeated rather
-// than wrapped, and no dither. Every sample is quantised here and written as
-// the exact normalised value of its integer, so the result does not depend on
-// how a driver rounds a float into a normalised store; a ten-bit sample of the
-// two-plane layout lands in the high ten bits of its sixteen. The views' own
-// sizes bound the work, so no constant is needed.
+// Y410, the packed full-chroma words at eight and ten; each the compute pass
+// and the draw's pixel shaders, with the vertex shader every draw shares. The
+// two forms are the same arithmetic and land on the same samples. The rules
+// are the Linux conversion's: BT.709, limited range with the eight- and
+// ten-bit constants kept apart, chroma as the mean of each 2x2 block, the edge
+// repeated rather than wrapped, and no dither. Every sample is quantised here
+// and written as the exact normalised value of its integer, so the result does
+// not depend on how a driver rounds a float into a normalised store; a ten-bit
+// sample of the two-plane layout lands in the high ten bits of its sixteen.
+// The views' own sizes bound the work, so no constant is needed.
 
 // BT.709, and not selectable: a receiver applies the inverse unconditionally
 // with nothing on the wire saying which matrix was used.
@@ -75,6 +78,15 @@ uint2 quantise_c(float3 c)
     return uint2(quantise(u * C_SCALE + C_OFFSET), quantise(v * C_SCALE + C_OFFSET));
 }
 
+// **The draw's one triangle covers the whole target**, its corners made from
+// their numbers, so nothing is bound for this to read; each pixel is then
+// shaded at its centre, which its position names.
+float4 vertex(uint id : SV_VertexID) : SV_Position
+{
+    float2 corner = float2((id << 1) & 2, id & 2);
+    return float4(corner * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+
 #if defined(NV12) || defined(P010)
 
 #if defined(NV12)
@@ -113,12 +125,42 @@ void main(uint3 id : SV_DispatchThreadID)
     out_uv[id.xy] = float2(stored(c.x), stored(c.y));
 }
 
+// The same, drawn a plane at a time: a luma pixel is its own sample.
+float luma(float4 at : SV_Position) : SV_Target
+{
+    return stored(quantise_y(fetch(int2(at.xy))));
+}
+
+// A chroma pixel is its 2x2 block's, averaged as above.
+float2 chroma(float4 at : SV_Position) : SV_Target
+{
+    int2 base = int2(at.xy) * 2;
+    float3 c00 = fetch(base);
+    float3 c10 = fetch(base + int2(1, 0));
+    float3 c01 = fetch(base + int2(0, 1));
+    float3 c11 = fetch(base + int2(1, 1));
+    uint2 c = quantise_c((c00 + c10 + c01 + c11) * 0.25);
+    return float2(stored(c.x), stored(c.y));
+}
+
 #elif defined(AYUV) || defined(Y410)
 
 // One packed word a pixel: AYUV is V, U, Y, A from the low byte up, which the
 // view's red, green, blue and alpha are; Y410 is U, Y, V, A from the low bits
 // up at 10:10:10:2, the same order through its own view.
 RWTexture2D<float4> out_packed : register(u0);
+
+// One colour as its packed word's channels, normalised.
+float4 packed(float3 colour)
+{
+    uint y = quantise_y(colour);
+    uint2 c = quantise_c(colour);
+#if defined(AYUV)
+    return float4(float(c.y), float(c.x), float(y), 255.0) * (1.0 / 255.0);
+#else
+    return float4(float3(float(c.x), float(y), float(c.y)) * (1.0 / 1023.0), 1.0);
+#endif
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -127,14 +169,13 @@ void main(uint3 id : SV_DispatchThreadID)
     out_packed.GetDimensions(w, h);
     if (id.x >= w || id.y >= h)
         return;
-    float3 colour = fetch(int2(id.xy));
-    uint y = quantise_y(colour);
-    uint2 c = quantise_c(colour);
-#if defined(AYUV)
-    out_packed[id.xy] = float4(float(c.y), float(c.x), float(y), 255.0) * (1.0 / 255.0);
-#else
-    out_packed[id.xy] = float4(float3(float(c.x), float(y), float(c.y)) * (1.0 / 1023.0), 1.0);
-#endif
+    out_packed[id.xy] = packed(fetch(int2(id.xy)));
+}
+
+// The same, drawn.
+float4 pixel(float4 at : SV_Position) : SV_Target
+{
+    return packed(fetch(int2(at.xy)));
 }
 
 #endif
