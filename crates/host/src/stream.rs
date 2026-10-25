@@ -485,6 +485,17 @@ pub(crate) struct Shared {
     /// must hand the encoder back, and the pass that rebuilds reads the name
     /// from the channel where it can own it.
     output_asked: AtomicU32,
+    /// What `output_asked` stood at when the channel was last drained: the
+    /// mark the loop compares it against.
+    ///
+    /// **Marked at the drain, not when the loop starts.** A build runs between
+    /// the two and takes long enough for an ask to land in it; a count read
+    /// once the loop starts would already hold that ask while its name waited
+    /// in the channel, so the loop would never see the count move and the
+    /// stream would stay on the output the guest asked to leave. Read before
+    /// the drain, an ask racing the drain itself costs at most one rebuild onto
+    /// the output just taken. Only the stream's own thread touches it.
+    output_taken: AtomicU32,
     /// Bumped when a live video setting changes.
     ///
     /// **A counter and a lock, rather than packed atomics.** The loop reads the
@@ -1435,6 +1446,7 @@ impl Stream {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            output_taken: AtomicU32::new(0),
             raise: raise.clone(),
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo {
@@ -2380,6 +2392,12 @@ fn take_output(
     config: &mut Config,
     previous_output: &mut Option<Option<String>>,
 ) {
+    // **Marked before the drain**, so an ask that lands after it -- during the
+    // build, say -- is a change to the loop that follows.
+    shared.output_taken.store(
+        shared.output_asked.load(Ordering::Acquire),
+        Ordering::Relaxed,
+    );
     let Some(id) = requested(asked) else {
         return;
     };
@@ -3557,8 +3575,9 @@ fn encode_loop<E: Encoder + FromDevice>(
 ) -> Exit {
     let mut display = display;
     let mut own = own;
-    // Read once, on the way in: the loop only has to notice that it moved.
-    let asked_at = shared.output_asked.load(Ordering::Acquire);
+    // The mark the last drain left (see `Shared::output_taken`): the loop only
+    // has to notice that the count moved past it.
+    let asked_at = shared.output_taken.load(Ordering::Relaxed);
     // **Said once, here, where both backends meet.** The picture's size is
     // published before the display is opened, because the encoder is built
     // against it; where that picture sits in the desktop cannot be known until
@@ -5185,6 +5204,7 @@ mod tests {
                 stopping: AtomicU32::new(0),
                 captured: AtomicU32::new(0),
                 output_asked: AtomicU32::new(0),
+                output_taken: AtomicU32::new(0),
                 raise: None,
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
@@ -5275,6 +5295,7 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            output_taken: AtomicU32::new(0),
             raise: None,
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
@@ -5707,6 +5728,7 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            output_taken: AtomicU32::new(0),
             raise: None,
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
@@ -5755,6 +5777,54 @@ mod tests {
         assert_eq!(shared.output_asked.load(Ordering::Acquire), 3);
     }
 
+    /// **An output asked for while the encoder is being built is the next one
+    /// built.** The pass that builds drains the channel first, and a build
+    /// takes long enough for an ask to land inside it -- one did, live, and the
+    /// stream stayed on the output its guest had asked to leave, the name
+    /// unread in the channel until something else rebuilt.
+    #[test]
+    fn an_output_asked_during_a_build_is_rebuilt_onto() {
+        let (shared, mut stream, arrivals) = parked();
+        let (outputs, asked) = mpsc::channel();
+        stream.outputs = Some(outputs);
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle(), Declared::default())
+            .expect("a seat");
+
+        // The pass's drain, then the ask, landing as the build runs.
+        let mut config = test_config(Codec::H264);
+        take_output(&shared, &asked, &mut config, &mut None);
+        stream.select_output(Some("card1:HDMI-A-1".to_string()));
+
+        // A loop that never notices runs until the watcher stops it.
+        let done = Arc::new(AtomicU32::new(0));
+        let returned = Arc::clone(&done);
+        let watchdog = watcher(&shared, move |_| returned.load(Ordering::Acquire) != 0);
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            config,
+            &mut Roster::default(),
+            &mut fake_encoder(),
+            None,
+            None,
+        );
+        done.store(1, Ordering::Release);
+        watchdog.join().expect("watchdog");
+        assert_eq!(
+            exit,
+            Exit::Rediscover("a different output was asked for"),
+            "an output asked during the build was never noticed"
+        );
+        assert_eq!(
+            requested(&asked),
+            Some(Some("card1:HDMI-A-1".to_string())),
+            "the name was not left for the next pass to take"
+        );
+        drop(held);
+    }
+
     /// **A configuration set again rebuilds nothing.** An application changing
     /// its bitrate sets the rest as it was -- or as it read it back, which names
     /// the output being captured where it asked for none -- and only another
@@ -5786,6 +5856,7 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            output_taken: AtomicU32::new(0),
             raise: None,
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
