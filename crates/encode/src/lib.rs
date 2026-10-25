@@ -21,6 +21,10 @@ pub(crate) use lowlat_drivers::ffi;
 pub mod h264;
 pub mod h265;
 pub mod nvenc;
+/// The generator's frames written into a texture of the encoder's device
+/// (Windows).
+#[cfg(windows)]
+mod upload;
 #[cfg(target_os = "linux")]
 pub mod vaapi;
 #[cfg(target_os = "linux")]

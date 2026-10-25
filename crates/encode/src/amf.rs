@@ -27,15 +27,14 @@ use std::thread::JoinHandle;
 use lowlat_common::spsc::Ring;
 use lowlat_common::wait;
 use lowlat_drivers::amf::{self as runtime, Amf, Context, Format, Names, QueryHandle, Unit};
-use lowlat_drivers::d3d11::{Com, Device};
+use lowlat_drivers::d3d11::Com;
 use lowlat_drivers::vcall;
 
 use crate::ffi::d3d11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, DXGI_FORMAT,
-    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_NV12, DXGI_FORMAT_P010, DXGI_SAMPLE_DESC,
-    ID3D11Resource, ID3D11Texture2D,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, DXGI_FORMAT_B8G8R8A8_UNORM,
+    DXGI_FORMAT_NV12, DXGI_FORMAT_P010, ID3D11Texture2D,
 };
+use crate::upload::{describe, upload};
 use crate::{Encoder as EncoderTrait, Poll};
 
 /// How many pictures the encoder holds at once, as NVIDIA's does: as many of
@@ -301,12 +300,13 @@ impl<'c> Encoder<'c> {
             } else {
                 DXGI_FORMAT_NV12
             };
+            let size = (config.width, config.height);
             for _ in 0..IN_FLIGHT {
                 let texture = device
-                    .texture(&describe(layout, &config, D3D11_USAGE_DEFAULT))
+                    .texture(&describe(layout, size, D3D11_USAGE_DEFAULT))
                     .map_err(Error::Device)?;
                 let staging = device
-                    .texture(&describe(layout, &config, D3D11_USAGE_STAGING))
+                    .texture(&describe(layout, size, D3D11_USAGE_STAGING))
                     .map_err(Error::Device)?;
                 let input = context.input(&texture)?;
                 slots.push(Slot {
@@ -481,7 +481,15 @@ impl<'c> Encoder<'c> {
         // many inputs as pictures may be held, taken in turn.
         let slot = self.next_slot;
         let target = self.slots.get(slot).ok_or(Error::Layout)?;
-        upload(self.context.device(), target, frame, self.config)?;
+        upload(
+            self.context.device(),
+            &target.staging,
+            &target.texture,
+            frame,
+            (self.config.width, self.config.height),
+            self.config.depth == Depth::Ten,
+        )
+        .map_err(Error::Device)?;
         queue(
             &self.component,
             self.names,
@@ -777,114 +785,5 @@ fn configure(
         int(mode, runtime::HEADERS_AT_IDR)?;
     }
     int(names.query_timeout, QUERY_WAIT_MS)?;
-    Ok(())
-}
-
-/// A texture of the session's size in `format`, as `usage` makes it: one the
-/// encoder reads, or one the processor writes.
-fn describe(format: DXGI_FORMAT, config: &Config, usage: D3D11_USAGE) -> D3D11_TEXTURE2D_DESC {
-    let (bind, cpu) = if usage == D3D11_USAGE_STAGING {
-        (0, D3D11_CPU_ACCESS_WRITE)
-    } else {
-        (D3D11_BIND_RENDER_TARGET, 0)
-    };
-    D3D11_TEXTURE2D_DESC {
-        Width: config.width,
-        Height: config.height,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: format,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Usage: usage,
-        BindFlags: u32::try_from(bind).unwrap_or(0),
-        CPUAccessFlags: u32::try_from(cpu).unwrap_or(0),
-        MiscFlags: 0,
-    }
-}
-
-/// Write a frame from ordinary memory into one slot: its staging texture
-/// mapped and written row by row -- the luma rows at the start, `RowPitch`
-/// apart, the chroma rows directly after the last of them -- then copied
-/// whole into the slot's. At ten bits each sample is widened as it is
-/// written, high in its word.
-fn upload(
-    device: &Device,
-    slot: &Slot<'_>,
-    frame: &lowlat_capture::Frame<'_>,
-    config: Config,
-) -> Result<(), Error> {
-    let width = usize::try_from(frame.width.min(config.width)).unwrap_or(0);
-    let rows = usize::try_from(frame.height.min(config.height)).unwrap_or(0);
-    let height = usize::try_from(config.height).unwrap_or(0);
-    let ten = config.depth == Depth::Ten;
-    let context = device.context();
-    let staging = slot.staging.as_ptr().cast::<ID3D11Resource>();
-    // SAFETY: plain data the call fills.
-    let mut mapped: D3D11_MAPPED_SUBRESOURCE = unsafe { core::mem::zeroed() };
-    // SAFETY: the device's context, on the thread that drives this encoder; a
-    // live staging texture the processor may write; a live output.
-    let hr = unsafe {
-        vcall!(
-            context,
-            Map,
-            staging,
-            0,
-            D3D11_MAP_WRITE,
-            0,
-            &raw mut mapped
-        )
-    }
-    .unwrap_or(-1);
-    if hr < 0 {
-        return Err(Error::Device(lowlat_drivers::d3d11::Error::Status(hr)));
-    }
-    let pitch = usize::try_from(mapped.RowPitch).unwrap_or(0);
-    let base = mapped.pData.cast::<u8>();
-    let sample = if ten { 2 } else { 1 };
-    let chroma_width = width.div_ceil(2) * 2;
-    for (plane, first, count, samples) in [
-        (&frame.luma, 0, rows, width),
-        (&frame.chroma, height, rows.div_ceil(2), chroma_width),
-    ] {
-        let samples = samples.min(pitch / sample);
-        for row in 0..count {
-            let Some(from) = plane.row(row).and_then(|full| full.get(..samples)) else {
-                break;
-            };
-            // SAFETY: the mapping holds the texture's `height` luma rows and
-            // half as many chroma rows after them, `pitch` bytes each; the row
-            // written is one of those and the samples written fit its pitch.
-            let to = unsafe { base.add((first + row) * pitch) };
-            if ten {
-                for (index, &value) in from.iter().enumerate() {
-                    let value = u16::from(value);
-                    let word = ((value << 2) | (value >> 6)) << 6;
-                    // SAFETY: as above; two bytes a sample within the row.
-                    unsafe {
-                        to.add(index * 2)
-                            .cast::<[u8; 2]>()
-                            .write_unaligned(word.to_le_bytes());
-                    }
-                }
-            } else {
-                // SAFETY: as above; the source and the mapping do not overlap.
-                unsafe { core::ptr::copy_nonoverlapping(from.as_ptr(), to, from.len()) };
-            }
-        }
-    }
-    // SAFETY: the mapping made above, given back; the copy reads it into the
-    // slot's own texture, which no picture in flight is reading.
-    unsafe {
-        vcall!(context, Unmap, staging, 0);
-        vcall!(
-            context,
-            CopyResource,
-            slot.texture.as_ptr().cast::<ID3D11Resource>(),
-            staging
-        );
-    }
     Ok(())
 }
