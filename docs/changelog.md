@@ -3,6 +3,81 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-25 - W2.8 built and checked: Intel's encoder on Windows
+
+### Built
+- **Intel's encoder on Windows** ([impl-plan-windows.md](impl-plan-windows.md) W2.8), on the
+  D3D11 device of an output an Intel GPU renders where the GPU's driver names Intel's current
+  runtime -- a monitor through desktop duplication, the host's own display read from its driver
+  -- in H.264 and HEVC, ten-bit HEVC and full chroma at both depths, all from the host's
+  conversion. One picture in the engine at a time, a second refused as the queue's back pressure;
+  the rate as decided at the probe; the runtime's remote-gaming tuning in both codecs. The census
+  asks the encoder itself, with nothing built.
+- **The conversion drawn on Intel's GPUs** ([05 §3](05-host.md)): the same bytes as the compute
+  pass, 2.8 to 5.6 times cheaper there.
+- **The duplication's wait not entered while Intel's encoder holds a picture**
+  ([05 §2](05-host.md)): with that wait back to back a picture took 11 ms from submit to
+  collected against 3.8, and the loop ran at half the refresh.
+
+### Checked
+- On the development machine's Intel card (an Arc A380 beside the NVIDIA primary): ten minutes
+  each of H.264 and HEVC from its monitor at 1920x1080 and 120 under moving content, and from the
+  host's own display rendered there; ten-bit HEVC and full chroma at both depths, granted by the
+  census.
+- Mid-session: 5 % loss for 30 s covered by resends; a live raise past the build's rate, and
+  H.264 back at it a second after a cut cleared; switches between the NVIDIA's monitors and the
+  Intel's, the guest kept; full chroma granted at both depths; the lock screen, an elevation
+  prompt and the secure attention sequence; the Intel's driver restarted twice, rebuilt on its new
+  device in 1.3 to 1.7 s with the guest kept; the NVIDIA's driver restarted with the host's
+  display on the Intel card, nothing rebuilt, the picture paused about 2 s.
+- Established clients on macOS, Android and in a browser and the library's demo decoded both
+  codecs: HEVC's bidirectional slices and H.264 under the remote-gaming tuning. The Linux bar.
+
+### Measured
+- The encode at the median at 1920x1080 and 120: H.264 2.9 ms and HEVC 2.3 from the monitor, 2.4
+  and 2.0 from the host's own display; ten-bit HEVC 2.4, full chroma 3.3 at either depth.
+- Against an established host on the same monitor -- the same client and content, one host at a
+  time, the encode each reports -- at p50, p95 and p99: H.264 2.81, 2.92 and 2.94 ms at 10 Mbit/s
+  against 5.05, 6.12 and 6.23 at its own 26.4. That host served no HEVC from the Intel's monitor,
+  staying on the primary's.
+
+### Decided
+- **H.264 takes the runtime's remote-gaming tuning too** (the maintainer's decision, at the
+  gate): without it the one-picture engine reached its limit at 120 a second, 6.5 ms at the
+  median with a few pictures outlasting a refresh and the next refused; with it 2.9 ms, the rate
+  at its 10 Mbit/s ceiling where it ran at 11.0 without, its picture sets sent once ahead of the
+  first keyframe, and every client decoding it.
+
+### Found
+- **A bottleneck at 7 Mbit/s collapses the stream at 120 a second**, on Intel's encoder and
+  NVIDIA's alike -- a few pictures a second at worst, loss to 41 %, the congestion control
+  cutting twice a second -- where W2.7's AMD passed the same at 60: the shared congestion control
+  at 120, a step of its own after W2.8.
+- Once, after the Intel's driver restart, a duplication refused while it was made again left the
+  guest's picture black for 90 s; not seen in a second restart.
+
+### Fixed
+- **An output asked for while the stream rebuilt for another reason was never noticed**: a
+  joining guest asking for the host's own display just as its codec rebuilt the stream stayed for
+  ten minutes on the output it asked to leave ([06](06-api.md) `output`). The loop held the
+  requests against a count taken after the build, which already held that request while its name
+  waited unread; the count is taken where the name is read now.
+
+### Not run
+- An integrated part of Intel's current runtime and the parts only the older runtime reaches,
+  none at hand; an established client on Windows, none at the desk; both CI jobs, until the
+  branch is pushed.
+
+## 2026-10-25 - W3.13 planned: the virtual displays' GPU by its maker
+
+### Decided
+- **`gpu` takes a maker's name** -- `nvidia`, `amd`, `intel` -- kept as the maker's number and
+  matched at each start to the first GPU of that maker in the system's high-performance order,
+  and **`igpu`**, the first GPU in the system's minimum-power order; no `dgpu`, which `auto`
+  already is ([impl-plan-windows.md](impl-plan-windows.md) W3.13, built after W2.8). On the
+  development machine the minimum-power order's first GPU is the processor's Radeon, which the
+  system marks integrated.
+
 ## 2026-10-25 - W2.8 probed: Intel's encoder, and a buffer its rate can come back through
 
 ### Decided

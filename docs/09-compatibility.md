@@ -367,14 +367,17 @@ the constraints do not:
 *Added 2026-10-20, at W2.7's checks:* **hosting on Windows, graded as §2.** Capture is the
 system's duplication of a monitor, or the host's own display read from its driver
 ([11-drivers.md](11-drivers.md)); the encoder is the captured output's GPU's own, and an output
-another GPU renders is refused rather than copied across ([05 §4](05-host.md)).
+another GPU renders is refused rather than copied across ([05 §4](05-host.md)). *Amended
+2026-10-25, at W2.8's checks:* the Intel rows.
 
 | Part | Encode | Hosts? | Evidence |
 |---|---|---|---|
 | NVIDIA RTX 5060 | NVIDIA's: H.264 and HEVC, ten bits, full chroma | **yes, measured** | the development machine's primary GPU, its monitor and the host's own display |
 | AMD Radeon of a Ryzen 7 9700X (RDNA 2, two compute units), beside an NVIDIA primary | AMD's: H.264 and HEVC, ten-bit HEVC through the host's conversion, no full chroma | **yes, measured** (*2026-10-20*) | its monitor at 1920x1080 and 60 and the host's own display rendered there at 120, ten minutes each codec, read in place: the encode 4.0-4.1 ms at the median at 60, 3.0 at 120, below an established host's on the same monitor; 5-10 % of compositions finish a refresh late on this GPU beside that primary, in any capture path (*corrected 2026-10-22*: so measured on the host's own display rendered there at 120; the monitor's own tail at 60 is the host's frame clock against a panel slower than the primary, [05 §2](05-host.md)) |
 | AMD Radeon 780M (RDNA 3), the machine's only GPU | AMD's, as above | **yes, measured** (*2026-10-20*) | its panel at 2560x1440 and 120, ten minutes each codec, read in place: the encode 3.5-3.6 ms at the median, ten-bit 4.3, below an established host's on the same panel; composition to hand-over 0.06 ms at the median and 0.45 at the 95th percentile |
-| Intel | none built on Windows | **no** | an output it renders is refused; its decoders serve the client side ([§7](#7-guests)) |
+| Intel Arc A380 (Alchemist), beside an NVIDIA primary | Intel's: H.264 and HEVC, ten-bit HEVC and full chroma at both depths, all from the host's conversion; H.264 to 4096 wide and 165 pictures a second | **yes, measured** (*2026-10-25*) | its monitor at 1920x1080 and 120 and the host's own display rendered there, ten minutes each codec under moving content: the encode 2.88 ms (H.264) and 2.30 (HEVC) at the median from the monitor, 2.43 and 2.01 from the host's own display; full chroma at both depths 3.3; H.264 at about half an established host's encode on the same monitor at p50, p95 and p99, that host serving no HEVC there; its driver restarted under a stream, the guest kept |
+| Intel integrated graphics, Tiger Lake and after | Intel's current runtime, as above | **not run** | no such part was at hand; the runtime asks the part what it codes |
+| Intel graphics Broadwell to Ice Lake | none on Windows | **no** | only an older runtime reaches them, a step of its own ([impl-plan-windows.md](impl-plan-windows.md) W2.8); an output they render is refused |
 | Other AMD and NVIDIA parts | the same runtimes | **not run** | each runtime is asked at start what the part codes; no other part was run |
 
 ---

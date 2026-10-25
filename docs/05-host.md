@@ -100,6 +100,14 @@ Rules:
   and kept made a composition landing between a tick and the next deadline wait for it: up to
   a refresh, on about half of all desktop updates and on every frame of content whose phase
   fell that way. Linux keeps the clock's own phase until the vblank event's own time is read.
+  *Amended 2026-10-25, at W2.8's build ([impl-plan-windows.md](impl-plan-windows.md)):* **while
+  Intel's encoder holds a picture, the duplication's wait is not entered**; the loop sleeps a
+  millisecond at a time instead. With that wait back to back a picture took 11.0 ms from submit
+  to collected at the median, against 3.8 with the loop polling, and the loop ran at half the
+  refresh -- most likely because Intel's runtime finishes each picture on the device the wait
+  holds. Waiting on every encoder instead cost NVIDIA's leg a fifth of its rate, so the guard
+  is Intel's alone; the host's own display read from its driver waits on an event of its own and
+  needs none.
 - **The rate is read from the display, not only bounded by it.** The mode the lit controller is
   running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
   from the refresh alone when nothing was asked. Bounding without reading is not enough: the
@@ -241,6 +249,15 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   Copying between subresources to move plane data drops chroma on more than one vendor's
   driver, produces green or smeared output, and looks like an encoder bug for as long as it
   takes to find.
+  *Amended 2026-10-25, at W2.8 ([impl-plan-windows.md](impl-plan-windows.md)):* **on Intel's GPUs
+  the planes are drawn instead**, one draw a plane into a render target and one into the packed
+  word, the same arithmetic. The bytes are identical on all three makers' GPUs, and on Intel's
+  the compute pass's typed stores cost 2.8 to 5.6 times the draw -- 0.90 against 0.32 ms for
+  NV12 at 1920x1080 back to back, 1.43 against 0.35 for P010. Every other GPU keeps the compute
+  pass: NVIDIA's measured the two alike and cannot draw Y410, and AMD's integrated GPU computes
+  faster and has no packed render targets. Intel's encoder takes this conversion as NVIDIA's
+  does: its runtime's own conversion of the captured picture added 0.8 to 2.8 ms inside the
+  encode and took its matrix from the stated colour description the wrong way round.
 - **One conversion target per in-flight slot.** A ring of four. Frames in flight must not share
   a destination, or the encoder reads a surface that the next iteration is already
   overwriting.
@@ -388,6 +405,7 @@ Backends:
 |---|---|---|
 | hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
 | hardware, AMD on Windows | shipped (*2026-10-20*) | H.264 and HEVC, HEVC at ten bits from the host's conversion, no full chroma; the low-latency usage, a latency-constrained variable rate with the largest picture bounded by the buffer; at eight bits the captured picture read in place and converted in the encoder's own hardware (§3) |
+| hardware, Intel on Windows | shipped (*2026-10-25*) | H.264 and HEVC, HEVC at ten bits and full chroma at both depths, all from the host's conversion; the current runtime alone; a variable rate, the buffer at six pictures of the session's ceiling and each picture bounded by the encoder's own largest-picture limit, moved with every live change; the runtime's remote-gaming tuning in both codecs; HEVC's predicted pictures the runtime's low-delay bidirectional slices; one picture in the engine at a time |
 | hardware, open stack | shipped | AMD and Intel parts, reached through the display interface |
 | hardware, Vulkan Video | explicit choice | H.264 and HEVC at either depth, half-resolution chroma only; conversion and encode on one interface, where the conversion may write the encoder's picture |
 | software | later | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
@@ -419,6 +437,12 @@ copied across, since a copy between GPUs would be measured in place of the encod
 open stack there, so that kind is refused by name. Measured against an established host on the
 same monitor, the same client and content, AMD's encode is below it at p50 and p95 on both AMD
 parts it ran on ([09 §8](09-compatibility.md)).
+*Amended 2026-10-25, at W2.8:* **or Intel's**, on a GPU whose driver carries Intel's current
+runtime; a GPU only the older runtime reaches is refused, as a GPU with no encoder here is.
+Against an established host on the same monitor, Intel's H.264 encode took about half its time
+at p50, p95 and p99, and that host served no HEVC from that monitor ([09 §8](09-compatibility.md)).
+H.264 on the part measured is no wider than 4096 and no faster than 165 pictures a second, so a
+guest that decodes nothing else is ended past those, as one is past NVIDIA's 4096 (§6.1).
 
 Codec and colour scope is [00-overview.md](00-overview.md) D7: H.264 and HEVC, 4:2:0, eight
 bits by default and ten when the seated guests ask for it. **A backend that cannot code what

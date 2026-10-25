@@ -26,7 +26,11 @@ is built once W2's and W3's gates are through. *Amended 2026-10-22, at W4's revi
 installs no driver -- each of the host's drivers is installed by a script of its own -- and what
 needs a driver needs it installed. *Amended 2026-10-24:* W3's gate passed on the development
 machine and W3 closed; W4's steps are next. *Amended 2026-10-25:* W2.8, Intel's encoder, is added
-and planned at its interview; it waits on no other step.
+and planned at its interview; it waits on no other step. *Amended 2026-10-25:* W2.8 built and
+checked on the development machine; it closes once both CI jobs pass on the pushed branch.
+*Amended 2026-10-25:* W3.13 -- the
+virtual displays' GPU named by its maker, or as the power-saving one -- added after W3 closed; it
+is built after W2.8.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -1146,6 +1150,53 @@ once, here.
   conversion of the captured picture adds 0.8 to 2.8 ms inside the encode and takes its matrix from
   the stated colour description the wrong way round -- BT.709 stated gives BT.601 levels -- where
   the host's costs this card 0.9 ms at 1080p and 1.5 ms at 1440p.
+  *Built 2026-10-25*: the encoder on the output's device as probed -- the conversion's targets
+  registered once and handed over as they are, one picture in the engine at a time and a second
+  refused as the queue's back pressure, a live change asked while a picture is in the engine made
+  before the next submit, the rate as decided above -- chosen where the GPU's driver names the
+  current runtime, and the census asked of the encoder itself with nothing built, which grants
+  full chroma at both depths on the development machine's card. **The conversion is drawn on
+  Intel's GPUs** ([05 §3](05-host.md), amended): the same bytes, 2.8 to 5.6 times cheaper there
+  than the compute pass. **The duplication's wait stalls Intel's encode** -- with it back to back
+  a picture took 11 ms from submit to collected against 3.8 with the loop polling, and the loop
+  ran at half the refresh -- so while Intel's encoder holds a picture the loop sleeps a
+  millisecond at a time instead of entering that wait ([05 §2](05-host.md), amended); the host's
+  own display, read from its driver, needs no such guard. H.264's limits on the part reach the
+  guests as NVIDIA's 4096 does: a guest that decodes nothing else is ended past 4096 wide or 165
+  pictures a second. Checked: H.264 and HEVC, ten bits and full chroma at both depths through the
+  library's decoder on the card, no keyframe across 119 rate changes and none unasked, an external
+  parser's reading of each stream, the census against a build in six cases, each layout at the
+  display's pace from the card's monitor and from the host's own display rendered there, and a
+  stream moved between the NVIDIA's monitor and the Intel's keeping its guest; each check broken
+  once.
+  *Checked 2026-10-25* ([changelog](changelog.md)): on the development machine's Intel card, ten
+  minutes each of H.264 and HEVC from its monitor at 1920x1080 and 120 under moving content --
+  120 a second, the encode 2.9 and 2.3 ms at the median -- and from the host's own display
+  rendered there, read from its driver, 2.4 and 2.0 ms; ten-bit HEVC and full chroma at both
+  depths, granted by the census, 2.4 and 3.3 ms. **H.264 takes the runtime's remote-gaming tuning
+  too**, decided at the gate: without it the one-picture engine reached its limit at 120 a second,
+  6.5 ms at the median with a few pictures outlasting a refresh; with it 2.9 ms, the rate at its
+  ceiling, its picture sets sent once ahead of the first keyframe. That stream and HEVC's
+  bidirectional one decoded on established clients on macOS, Android and in a browser and in the
+  library's demo. Mid-session: 5 % loss for 30 s covered by resends, no keyframe needed; a live
+  raise of the rate past the one the encoder was built at, taken, and H.264 back at it within a
+  second of a cut clearing; switches between the NVIDIA's monitors and the Intel's, the guest
+  kept; full chroma granted at both depths; the lock screen, an elevation prompt and the secure
+  attention sequence; the Intel's driver restarted twice, rebuilt on its new device 1.3 to 1.7 s
+  after the loss with the guest kept -- once, after a duplication refused while it was made
+  again, the guest's picture stayed black for 90 s, not seen again; the NVIDIA's driver
+  restarted with the host's display on the Intel card, nothing rebuilt, the picture paused about
+  2 s, the guest kept. Against an established host on the same monitor, the same client and
+  content, one host at a time, the encode each reports at p50, p95 and p99: H.264 2.81, 2.92 and
+  2.94 ms against 5.05, 6.12 and 6.23; that host served no HEVC from the Intel's monitor. The
+  Linux bar. **A rate change under congestion did not pass, and not for the encoder**: a
+  bottleneck at 7 Mbit/s collapsed the stream at 120 a second on Intel's encoder and NVIDIA's
+  alike, where W2.7's AMD passed it at 60 -- the shared congestion control at 120, a step of its
+  own after this one. **Found and fixed at the gate**: an output asked for while the stream
+  rebuilt for another reason was never noticed, the loop counting the request while its name
+  waited unread ([06](06-api.md) `output`). **Not run**: an integrated part of the current runtime
+  and the older runtime's parts, none at hand; an established client on Windows, none at the
+  desk; both CI jobs wait for the branch's push.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2101,6 +2152,26 @@ on the LAN and one on a Windows machine:
 [changelog](changelog.md)'s entry of the day; two faults found at it were fixed the same day,
 a display gone past the wait for one and a refused mode of the host's display.
 
+- [ ] **W3.13 the virtual displays' GPU named by its maker, or as the power-saving one**: `gpu`
+  takes `nvidia`, `amd` or `intel` beside `auto` and `VVVV:DDDD` -- kept in the file as the
+  maker's number alone, and matched when the driver starts to the first GPU of that maker in the
+  system's high-performance order, so a card replaced by another of its maker's keeps the choice
+  where a `VVVV:DDDD` falls back to `auto` -- and `igpu`, kept as the word, the first GPU that
+  renders in the system's minimum-power order. A name with no GPU of it present falls back to
+  `auto` with a warning, as a number does; a driver that predates the names reads `auto` from the
+  line it cannot parse. Both programs that drive the controller take the names, and
+  [11 §1.4](11-drivers.md) and its commands are amended. Checked by the file's round trips, each
+  form's choice against the enumeration on a machine with GPUs of three makers, and a monitor
+  moved by each.
+  *Added 2026-10-25, after W3 closed (the maintainer's ask); built after W2.8.* **No `dgpu`**:
+  the high-performance order puts a discrete GPU first, so it would be `auto` under a second
+  name. **`igpu` checked first**: on the development machine -- an RTX 5060, an Arc A380 and the
+  processor's Radeon -- the minimum-power order's first GPU that renders is the Radeon, which the
+  kernel marks the hybrid system's integrated GPU (the Arc its discrete one); the
+  high-performance order is the RTX, the Arc, then the Radeon. On a machine without an
+  integrated GPU the minimum-power order still has a first, so `igpu` there is the GPU the system
+  ranks lowest in power, logged as chosen.
+
 ## Phase W4 - The host's input device
 
 **Planned 2026-10-22, interview of the same day.** A HID driver of the host's own, so that a
@@ -2329,6 +2400,13 @@ library's demo:
 
 ## Change log
 
+- 2026-10-25: W2.8 built and checked on the development machine's Intel card: the conversion
+  drawn on Intel's GPUs, the duplication's wait not entered while Intel's encoder holds a
+  picture, H.264's remote-gaming tuning taken at the gate; a rate change under congestion at 120
+  a second not passed, the shared control's; an output asked during a rebuild fixed.
+- 2026-10-25: W3.13 added after W3 closed: the virtual displays' GPU named by its maker
+  (`nvidia`, `amd`, `intel`) or as the power-saving one (`igpu`, checked on the development
+  machine first); no `dgpu`, which `auto` already is.
 - 2026-10-25: W2.8 probed: the host's conversion kept for Intel's encoder (the maintainer's
   decision); the rate's buffer made from the session's ceiling with each picture bounded by the
   encoder's own limit, amending the rate planned; the runtime's wait on the loop's thread; H.264's
