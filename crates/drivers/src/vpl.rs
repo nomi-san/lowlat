@@ -1,6 +1,6 @@
 //! Intel's own video runtime, reached at run time from where the display
-//! driver installs it, and a decoding session on a device of the library's
-//! own.
+//! driver installs it, and a session decoding or encoding on a device of the
+//! library's own.
 //!
 //! **The runtime is found by the adapter.** Its display driver names a folder
 //! for it in the display device's own registry key: the device among those
@@ -25,6 +25,14 @@
 //!
 //! **The older runtime decodes into memory of the caller's**, on a device of
 //! its own on the adapter it is given by number, and is waited for.
+//!
+//! **An encoder of the current runtime reads textures of the caller's**, in a
+//! session made for one: an allocator that answers no request -- the runtime
+//! makes its own reference pictures -- names each input surface's texture by
+//! the surface's memory identity, which is the texture itself. The runtime
+//! submits each picture from a thread of its own, unordered against the
+//! device's context, so its own wait is the only sign a picture is encoded: a
+//! fence signalled on the context after the call passes at once.
 
 use core::ffi::{CStr, c_void};
 use core::fmt;
@@ -37,12 +45,14 @@ use lowlat_common::dynlib::Library;
 use crate::d3d11::{Adapter, Device};
 use crate::ffi::vpl::{
     _mfxSession, MFX_ACCEL_MODE_VIA_D3D11, MFX_BITSTREAM_COMPLETE_FRAME, MFX_ERR_INVALID_HANDLE,
-    MFX_ERR_NOT_ENOUGH_BUFFER, MFX_EXTBUFF_THREADS_PARAM, MFX_HANDLE_D3D11_DEVICE,
-    MFX_IMPL_HARDWARE, MFX_IMPL_HARDWARE2, MFX_IMPL_HARDWARE3, MFX_IMPL_HARDWARE4,
-    MFX_IMPL_VIA_D3D11, MFX_RESOURCE_DX11_TEXTURE, mfxBitstream, mfxExtBuffer, mfxExtThreadsParam,
-    mfxFrameAllocRequest, mfxFrameSurface1, mfxHDL, mfxHandleType, mfxInitParam,
-    mfxInitializationParam, mfxResourceType, mfxSession, mfxStatus, mfxSyncPoint, mfxU32,
-    mfxVersion, mfxVideoParam,
+    MFX_ERR_NONE, MFX_ERR_NOT_ENOUGH_BUFFER, MFX_ERR_NULL_PTR, MFX_ERR_UNSUPPORTED,
+    MFX_EXTBUFF_THREADS_PARAM, MFX_FRAMETYPE_I, MFX_FRAMETYPE_IDR, MFX_FRAMETYPE_REF,
+    MFX_HANDLE_D3D11_DEVICE, MFX_IMPL_HARDWARE, MFX_IMPL_HARDWARE2, MFX_IMPL_HARDWARE3,
+    MFX_IMPL_HARDWARE4, MFX_IMPL_VIA_D3D11, MFX_RESOURCE_DX11_TEXTURE, mfxBitstream, mfxEncodeCtrl,
+    mfxExtBuffer, mfxExtThreadsParam, mfxFrameAllocRequest, mfxFrameAllocResponse,
+    mfxFrameAllocator, mfxFrameData, mfxFrameInfo, mfxFrameSurface1, mfxHDL, mfxHDLPair,
+    mfxHandleType, mfxInitParam, mfxInitializationParam, mfxMemId, mfxResourceType, mfxSession,
+    mfxStatus, mfxSyncPoint, mfxU32, mfxVersion, mfxVideoParam,
 };
 
 type Initialize = unsafe extern "C" fn(mfxInitializationParam, *mut mfxSession) -> mfxStatus;
@@ -64,6 +74,19 @@ type DecodeFrameAsync = unsafe extern "C" fn(
     *mut mfxBitstream,
     *mut mfxFrameSurface1,
     *mut *mut mfxFrameSurface1,
+    *mut mfxSyncPoint,
+) -> mfxStatus;
+type SetFrameAllocator = unsafe extern "C" fn(mfxSession, *mut mfxFrameAllocator) -> mfxStatus;
+type EncodeQuery =
+    unsafe extern "C" fn(mfxSession, *mut mfxVideoParam, *mut mfxVideoParam) -> mfxStatus;
+/// Init, Reset and GetVideoParam.
+type EncodeParams = unsafe extern "C" fn(mfxSession, *mut mfxVideoParam) -> mfxStatus;
+type EncodeClose = unsafe extern "C" fn(mfxSession) -> mfxStatus;
+type EncodeFrameAsync = unsafe extern "C" fn(
+    mfxSession,
+    *mut mfxEncodeCtrl,
+    *mut mfxFrameSurface1,
+    *mut mfxBitstream,
     *mut mfxSyncPoint,
 ) -> mfxStatus;
 
@@ -97,6 +120,19 @@ const THREADS: [u16; 2] = [1, 2];
 const COMPLETE_FRAME: u16 = {
     assert!(MFX_BITSTREAM_COMPLETE_FRAME >= 0 && MFX_BITSTREAM_COMPLETE_FRAME <= 0xffff);
     MFX_BITSTREAM_COMPLETE_FRAME as u16
+};
+
+/// The type a forced keyframe is given: an IDR picture, intra and
+/// referenced, as the sixteen-bit field it is written into.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the assertion bounds the value to the field"
+)]
+const FORCED_IDR: u16 = {
+    let idr = MFX_FRAMETYPE_I | MFX_FRAMETYPE_REF | MFX_FRAMETYPE_IDR;
+    assert!(idr >= 0 && idr <= 0xffff);
+    idr as u16
 };
 
 /// Why the runtime or a session could not be had.
@@ -174,6 +210,13 @@ pub struct Vpl {
     init: DecodeInit,
     decode_close: DecodeClose,
     decode: DecodeFrameAsync,
+    set_frame_allocator: SetFrameAllocator,
+    encode_query: EncodeQuery,
+    encode_init: EncodeParams,
+    encode_reset: EncodeParams,
+    encode_params: EncodeParams,
+    encode_close: EncodeClose,
+    encode: EncodeFrameAsync,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -238,6 +281,13 @@ impl Vpl {
                 init: symbol(&library, c"MFXVideoDECODE_Init")?,
                 decode_close: symbol(&library, c"MFXVideoDECODE_Close")?,
                 decode: symbol(&library, c"MFXVideoDECODE_DecodeFrameAsync")?,
+                set_frame_allocator: symbol(&library, c"MFXVideoCORE_SetFrameAllocator")?,
+                encode_query: symbol(&library, c"MFXVideoENCODE_Query")?,
+                encode_init: symbol(&library, c"MFXVideoENCODE_Init")?,
+                encode_reset: symbol(&library, c"MFXVideoENCODE_Reset")?,
+                encode_params: symbol(&library, c"MFXVideoENCODE_GetVideoParam")?,
+                encode_close: symbol(&library, c"MFXVideoENCODE_Close")?,
+                encode: symbol(&library, c"MFXVideoENCODE_EncodeFrameAsync")?,
                 _library: library,
             })
         }
@@ -296,6 +346,19 @@ impl Vpl {
             }
         }
         Err(last)
+    }
+
+    /// A session as [`Vpl::session`] makes one, for an encoder reading
+    /// textures of the caller's, each through the surface [`input`] makes of
+    /// it.
+    pub fn encoder_session<'r>(&'r self, device: &'r Device, index: u32) -> Result<Session<'r>> {
+        let session = self.session(device, index)?;
+        // SAFETY: a live session; the allocator is a static's, never written,
+        // whose callbacks keep no state.
+        check(unsafe {
+            (self.set_frame_allocator)(session.raw(), (&raw const TEXTURES.0).cast_mut())
+        })?;
+        Ok(session)
     }
 
     /// A session of the older runtime on the adapter at `index` in the
@@ -518,6 +581,137 @@ impl Session<'_> {
         check(status)?;
         Ok(status == 0)
     }
+
+    /// Whether an encoder of `param` builds here, as the runtime answers for
+    /// a whole parameter set; `param` and its buffers are corrected in place.
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn query_encoder(&self, param: &mut mfxVideoParam) -> Result<()> {
+        let param: *mut mfxVideoParam = param;
+        // SAFETY: a live session; the runtime reads and writes the one
+        // structure, which it allows, and its buffers as the caller says.
+        check(unsafe { (self.vpl.encode_query)(self.raw(), param, param) })
+    }
+
+    /// Build the session's encoder for `param`, on a session
+    /// [`Vpl::encoder_session`] made. A failure leaves nothing built: the next
+    /// build would otherwise be refused.
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn init_encoder(&self, param: &mut mfxVideoParam) -> Result<()> {
+        // SAFETY: a live session; the parameters are live for the call, their
+        // buffers as the caller says.
+        let status = unsafe { (self.vpl.encode_init)(self.raw(), param) };
+        if status < 0 {
+            self.close_encoder();
+        }
+        check(status)
+    }
+
+    /// Change the built encoder to `param` without a new build. What the
+    /// runtime cannot change within the stream it refuses, or changes with a
+    /// new sequence -- a keyframe -- unless `param` carries the reset option
+    /// that forbids one.
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn reset_encoder(&self, param: &mut mfxVideoParam) -> Result<()> {
+        // SAFETY: as in `init_encoder`.
+        check(unsafe { (self.vpl.encode_reset)(self.raw(), param) })
+    }
+
+    /// The parameters the built encoder runs with, written into `param` and
+    /// the buffers it names.
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn encoder_params(&self, param: &mut mfxVideoParam) -> Result<()> {
+        // SAFETY: as in `init_encoder`.
+        check(unsafe { (self.vpl.encode_params)(self.raw(), param) })
+    }
+
+    /// Drop the session's encoder, if one is built, once every picture it
+    /// took is encoded.
+    pub fn close_encoder(&self) {
+        // SAFETY: a live session; closing no encoder answers an error and
+        // changes nothing.
+        unsafe { (self.vpl.encode_close)(self.raw()) };
+    }
+
+    /// Hand the encoder `surface` for one picture, an IDR picture when `idr`,
+    /// its unit to be written into `bitstream` in place of what that held.
+    /// The runtime reads the one and writes the other from threads of its
+    /// own until the picture is encoded.
+    ///
+    /// # Safety
+    ///
+    /// `surface` is one [`input`] made of a texture of the session's device,
+    /// and `bitstream`'s data is `MaxLength` bytes of the caller's. For a
+    /// picture taken, the surface, the bitstream, the texture and the bytes
+    /// stay valid, in place and untouched by the caller until
+    /// [`Session::sync_encoded`] says it is encoded or the encoder is closed.
+    pub unsafe fn encode(
+        &self,
+        surface: *mut mfxFrameSurface1,
+        bitstream: *mut mfxBitstream,
+        idr: bool,
+    ) -> Result<Encoded> {
+        let mut control: mfxEncodeCtrl = zeroed();
+        if idr {
+            control.FrameType = FORCED_IDR;
+        }
+        // SAFETY: the bitstream is live and no picture is writing it, by the
+        // caller's contract.
+        unsafe {
+            (*bitstream).DataOffset = 0;
+            (*bitstream).DataLength = 0;
+        }
+        let mut sync: mfxSyncPoint = core::ptr::null_mut();
+        // SAFETY: a live session; the control, which the call copies, and the
+        // output are locals; the surface and the bitstream as the caller's
+        // contract says.
+        let status = unsafe {
+            (self.vpl.encode)(
+                self.raw(),
+                &raw mut control,
+                surface,
+                bitstream,
+                &raw mut sync,
+            )
+        };
+        use crate::ffi::vpl::{MFX_ERR_MORE_DATA, MFX_WRN_DEVICE_BUSY};
+        match status {
+            MFX_WRN_DEVICE_BUSY => return Ok(Encoded::Busy),
+            MFX_ERR_MORE_DATA => return Ok(Encoded::MoreData),
+            _ => check(status)?,
+        }
+        if sync.is_null() {
+            return Ok(Encoded::MoreData);
+        }
+        Ok(Encoded::Pending(Pending {
+            sync,
+            session: self.raw,
+        }))
+    }
+
+    /// Wait up to `wait_ms` for `pending`'s picture to be encoded: whether it
+    /// is, its unit then in the bitstream it was handed with. A picture of
+    /// another session is refused.
+    pub fn sync_encoded(&self, pending: &Pending, wait_ms: u32) -> Result<bool> {
+        if pending.session != self.raw {
+            return Err(Error::Status(MFX_ERR_INVALID_HANDLE));
+        }
+        // SAFETY: a live session and a sync point it handed out.
+        let status = unsafe { (self.vpl.sync_operation)(self.raw(), pending.sync, wait_ms) };
+        check(status)?;
+        Ok(status == 0)
+    }
 }
 
 impl Drop for Session<'_> {
@@ -597,6 +791,101 @@ impl Drop for Picture<'_> {
             }
         }
     }
+}
+
+/// What an encode call did with a picture.
+#[derive(Debug)]
+pub enum Encoded {
+    /// Taken: its unit is in the bitstream once the session says so.
+    Pending(Pending),
+    /// Taken, with no unit to wait for yet: the encoder holds it back.
+    MoreData,
+    /// The device busy: nothing taken, the call to be made again.
+    Busy,
+}
+
+/// A picture an encoder took, waited for through its session.
+pub struct Pending {
+    sync: mfxSyncPoint,
+    /// The session that took it, whose sync point it carries.
+    session: NonNull<_mfxSession>,
+}
+
+impl fmt::Debug for Pending {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Pending")
+    }
+}
+
+/// The surface an encoder of an encoding session reads `texture` through:
+/// an `ID3D11Texture2D` of the session's device, its first subresource the
+/// picture, as `info` -- the encoder's own frame description -- describes
+/// it. Made once for each texture and handed over with each picture.
+pub fn input(info: mfxFrameInfo, texture: *mut c_void) -> mfxFrameSurface1 {
+    let mut surface: mfxFrameSurface1 = zeroed();
+    surface.Info = info;
+    surface.Data.MemId = texture;
+    surface
+}
+
+/// The allocator an encoding session names its inputs' textures through.
+/// It answers no request -- the runtime makes its own reference pictures --
+/// and hands a surface's memory identity back as the texture it is. A
+/// static, so it outlives every session it is set on however the runtime
+/// holds it, and never written.
+struct Textures(mfxFrameAllocator);
+
+// SAFETY: never written, and its callbacks keep no state.
+unsafe impl Sync for Textures {}
+
+static TEXTURES: Textures = Textures(mfxFrameAllocator {
+    reserved: [0; 4],
+    // The allocator's own address, as the header asks; nothing reads
+    // through it.
+    pthis: (&raw const TEXTURES).cast_mut().cast(),
+    Alloc: Some(answer_nothing),
+    Lock: Some(map_nothing),
+    Unlock: Some(map_nothing),
+    GetHDL: Some(texture_of),
+    Free: Some(free_nothing),
+});
+
+/// Every request answered with nothing: the runtime makes what it asks for
+/// itself.
+unsafe extern "C" fn answer_nothing(
+    _: mfxHDL,
+    _: *mut mfxFrameAllocRequest,
+    response: *mut mfxFrameAllocResponse,
+) -> mfxStatus {
+    // SAFETY: the runtime hands over a response of its own to fill, or null.
+    if let Some(response) = unsafe { response.as_mut() } {
+        *response = zeroed();
+    }
+    MFX_ERR_NONE
+}
+
+/// No texture is mapped into memory.
+unsafe extern "C" fn map_nothing(_: mfxHDL, _: mfxMemId, _: *mut mfxFrameData) -> mfxStatus {
+    MFX_ERR_UNSUPPORTED
+}
+
+/// A surface's texture: its memory identity, written with its first
+/// subresource into both halves of the pair the runtime hands over -- its
+/// own pair, filled, never pointed at one of ours.
+unsafe extern "C" fn texture_of(_: mfxHDL, id: mfxMemId, handle: *mut mfxHDL) -> mfxStatus {
+    // SAFETY: on a device's session the runtime hands over a pair of its own
+    // for the texture and its subresource, or null.
+    let Some(pair) = (unsafe { handle.cast::<mfxHDLPair>().as_mut() }) else {
+        return MFX_ERR_NULL_PTR;
+    };
+    pair.first = id;
+    pair.second = core::ptr::null_mut();
+    MFX_ERR_NONE
+}
+
+/// Nothing was answered, so nothing is freed.
+unsafe extern "C" fn free_nothing(_: mfxHDL, _: *mut mfxFrameAllocResponse) -> mfxStatus {
+    MFX_ERR_NONE
 }
 
 type ListSize = unsafe extern "system" fn(*mut u32, *const u16, u32) -> u32;
@@ -873,8 +1162,8 @@ mod tests {
 
     /// **The runtime is found in the folder the adapter's own driver names**
     /// -- a present device's key, never the class's keys in order -- and it
-    /// opens, with every entry point a decoder calls; a session on a device
-    /// of ours with its lock on, and the device handed over.
+    /// opens, with every entry point a decoder and an encoder call; a session
+    /// on a device of ours with its lock on, and the device handed over.
     #[test]
     #[ignore = "requires an Intel GPU"]
     fn the_runtime_is_found_by_the_adapter_and_takes_our_device() {
@@ -896,6 +1185,238 @@ mod tests {
         let (major, minor) = session.version().expect("the version");
         println!("{} runtime {major}.{minor}", adapter.description);
         assert!(major >= 2, "{major}.{minor}");
+    }
+
+    /// The type of the first unit in `bytes` led by a start code.
+    fn first_unit_type(bytes: &[u8], hevc: bool) -> Option<u8> {
+        let at = bytes.windows(3).position(|w| w == [0, 0, 1])?;
+        let header = *bytes.get(at + 3)?;
+        Some(if hevc {
+            (header >> 1) & 0x3f
+        } else {
+            header & 0x1f
+        })
+    }
+
+    /// An extension buffer's header naming it `id`, sized as `T`.
+    fn header<T>(id: i32) -> mfxExtBuffer {
+        mfxExtBuffer {
+            BufferId: u32::try_from(id).unwrap(),
+            BufferSz: u32::try_from(size_of::<T>()).unwrap(),
+        }
+    }
+
+    /// One picture through `session`'s encoder, waited for: its type as the
+    /// runtime reports it, its unit in `bitstream`.
+    fn encode_one(
+        session: &Session<'_>,
+        surface: &mut mfxFrameSurface1,
+        bitstream: &mut mfxBitstream,
+        idr: bool,
+    ) -> u16 {
+        // SAFETY: the surface's texture and the bitstream's bytes outlive the
+        // wait below, which the picture is done by.
+        let pending = match unsafe { session.encode(surface, bitstream, idr) }.unwrap() {
+            Encoded::Pending(pending) => pending,
+            other => panic!("nothing to wait for: {other:?}"),
+        };
+        assert!(session.sync_encoded(&pending, 1000).unwrap(), "not in 1 s");
+        bitstream.FrameType
+    }
+
+    /// **An encoding session on a device of ours builds both encoders in
+    /// turn, and each encodes a texture of ours** -- bound for unordered
+    /// access alone, as the conversion's are -- named through the session's
+    /// allocator: forced, a keyframe whose first unit is a parameter set with
+    /// no delimiter ahead of it; not forced, no keyframe, before and after a
+    /// change of rate made without a new sequence. The parameters read back
+    /// as built, and a picture left in the encoder is encoded by its close.
+    #[test]
+    #[ignore = "requires an Intel GPU"]
+    fn an_encoding_session_encodes_our_texture_in_both_codecs() {
+        use crate::ffi::d3d11::{
+            D3D11_BIND_UNORDERED_ACCESS, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+            DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC,
+        };
+        use crate::ffi::vpl::{
+            MFX_CHROMAFORMAT_YUV420, MFX_CODEC_AVC, MFX_CODEC_HEVC, MFX_CODINGOPTION_OFF,
+            MFX_CODINGOPTION_ON, MFX_EXTBUFF_CODING_OPTION, MFX_EXTBUFF_ENCODER_RESET_OPTION,
+            MFX_FOURCC_NV12, MFX_IOPATTERN_IN_VIDEO_MEMORY, MFX_PICSTRUCT_PROGRESSIVE,
+            MFX_PROFILE_AVC_HIGH, MFX_PROFILE_HEVC_MAIN, MFX_RATECONTROL_VBR,
+            MFX_TARGETUSAGE_BEST_SPEED, mfxExtCodingOption, mfxExtEncoderResetOption,
+            mfxFrameInfo__bindgen_ty_1__bindgen_ty_1,
+        };
+        const WIDTH: u16 = 1280;
+        const HEIGHT: u16 = 720;
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let adapter = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|a| a.decodes_here() && a.vendor == INTEL)
+            .expect("an Intel GPU");
+        let vpl = Vpl::for_adapter(&adapter).expect("the runtime");
+        let index = d3d11
+            .plain_index(adapter.luid)
+            .expect("the enumeration")
+            .expect("the adapter");
+        let device = d3d11.open(adapter.luid).expect("a device");
+        let texture = device
+            .texture(&D3D11_TEXTURE2D_DESC {
+                Width: u32::from(WIDTH),
+                Height: u32::from(HEIGHT),
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_NV12,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: u32::try_from(D3D11_BIND_UNORDERED_ACCESS).unwrap(),
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            })
+            .expect("a texture");
+        let session = vpl.encoder_session(&device, index).expect("a session");
+        let mut data = vec![0u8; 4 << 20];
+        let mut bitstream: mfxBitstream = zeroed();
+        bitstream.Data = data.as_mut_ptr();
+        bitstream.MaxLength = u32::try_from(data.len()).unwrap();
+        let on = u16::try_from(MFX_CODINGOPTION_ON).unwrap();
+        let off = u16::try_from(MFX_CODINGOPTION_OFF).unwrap();
+        let keyframe = u16::try_from(MFX_FRAMETYPE_I | MFX_FRAMETYPE_IDR).unwrap();
+        for (codec, name, hevc) in [
+            (MFX_CODEC_AVC, "H.264", false),
+            (MFX_CODEC_HEVC, "HEVC", true),
+        ] {
+            let mut options: mfxExtCodingOption = zeroed();
+            options.Header = header::<mfxExtCodingOption>(MFX_EXTBUFF_CODING_OPTION);
+            options.AUDelimiter = off;
+            options.NalHrdConformance = off;
+            options.PicTimingSEI = off;
+            let mut reset: mfxExtEncoderResetOption = zeroed();
+            reset.Header = header::<mfxExtEncoderResetOption>(MFX_EXTBUFF_ENCODER_RESET_OPTION);
+            reset.StartNewSequence = off;
+            let mut buffers: [*mut mfxExtBuffer; 2] =
+                [&raw mut options.Header, &raw mut reset.Header];
+            let mut param: mfxVideoParam = zeroed();
+            param.AsyncDepth = 1;
+            param.IOPattern = u16::try_from(MFX_IOPATTERN_IN_VIDEO_MEMORY).unwrap();
+            param.ExtParam = buffers.as_mut_ptr();
+            param.NumExtParam = 1;
+            // SAFETY: the union's encoder half, every field of it plain data.
+            let mfx = unsafe { &mut param.__bindgen_anon_1.mfx };
+            mfx.CodecId = u32::try_from(codec).unwrap();
+            let profile = if hevc {
+                MFX_PROFILE_HEVC_MAIN
+            } else {
+                MFX_PROFILE_AVC_HIGH
+            };
+            mfx.CodecProfile = u16::try_from(profile).unwrap();
+            mfx.LowPower = on;
+            // SAFETY: as above.
+            let rate = unsafe { &mut mfx.__bindgen_anon_1.__bindgen_anon_1 };
+            rate.TargetUsage = u16::try_from(MFX_TARGETUSAGE_BEST_SPEED).unwrap();
+            rate.GopPicSize = 0xffff;
+            rate.GopRefDist = 1;
+            rate.RateControlMethod = u16::try_from(MFX_RATECONTROL_VBR).unwrap();
+            rate.BufferSizeInKB = 64;
+            rate.__bindgen_anon_1.InitialDelayInKB = 64;
+            rate.__bindgen_anon_2.TargetKbps = 10_000;
+            rate.__bindgen_anon_3.MaxKbps = 10_000;
+            rate.NumSlice = 1;
+            rate.NumRefFrame = 1;
+            let info = &mut mfx.FrameInfo;
+            info.FourCC = u32::try_from(MFX_FOURCC_NV12).unwrap();
+            info.ChromaFormat = u16::try_from(MFX_CHROMAFORMAT_YUV420).unwrap();
+            info.BitDepthLuma = 8;
+            info.BitDepthChroma = 8;
+            info.__bindgen_anon_1.__bindgen_anon_1 = mfxFrameInfo__bindgen_ty_1__bindgen_ty_1 {
+                Width: WIDTH,
+                Height: HEIGHT,
+                CropX: 0,
+                CropY: 0,
+                CropW: WIDTH,
+                CropH: HEIGHT,
+            };
+            info.FrameRateExtN = 60;
+            info.FrameRateExtD = 1;
+            info.PicStruct = u16::try_from(MFX_PICSTRUCT_PROGRESSIVE).unwrap();
+            // SAFETY: the buffers named are live for every call below.
+            unsafe { session.query_encoder(&mut param) }.expect("the parameters");
+            unsafe { session.init_encoder(&mut param) }.expect("an encoder");
+            // SAFETY: the union's encoder half, written above.
+            let info = unsafe { param.__bindgen_anon_1.mfx.FrameInfo };
+            let mut surface = input(info, texture.as_ptr().cast());
+            let parameter_set = if hevc { 32 } else { 7 };
+            let unit = |bitstream: &mfxBitstream, data: &[u8]| -> Vec<u8> {
+                let at = usize::try_from(bitstream.DataOffset).unwrap();
+                let len = usize::try_from(bitstream.DataLength).unwrap();
+                data.get(at..at + len).expect("the unit").to_vec()
+            };
+
+            let kind = encode_one(&session, &mut surface, &mut bitstream, true);
+            let first = unit(&bitstream, &data);
+            assert_ne!(kind & keyframe, 0, "{name}: forced, type {kind:#x}");
+            assert_eq!(
+                first_unit_type(&first, hevc),
+                Some(parameter_set),
+                "{name}: {} bytes",
+                first.len()
+            );
+            let kind = encode_one(&session, &mut surface, &mut bitstream, false);
+            let second = unit(&bitstream, &data);
+            assert_eq!(kind & keyframe, 0, "{name}: unforced, type {kind:#x}");
+            assert_ne!(first_unit_type(&second, hevc), Some(parameter_set));
+
+            let mut read: mfxExtCodingOption = zeroed();
+            read.Header = header::<mfxExtCodingOption>(MFX_EXTBUFF_CODING_OPTION);
+            let mut read_buffers: [*mut mfxExtBuffer; 1] = [&raw mut read.Header];
+            let mut running: mfxVideoParam = zeroed();
+            running.ExtParam = read_buffers.as_mut_ptr();
+            running.NumExtParam = 1;
+            // SAFETY: the buffer named is live for the call.
+            unsafe { session.encoder_params(&mut running) }.expect("the parameters");
+            assert_eq!(target_of(&running), 10_000, "{name}");
+            assert_eq!(read.AUDelimiter, off, "{name}");
+
+            // The build's own parameters, the rate halved, no new sequence.
+            rate_of(&mut param, 5_000);
+            param.NumExtParam = 2;
+            // SAFETY: the buffers named are live for the call.
+            unsafe { session.reset_encoder(&mut param) }.expect("a change of rate");
+            let kind = encode_one(&session, &mut surface, &mut bitstream, false);
+            assert_eq!(kind & keyframe, 0, "{name}: changed, type {kind:#x}");
+
+            // SAFETY: the surface's texture and the bitstream's bytes outlive
+            // the close, which the picture is done by.
+            let left = unsafe { session.encode(&mut surface, &mut bitstream, false) };
+            assert!(matches!(left, Ok(Encoded::Pending(_))), "{left:?}");
+            session.close_encoder();
+            assert_ne!(bitstream.DataLength, 0, "{name}: left unencoded");
+            println!(
+                "{name}: keyframe {} bytes, picture {} bytes",
+                first.len(),
+                second.len()
+            );
+        }
+    }
+
+    /// `param`'s target.
+    fn target_of(param: &mfxVideoParam) -> u16 {
+        // SAFETY: the union's encoder half, every field of it plain data.
+        let rate = unsafe { param.__bindgen_anon_1.mfx.__bindgen_anon_1.__bindgen_anon_1 };
+        // SAFETY: as above.
+        unsafe { rate.__bindgen_anon_2.TargetKbps }
+    }
+
+    /// `param`'s target and peak, both at `kbps`.
+    fn rate_of(param: &mut mfxVideoParam, kbps: u16) {
+        // SAFETY: the union's encoder half, every field of it plain data.
+        let rate = unsafe { &mut param.__bindgen_anon_1.mfx.__bindgen_anon_1.__bindgen_anon_1 };
+        rate.__bindgen_anon_2.TargetKbps = kbps;
+        rate.__bindgen_anon_3.MaxKbps = kbps;
     }
 
     /// **The older runtime's session opens on the adapter by its place in
