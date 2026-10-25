@@ -39,20 +39,23 @@ use lowlat_common::dynlib::Library;
 use crate::ffi::d3d11::{
     _D3DKMT_ADAPTERTYPE__bindgen_ty_1__bindgen_ty_1 as AdapterFlags, D3D_DRIVER_TYPE_UNKNOWN,
     D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FENCE_FLAG_NONE, D3D11_QUERY_DESC,
-    D3D11_QUERY_TIMESTAMP, D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_RESOURCE_MISC_SHARED,
-    D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
-    D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_TEX2D_SRV,
-    D3D11_TEX2D_UAV, D3D11_TEXTURE2D_DESC, D3D11_UAV_DIMENSION_TEXTURE2D,
+    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FENCE_FLAG_NONE,
+    D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
+    D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_RENDER_TARGET_VIEW_DESC,
+    D3D11_RENDER_TARGET_VIEW_DESC__bindgen_ty_1, D3D11_RESOURCE_MISC_SHARED,
+    D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
+    D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_TEX2D_RTV,
+    D3D11_TEX2D_SRV, D3D11_TEX2D_UAV, D3D11_TEXTURE2D_DESC, D3D11_UAV_DIMENSION_TEXTURE2D,
     D3D11_UNORDERED_ACCESS_VIEW_DESC, D3D11_UNORDERED_ACCESS_VIEW_DESC__bindgen_ty_1,
-    D3D11_USAGE_DEFAULT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID,
-    D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-    DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC, GUID, HANDLE, HRESULT,
-    ID3D11Asynchronous, ID3D11ComputeShader, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
-    ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11Query, ID3D11Resource,
-    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11UnorderedAccessView, ID3D11VideoContext,
-    ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIFactory6, IDXGIOutput,
-    IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
+    D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
+    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT,
+    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC,
+    GUID, HANDLE, HRESULT, ID3D11Asynchronous, ID3D11ComputeShader, ID3D11Device, ID3D11Device5,
+    ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11PixelShader,
+    ID3D11Query, ID3D11RenderTargetView, ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11UnorderedAccessView, ID3D11VertexShader, ID3D11VideoContext, ID3D11VideoDevice,
+    IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIFactory6, IDXGIOutput, IDXGIResource,
+    IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
     IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Multithread,
@@ -1108,6 +1111,48 @@ impl Device {
         unsafe { Com::from_raw(shader) }.ok_or(Error::Unavailable)
     }
 
+    /// A vertex shader of this device's, from the compiler's bytecode.
+    pub fn vertex_shader(&self, code: &[u8]) -> Result<Com<ID3D11VertexShader>> {
+        let mut shader: *mut ID3D11VertexShader = core::ptr::null_mut();
+        // SAFETY: a live device; the bytecode is live for the call and the
+        // output is a live local.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreateVertexShader,
+                code.as_ptr().cast(),
+                u64::try_from(code.len()).unwrap_or(0),
+                core::ptr::null_mut(),
+                &raw mut shader
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a shader whose reference the call handed over.
+        unsafe { Com::from_raw(shader) }.ok_or(Error::Unavailable)
+    }
+
+    /// A pixel shader of this device's, from the compiler's bytecode.
+    pub fn pixel_shader(&self, code: &[u8]) -> Result<Com<ID3D11PixelShader>> {
+        let mut shader: *mut ID3D11PixelShader = core::ptr::null_mut();
+        // SAFETY: a live device; the bytecode is live for the call and the
+        // output is a live local.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreatePixelShader,
+                code.as_ptr().cast(),
+                u64::try_from(code.len()).unwrap_or(0),
+                core::ptr::null_mut(),
+                &raw mut shader
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a shader whose reference the call handed over.
+        unsafe { Com::from_raw(shader) }.ok_or(Error::Unavailable)
+    }
+
     /// The view a shader reads the whole of a texture through, at `format`.
     pub fn shader_view(
         &self,
@@ -1173,6 +1218,127 @@ impl Device {
         check(hr)?;
         // SAFETY: a view whose reference the call handed over.
         unsafe { Com::from_raw(view) }.ok_or(Error::Unavailable)
+    }
+
+    /// The view a draw renders into a texture through, at `format`, which
+    /// names the plane of a texture of two planes as for
+    /// [`Device::unordered_view`].
+    pub fn render_view(
+        &self,
+        texture: *mut ID3D11Texture2D,
+        format: DXGI_FORMAT,
+    ) -> Result<Com<ID3D11RenderTargetView>> {
+        let desc = D3D11_RENDER_TARGET_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
+            __bindgen_anon_1: D3D11_RENDER_TARGET_VIEW_DESC__bindgen_ty_1 {
+                Texture2D: D3D11_TEX2D_RTV { MipSlice: 0 },
+            },
+        };
+        let mut view: *mut ID3D11RenderTargetView = core::ptr::null_mut();
+        // SAFETY: a live device; the texture is the caller's live one, and the
+        // description and output are live.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreateRenderTargetView,
+                texture.cast::<ID3D11Resource>(),
+                &raw const desc,
+                &raw mut view
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a view whose reference the call handed over.
+        unsafe { Com::from_raw(view) }.ok_or(Error::Unavailable)
+    }
+
+    /// Queue one triangle over the whole of `target`, `width` x `height`:
+    /// placed by `vertex`, which makes its corners from their numbers so
+    /// nothing is bound for it to read, and shaded by `pixel` reading
+    /// `sources` from slot zero. As [`Device::dispatch`]: on the opening
+    /// thread, under the device's lock, every binding undone before this
+    /// returns; the rasterizer and the blend at their defaults rather than
+    /// whatever was set before. At most [`BOUND`] sources.
+    pub fn draw(
+        &self,
+        vertex: &Com<ID3D11VertexShader>,
+        pixel: &Com<ID3D11PixelShader>,
+        sources: &[*mut ID3D11ShaderResourceView],
+        target: &Com<ID3D11RenderTargetView>,
+        (width, height): (u32, u32),
+    ) -> Result<()> {
+        if sources.len() > BOUND {
+            return Err(Error::Status(E_INVALIDARG));
+        }
+        let none_srv = [core::ptr::null_mut::<ID3D11ShaderResourceView>(); BOUND];
+        let count = u32::try_from(sources.len()).unwrap_or(0);
+        // A texture's size, which a float holds exactly.
+        let viewport = D3D11_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width as f32,
+            Height: height as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        };
+        let targets = [target.as_ptr()];
+        let context = self.context.as_ptr();
+        let _locked = self.lock();
+        // SAFETY: a live context on its own thread; the shaders, the views and
+        // the target are the caller's live ones, each array as long as the
+        // count it is passed with; null states are the defaults.
+        unsafe {
+            vcall!(context, IASetInputLayout, core::ptr::null_mut());
+            vcall!(
+                context,
+                IASetPrimitiveTopology,
+                D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+            );
+            vcall!(context, VSSetShader, vertex.as_ptr(), core::ptr::null(), 0);
+            vcall!(context, RSSetState, core::ptr::null_mut());
+            vcall!(context, RSSetViewports, 1, &raw const viewport);
+            vcall!(context, PSSetShader, pixel.as_ptr(), core::ptr::null(), 0);
+            vcall!(context, PSSetShaderResources, 0, count, sources.as_ptr());
+            vcall!(
+                context,
+                OMSetBlendState,
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                u32::MAX
+            );
+            vcall!(
+                context,
+                OMSetRenderTargets,
+                1,
+                targets.as_ptr(),
+                core::ptr::null_mut()
+            );
+            vcall!(context, Draw, 3, 0);
+            vcall!(
+                context,
+                OMSetRenderTargets,
+                0,
+                core::ptr::null(),
+                core::ptr::null_mut()
+            );
+            vcall!(context, PSSetShaderResources, 0, count, none_srv.as_ptr());
+            vcall!(
+                context,
+                PSSetShader,
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                0
+            );
+            vcall!(
+                context,
+                VSSetShader,
+                core::ptr::null_mut(),
+                core::ptr::null(),
+                0
+            );
+        }
+        Ok(())
     }
 
     /// Queue one run of `shader` over `groups`, reading `sources` and
