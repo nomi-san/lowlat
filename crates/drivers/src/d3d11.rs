@@ -49,10 +49,11 @@ use crate::ffi::d3d11::{
     D3D11_UNORDERED_ACCESS_VIEW_DESC, D3D11_UNORDERED_ACCESS_VIEW_DESC__bindgen_ty_1,
     D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
     D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT,
-    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC,
-    GUID, HANDLE, HRESULT, ID3D11Asynchronous, ID3D11ComputeShader, ID3D11Device, ID3D11Device5,
-    ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11PixelShader,
-    ID3D11Query, ID3D11RenderTargetView, ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D,
+    DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+    DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC, GUID, HANDLE, HRESULT,
+    ID3D11Asynchronous, ID3D11ComputeShader, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
+    ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11PixelShader, ID3D11Query,
+    ID3D11RenderTargetView, ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D,
     ID3D11UnorderedAccessView, ID3D11VertexShader, ID3D11VideoContext, ID3D11VideoDevice,
     IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIFactory6, IDXGIOutput, IDXGIResource,
     IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
@@ -375,11 +376,20 @@ impl D3d11 {
     /// `each` until it returns `Some`.
     fn walk<R>(
         &self,
+        each: impl FnMut(&Com<IDXGIAdapter1>, &DXGI_ADAPTER_DESC1) -> Result<Option<R>>,
+    ) -> Result<Option<R>> {
+        self.walk_by(DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, each)
+    }
+
+    /// [`walk`](Self::walk) in the order of `preference`.
+    fn walk_by<R>(
+        &self,
+        preference: DXGI_GPU_PREFERENCE,
         mut each: impl FnMut(&Com<IDXGIAdapter1>, &DXGI_ADAPTER_DESC1) -> Result<Option<R>>,
     ) -> Result<Option<R>> {
         let factory = self.factory()?;
-        // The high-performance order, from the factory that has it (Windows
-        // 10 1803 on); the plain enumeration on a system without it.
+        // The preference's order, from the factory that has it (Windows 10
+        // 1803 on); the plain enumeration on a system without it.
         let preferred = query::<IDXGIFactory6>(factory.as_ptr().cast(), &IID_IDXGIFactory6).ok();
         for index in 0.. {
             let mut raw: *mut IDXGIAdapter1 = core::ptr::null_mut();
@@ -391,7 +401,7 @@ impl D3d11 {
                         six.as_ptr(),
                         EnumAdapterByGpuPreference,
                         index,
-                        DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                        preference,
                         &IID_IDXGIAdapter1,
                         (&raw mut raw).cast()
                     ),
@@ -547,8 +557,18 @@ impl D3d11 {
     /// Every adapter the system enumerates, with what the kernel says of
     /// each; [`Adapter::decodes_here`] says which are offered.
     pub fn adapters(&self) -> Result<Vec<Adapter>> {
+        self.adapters_in(DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
+    }
+
+    /// The same in the system's minimum-power order: the power-saving GPU
+    /// first, which is the integrated one where a machine has one.
+    pub fn adapters_by_power(&self) -> Result<Vec<Adapter>> {
+        self.adapters_in(DXGI_GPU_PREFERENCE_MINIMUM_POWER)
+    }
+
+    fn adapters_in(&self, preference: DXGI_GPU_PREFERENCE) -> Result<Vec<Adapter>> {
         let mut out = Vec::new();
-        self.walk::<()>(|adapter, desc| {
+        self.walk_by::<()>(preference, |adapter, desc| {
             out.push(self.describe(adapter, desc));
             Ok(None)
         })?;
@@ -1763,6 +1783,44 @@ mod tests {
             "LUID:00000000:00013f82",
         ] {
             assert_eq!(Luid::parse(bad), None, "{bad}");
+        }
+    }
+
+    /// **The minimum-power order lists the same adapters, the power-saving
+    /// one first.** Where the kernel marks a GPU the integrated one of a
+    /// hybrid machine, that GPU is the first offered; a machine without one
+    /// still has a first, and nothing is asserted of it. Needs a GPU, so off
+    /// by default.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn the_minimum_power_order_puts_the_integrated_gpu_first() {
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let fast = d3d11.adapters().expect("the walk");
+        let saving = d3d11.adapters_by_power().expect("the power walk");
+        let named = |list: &[Adapter]| {
+            list.iter()
+                .filter(|a| a.decodes_here())
+                .map(|a| format!("{:04x}:{:04x}", a.vendor, a.device))
+                .collect::<Vec<_>>()
+        };
+        println!("high performance {:?}", named(&fast));
+        println!("minimum power    {:?}", named(&saving));
+        let mut fast_luids: Vec<u64> = fast.iter().map(|a| a.luid.value()).collect();
+        let mut saving_luids: Vec<u64> = saving.iter().map(|a| a.luid.value()).collect();
+        fast_luids.sort_unstable();
+        saving_luids.sort_unstable();
+        assert_eq!(
+            fast_luids, saving_luids,
+            "the two orders list different adapters"
+        );
+        let first = saving.iter().find(|a| a.decodes_here()).map(|a| a.luid);
+        if let Some(integrated) = fast.iter().find(|a| a.decodes_here() && a.integrated) {
+            assert_eq!(
+                first,
+                Some(integrated.luid),
+                "the integrated GPU, {:?}, is not the power-saving one",
+                integrated.description
+            );
         }
     }
 

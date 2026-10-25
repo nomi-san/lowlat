@@ -6,7 +6,7 @@
 use std::io::BufRead;
 use std::time::Duration;
 
-use crate::{Controller, Error, Gpu, Lifetime, Mode, Monitor, Pointer};
+use crate::{Controller, Error, GpuChoice, Lifetime, Mode, Monitor, Pointer, Settings};
 
 /// The commands, each after the program's name.
 const COMMANDS: [&str; 9] = [
@@ -16,10 +16,31 @@ const COMMANDS: [&str; 9] = [
     "remove SLOT",
     "mode SLOT WxH[@Hz]",
     "modes [add|remove WxH@Hz]",
-    "gpu [auto|VVVV:DDDD]",
+    "gpu [auto|igpu|nvidia|amd|intel|VVVV|VVVV:DDDD]",
     "pointer [hardware|drawn]",
     "edid [FILE|none]",
 ];
+
+/// The makers a person may name, by the number the file keeps.
+const MAKERS: [(&str, u16); 3] = [("nvidia", 0x10de), ("amd", 0x1002), ("intel", 0x8086)];
+
+/// A GPU as a person names it: a maker by name, or anything the file itself
+/// reads -- `auto`, `igpu`, a maker's number, a GPU's maker's and own number
+/// -- read by the file's own reader, so the two can never disagree. `None`
+/// for what neither knows.
+fn gpu_named(text: &str) -> Option<Option<GpuChoice>> {
+    if let Some(&(_, maker)) = MAKERS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(text))
+    {
+        return Some(Some(GpuChoice::Maker(maker)));
+    }
+    if text.is_empty() || text.contains(char::is_whitespace) {
+        return None;
+    }
+    let (settings, skipped) = Settings::parse(format!("gpu {text}").as_bytes());
+    (skipped == 0).then_some(settings.gpu)
+}
 
 /// Run a command line -- what follows the program's name -- and answer the
 /// process's outcome: 0 done, 1 refused, 2 a command line not understood.
@@ -232,8 +253,18 @@ fn command(args: &[String]) -> Result<(), Fail> {
             None => {
                 let settings = crate::settings().map_err(refused)?;
                 match settings.gpu {
-                    Some(gpu) => println!("gpu {:04x}:{:04x}", gpu.vendor, gpu.device),
                     None => println!("gpu auto (the high-performance one)"),
+                    Some(choice @ GpuChoice::Exact(_)) => println!("gpu {choice}"),
+                    Some(choice @ GpuChoice::Maker(maker)) => println!(
+                        "gpu {choice} ({}, the first of that maker's)",
+                        MAKERS
+                            .iter()
+                            .find(|&&(_, number)| number == maker)
+                            .map_or("a maker", |&(name, _)| name)
+                    ),
+                    Some(GpuChoice::PowerSaving) => {
+                        println!("gpu igpu (the first in the power-saving order)");
+                    }
                 }
                 for info in crate::gpus() {
                     println!(
@@ -244,15 +275,7 @@ fn command(args: &[String]) -> Result<(), Fail> {
                 Ok(())
             }
             Some(choice) => {
-                let gpu = if choice == "auto" {
-                    None
-                } else {
-                    let (vendor, device) = choice.split_once(':').ok_or(Fail::Usage)?;
-                    Some(Gpu {
-                        vendor: u16::from_str_radix(vendor, 16).map_err(|_| Fail::Usage)?,
-                        device: u16::from_str_radix(device, 16).map_err(|_| Fail::Usage)?,
-                    })
-                };
+                let gpu = gpu_named(choice).ok_or(Fail::Usage)?;
                 let mut controller = Controller::open().map_err(refused)?;
                 controller
                     .change_settings(|settings| settings.gpu = gpu)
@@ -350,13 +373,45 @@ mod tests {
             &["mode", "0"],
             &["hold", "1920x1080", "--for", "soon"],
             &["modes", "swap", "1920x1080@60"],
-            &["gpu", "10de"],
+            &["gpu", "geforce"],
+            &["gpu", "10de:"],
             &["pointer", "both"],
         ] {
             assert_eq!(run("lowlat-vdd", &line(bad)), 2, "{bad:?}");
         }
         for impossible in [&["add", "320x200@60"][..], &["mode", "3", "1920x1080@1000"]] {
             assert_eq!(run("lowlat-vdd", &line(impossible)), 1, "{impossible:?}");
+        }
+    }
+
+    /// **A GPU is named as the file names it, or by its maker's name**,
+    /// which the file keeps as the maker's number.
+    #[test]
+    fn a_gpu_is_named_by_the_files_words_or_by_its_maker() {
+        use crate::Gpu;
+        assert_eq!(gpu_named("auto"), Some(None));
+        assert_eq!(gpu_named("igpu"), Some(Some(GpuChoice::PowerSaving)));
+        assert_eq!(gpu_named("NVIDIA"), Some(Some(GpuChoice::Maker(0x10de))));
+        assert_eq!(gpu_named("amd"), Some(Some(GpuChoice::Maker(0x1002))));
+        assert_eq!(gpu_named("intel"), Some(Some(GpuChoice::Maker(0x8086))));
+        assert_eq!(gpu_named("8086"), Some(Some(GpuChoice::Maker(0x8086))));
+        assert_eq!(
+            gpu_named("10de:2d05"),
+            Some(Some(GpuChoice::Exact(Gpu {
+                vendor: 0x10de,
+                device: 0x2d05
+            })))
+        );
+        for bad in [
+            "",
+            "geforce",
+            "10de:",
+            "10de 2d05",
+            "igpus",
+            "auto\ngpu igpu",
+            "12345",
+        ] {
+            assert_eq!(gpu_named(bad), None, "{bad:?}");
         }
     }
 }

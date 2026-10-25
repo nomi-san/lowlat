@@ -17,7 +17,7 @@ use lowlat_drivers::d3d11::D3d11;
 use lowlat_vdd_proto::control::{Entry, Lifetime, List, Plug, Plugged};
 use lowlat_vdd_proto::edid::Edid;
 use lowlat_vdd_proto::modes::{Mode, ModeList};
-use lowlat_vdd_proto::settings::{Gpu, Pointer, Settings};
+use lowlat_vdd_proto::settings::{GpuChoice, Pointer, Settings};
 use lowlat_vdd_proto::{MAX_MONITORS, container_id};
 
 use crate::ffi::{
@@ -333,10 +333,9 @@ fn read_settings() -> Settings {
     }
     log_info!(
         "vdd: settings read, gpu={} pointer={} modes={} restore={} edid={} skipped={skipped}",
-        settings.gpu.map_or_else(
-            || "auto".to_string(),
-            |g| format!("{:04x}:{:04x}", g.vendor, g.device)
-        ),
+        settings
+            .gpu
+            .map_or_else(|| "auto".to_string(), |choice| choice.to_string()),
         if settings.pointer == Pointer::Drawn {
             "drawn"
         } else {
@@ -353,11 +352,23 @@ fn read_settings() -> Settings {
     settings
 }
 
-/// Name the GPU the system renders on: the file's when it names one present,
-/// else the first hardware GPU in the system's high-performance order.
-fn name_gpu(adapter: Handle<IDDCX_ADAPTER__>, gpu: Option<Gpu>) {
-    let adapters = match D3d11::load().and_then(|d3d11| d3d11.adapters()) {
-        Ok(adapters) => adapters,
+/// Name the GPU the system renders on: the first hardware GPU the file's
+/// choice takes, in the order it says, else the first in the system's
+/// high-performance order.
+fn name_gpu(adapter: Handle<IDDCX_ADAPTER__>, gpu: Option<GpuChoice>) {
+    let walked = D3d11::load().and_then(|d3d11| {
+        // **The power-saving choice walks an order of its own**; every
+        // other walks the high-performance one, which is also where a choice
+        // with nothing here falls back to.
+        let saving = if gpu.is_some_and(GpuChoice::power_saving) {
+            d3d11.adapters_by_power()?
+        } else {
+            Vec::new()
+        };
+        Ok((d3d11.adapters()?, saving))
+    });
+    let (adapters, saving) = match walked {
+        Ok(walked) => walked,
         Err(error) => {
             log_warn!("vdd: no GPU named, the adapters did not enumerate: {error:?}");
             return;
@@ -365,14 +376,20 @@ fn name_gpu(adapter: Handle<IDDCX_ADAPTER__>, gpu: Option<Gpu>) {
     };
     let hardware = || adapters.iter().filter(|a| a.decodes_here());
     let named = gpu.and_then(|gpu| {
-        hardware().find(|a| a.vendor == u32::from(gpu.vendor) && a.device == u32::from(gpu.device))
+        let order = if gpu.power_saving() {
+            &saving
+        } else {
+            &adapters
+        };
+        order.iter().filter(|a| a.decodes_here()).find(|a| {
+            match (u16::try_from(a.vendor), u16::try_from(a.device)) {
+                (Ok(vendor), Ok(device)) => gpu.takes(vendor, device),
+                _ => false,
+            }
+        })
     });
     if let (Some(gpu), None) = (gpu, named) {
-        log_warn!(
-            "vdd: the file's GPU {:04x}:{:04x} is not here, the high-performance one instead",
-            gpu.vendor,
-            gpu.device
-        );
+        log_warn!("vdd: the file's GPU {gpu} is not here, the high-performance one instead");
     }
     let Some(chosen) = named.or_else(|| hardware().next()) else {
         log_warn!("vdd: no hardware GPU, the system chooses");

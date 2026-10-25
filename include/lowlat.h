@@ -2217,7 +2217,9 @@ typedef struct lowlat_vdd_settings {
     /// `sizeof(lowlat_vdd_settings)`, set by the caller.
     uint32_t size;
     /// The GPU the monitors render on, by its maker's and its own number;
-    /// both zero for the system's high-performance GPU.
+    /// both zero for the system's high-performance GPU. Zero too when the
+    /// file names a maker or the power-saving GPU, which these cannot say;
+    /// written back as read, that choice stands.
     uint32_t gpu_vendor;
     uint32_t gpu_device;
     /// The pointer drawn into the pictures rather than reported beside them.

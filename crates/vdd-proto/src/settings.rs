@@ -8,7 +8,10 @@
 //!
 //! ```text
 //! gpu 10de:2d05             the GPU to render on, by vendor and device;
-//!                           `auto` or absent: the high-performance one
+//!                           `10de` the first of that vendor's in the
+//!                           high-performance order, `igpu` the first in the
+//!                           minimum-power order; `auto` or absent: the
+//!                           high-performance one
 //! pointer drawn             the pointer drawn into the pictures;
 //!                           `hardware` or absent: the hardware cursor
 //! mode 3000x2000@120        a custom mode every monitor plugged after lists
@@ -46,6 +49,50 @@ pub struct Gpu {
     pub device: u16,
 }
 
+/// Which GPU the monitors render on, when the file names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuChoice {
+    /// One GPU, by its maker's and its own number.
+    Exact(Gpu),
+    /// The first GPU of a maker, by the maker's number, in the system's
+    /// high-performance order: a card replaced by another of its maker's
+    /// keeps the choice, where an exact one falls back to the default.
+    Maker(u16),
+    /// The first GPU in the system's minimum-power order: the power-saving
+    /// one, which is the integrated GPU where a machine has one.
+    PowerSaving,
+}
+
+impl GpuChoice {
+    /// Whether the GPU of this maker's and its own number is the one named,
+    /// walking the order [`Self::power_saving`] says: the first it takes is
+    /// the choice.
+    pub fn takes(self, vendor: u16, device: u16) -> bool {
+        match self {
+            Self::Exact(gpu) => gpu.vendor == vendor && gpu.device == device,
+            Self::Maker(maker) => maker == vendor,
+            Self::PowerSaving => true,
+        }
+    }
+
+    /// Whether the system's minimum-power order is walked rather than its
+    /// high-performance one.
+    pub fn power_saving(self) -> bool {
+        self == Self::PowerSaving
+    }
+}
+
+/// As the file writes it.
+impl fmt::Display for GpuChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Exact(gpu) => write!(f, "{:04x}:{:04x}", gpu.vendor, gpu.device),
+            Self::Maker(maker) => write!(f, "{maker:04x}"),
+            Self::PowerSaving => f.write_str("igpu"),
+        }
+    }
+}
+
 /// Where the pointer is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pointer {
@@ -61,7 +108,7 @@ pub enum Pointer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     /// The GPU to render on; the high-performance one when none.
-    pub gpu: Option<Gpu>,
+    pub gpu: Option<GpuChoice>,
     pub pointer: Pointer,
     modes: [Mode; MAX_CUSTOM],
     mode_count: usize,
@@ -194,21 +241,25 @@ impl Settings {
         }
     }
 
+    /// **Numbers alone, and the one word.** A maker's name is the commands'
+    /// to turn into its number; a driver from before the maker and the word
+    /// reads either as a line it cannot read, and keeps the default.
     fn read_gpu(&mut self, text: &str) -> bool {
-        if text == "auto" {
-            self.gpu = None;
-            return true;
-        }
-        let Some((vendor, device)) = text.split_once(':') else {
-            return false;
+        self.gpu = match text {
+            "auto" => None,
+            "igpu" => Some(GpuChoice::PowerSaving),
+            _ => match text.split_once(':') {
+                Some((vendor, device)) => match (hex16(vendor), hex16(device)) {
+                    (Some(vendor), Some(device)) => Some(GpuChoice::Exact(Gpu { vendor, device })),
+                    _ => return false,
+                },
+                None => match hex16(text) {
+                    Some(maker) => Some(GpuChoice::Maker(maker)),
+                    None => return false,
+                },
+            },
         };
-        match (hex16(vendor), hex16(device)) {
-            (Some(vendor), Some(device)) => {
-                self.gpu = Some(Gpu { vendor, device });
-                true
-            }
-            _ => false,
-        }
+        true
     }
 
     fn read_pointer(&mut self, text: &str) -> bool {
@@ -280,7 +331,7 @@ impl Settings {
              # and the library's controller, read by the display driver when it starts.\n",
         )?;
         match self.gpu {
-            Some(gpu) => writeln!(out, "gpu {:04x}:{:04x}", gpu.vendor, gpu.device)?,
+            Some(choice) => writeln!(out, "gpu {choice}")?,
             None => out.write_str("gpu auto\n")?,
         }
         match self.pointer {
@@ -318,12 +369,14 @@ mod tests {
         (buf, len)
     }
 
+    const RTX: GpuChoice = GpuChoice::Exact(Gpu {
+        vendor: 0x10de,
+        device: 0x2d05,
+    });
+
     fn full() -> Settings {
         let mut settings = Settings {
-            gpu: Some(Gpu {
-                vendor: 0x10de,
-                device: 0x2d05,
-            }),
+            gpu: Some(RTX),
             pointer: Pointer::Drawn,
             edid: Some(Edid::generated().for_slot(4)),
             ..Settings::default()
@@ -348,7 +401,16 @@ mod tests {
 
     #[test]
     fn what_is_written_reads_back_the_same() {
-        for settings in [Settings::default(), full()] {
+        let choosing = |gpu| Settings {
+            gpu: Some(gpu),
+            ..Settings::default()
+        };
+        for settings in [
+            Settings::default(),
+            full(),
+            choosing(GpuChoice::Maker(0x8086)),
+            choosing(GpuChoice::PowerSaving),
+        ] {
             let (buf, len) = written(&settings);
             let (back, skipped) = Settings::parse(&buf[..len]);
             assert_eq!(back, settings);
@@ -380,6 +442,38 @@ mod tests {
         let text = core::str::from_utf8(&buf[..len]).expect("text");
         assert!(text.lines().any(|l| l == "gpu auto"));
         assert!(text.lines().any(|l| l == "pointer hardware"));
+        for (gpu, line) in [
+            (GpuChoice::Maker(0x1002), "gpu 1002"),
+            (GpuChoice::PowerSaving, "gpu igpu"),
+        ] {
+            let (buf, len) = written(&Settings {
+                gpu: Some(gpu),
+                ..Settings::default()
+            });
+            let text = core::str::from_utf8(&buf[..len]).expect("text");
+            assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+        }
+    }
+
+    /// **The first GPU a choice takes, in the order it says, is the one
+    /// named.** An exact choice takes its own pair alone, a maker's every
+    /// GPU of that maker, and the power-saving one the first of the
+    /// minimum-power order, whoever made it.
+    #[test]
+    fn each_choice_takes_the_gpus_it_names() {
+        assert!(RTX.takes(0x10de, 0x2d05));
+        assert!(!RTX.takes(0x10de, 0x2c05), "another of the maker's");
+        assert!(
+            !RTX.takes(0x8086, 0x2d05),
+            "another maker's with the number"
+        );
+        let maker = GpuChoice::Maker(0x8086);
+        assert!(maker.takes(0x8086, 0x56a5) && maker.takes(0x8086, 0x9a49));
+        assert!(!maker.takes(0x10de, 0x2d05));
+        assert!(GpuChoice::PowerSaving.takes(0x1002, 0x13c0));
+        assert!(GpuChoice::PowerSaving.takes(0x10de, 0x2d05));
+        assert!(GpuChoice::PowerSaving.power_saving());
+        assert!(!RTX.power_saving() && !maker.power_saving());
     }
 
     #[test]
@@ -387,13 +481,7 @@ mod tests {
         let text = b"# a comment\r\n\r\n   \n\tgpu  10DE:2d05 \r\n pointer drawn\nmonitor 2   1920x1080@60\r\n";
         let (settings, skipped) = Settings::parse(text);
         assert_eq!(skipped, 0);
-        assert_eq!(
-            settings.gpu,
-            Some(Gpu {
-                vendor: 0x10de,
-                device: 0x2d05
-            })
-        );
+        assert_eq!(settings.gpu, Some(RTX));
         assert_eq!(settings.pointer, Pointer::Drawn);
         assert_eq!(settings.restore[2], Some(Mode::new(1920, 1080, 60)));
     }
@@ -407,8 +495,10 @@ mod tests {
 
     #[test]
     fn a_line_that_cannot_be_read_is_skipped_and_counted() {
-        let bad: [&[u8]; 17] = [
-            b"gpu 10de",
+        let bad: [&[u8]; 19] = [
+            b"gpu nvidia",
+            b"gpu igpus",
+            b"gpu 12345",
             b"gpu 10de:12345",
             b"gpu xyz:2d05",
             b"gpu :2d05",

@@ -9,7 +9,9 @@ use core::ffi::c_char;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use lowlat_vdd_ctl::{Controller, Error, Gpu, Lifetime, Mode, Monitor, Pointer, Settings};
+use lowlat_vdd_ctl::{
+    Controller, Error, Gpu, GpuChoice, Lifetime, Mode, Monitor, Pointer, Settings,
+};
 
 use super::guard;
 use super::lowlat_status::{self, *};
@@ -109,7 +111,9 @@ pub struct lowlat_vdd_settings {
     /// `sizeof(lowlat_vdd_settings)`, set by the caller.
     pub size: u32,
     /// The GPU the monitors render on, by its maker's and its own number;
-    /// both zero for the system's high-performance GPU.
+    /// both zero for the system's high-performance GPU. Zero too when the
+    /// file names a maker or the power-saving GPU, which these cannot say;
+    /// written back as read, that choice stands.
     pub gpu_vendor: u32,
     pub gpu_device: u32,
     /// The pointer drawn into the pictures rather than reported beside them.
@@ -214,6 +218,32 @@ fn slot_of(slot: u32) -> Option<u8> {
     u8::try_from(slot)
         .ok()
         .filter(|slot| u32::from(*slot) < LOWLAT_VDD_SLOTS)
+}
+
+/// The pair a caller is told for the file's GPU: an exact GPU's own, and
+/// zero for any other choice, which the pair cannot say.
+fn told(gpu: Option<GpuChoice>) -> (u32, u32) {
+    match gpu {
+        Some(GpuChoice::Exact(gpu)) => (u32::from(gpu.vendor), u32::from(gpu.device)),
+        _ => (0, 0),
+    }
+}
+
+/// The file's GPU once a caller wrote `pair`, which reads as `asked`.
+///
+/// **The pair read, written back, keeps the choice it stood for**: a maker's
+/// choice or the power-saving one reads as zero, and writing that back must
+/// not turn it into the high-performance GPU behind its chooser's back.
+fn written_back(
+    current: Option<GpuChoice>,
+    pair: (u32, u32),
+    asked: Option<GpuChoice>,
+) -> Option<GpuChoice> {
+    if told(current) == pair {
+        current
+    } else {
+        asked
+    }
 }
 
 /// Open the display driver.
@@ -505,8 +535,8 @@ pub unsafe extern "C" fn lowlat_vdd_get_settings(
             let size = out.size;
             *out = lowlat_vdd_settings {
                 size,
-                gpu_vendor: settings.gpu.map_or(0, |gpu| u32::from(gpu.vendor)),
-                gpu_device: settings.gpu.map_or(0, |gpu| u32::from(gpu.device)),
+                gpu_vendor: told(settings.gpu).0,
+                gpu_device: told(settings.gpu).1,
                 pointer_drawn: settings.pointer == Pointer::Drawn,
                 mode_count: u32::try_from(settings.modes().len()).unwrap_or(0),
                 modes: [lowlat_vdd_mode::default(); LOWLAT_VDD_MODES_MAX],
@@ -561,9 +591,10 @@ pub unsafe extern "C" fn lowlat_vdd_set_settings(
                 u16::try_from(asked.gpu_device),
             ) {
                 (Ok(0), Ok(0)) => None,
-                (Ok(vendor), Ok(device)) => Some(Gpu { vendor, device }),
+                (Ok(vendor), Ok(device)) => Some(GpuChoice::Exact(Gpu { vendor, device })),
                 _ => return LOWLAT_ERR_INVALID_ARGUMENT,
             };
+            let pair = (asked.gpu_vendor, asked.gpu_device);
             let count = asked.mode_count as usize;
             let Some(modes) = asked.modes.get(..count) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
@@ -587,7 +618,7 @@ pub unsafe extern "C" fn lowlat_vdd_set_settings(
                 Pointer::Hardware
             };
             let changed = controller.change_settings(|settings| {
-                settings.gpu = gpu;
+                settings.gpu = written_back(settings.gpu, pair, gpu);
                 settings.pointer = pointer;
                 while let Some(mode) = settings.modes().first().copied() {
                     settings.remove_mode(mode);
@@ -659,5 +690,39 @@ mod tests {
         let status = unsafe { refused_into(&controller, Error::Busy, &raw mut untouched) };
         assert_eq!(status, LOWLAT_ERR_VDD_BUSY);
         assert_eq!(untouched.slot, 99, "out filled for another refusal");
+    }
+
+    /// **The library says exact GPUs alone, and loses no other choice.** A
+    /// maker's choice and the power-saving one read as zero; written back as
+    /// read, each stays, and any other pair replaces it.
+    #[test]
+    fn a_gpu_choice_the_pair_cannot_say_survives_being_written_back() {
+        let rtx = Some(GpuChoice::Exact(Gpu {
+            vendor: 0x10de,
+            device: 0x2d05,
+        }));
+        let as_asked = |vendor, device| {
+            (vendor != 0 || device != 0).then_some(GpuChoice::Exact(Gpu { vendor, device }))
+        };
+        assert_eq!(told(rtx), (0x10de, 0x2d05));
+        for other in [
+            Some(GpuChoice::Maker(0x8086)),
+            Some(GpuChoice::PowerSaving),
+            None,
+        ] {
+            assert_eq!(told(other), (0, 0), "{other:?}");
+            assert_eq!(written_back(other, (0, 0), None), other, "{other:?} lost");
+            assert_eq!(
+                written_back(other, (0x10de, 0x2d05), as_asked(0x10de, 0x2d05)),
+                rtx,
+                "{other:?} kept over an exact GPU asked"
+            );
+        }
+        assert_eq!(written_back(rtx, (0x10de, 0x2d05), rtx), rtx);
+        assert_eq!(
+            written_back(rtx, (0, 0), None),
+            None,
+            "auto asked, the exact kept"
+        );
     }
 }

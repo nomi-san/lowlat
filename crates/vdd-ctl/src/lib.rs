@@ -36,7 +36,7 @@ use lowlat_vdd_proto::control::{Entry, Plug};
 pub use lowlat_vdd_proto::edid::Edid;
 pub use lowlat_vdd_proto::frames::{Picture, Pointer as HardwareCursor, ShapeKind, Snapshot};
 pub use lowlat_vdd_proto::modes::Mode;
-pub use lowlat_vdd_proto::settings::{Gpu, Pointer, Settings};
+pub use lowlat_vdd_proto::settings::{Gpu, GpuChoice, Pointer, Settings};
 
 use device::Device;
 pub use frames::{FramePage, Waited};
