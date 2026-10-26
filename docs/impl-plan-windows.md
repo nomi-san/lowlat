@@ -344,7 +344,11 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   *Found at the gate*: the processor time noted at W1.4 is the example client's. By handle,
   drawing on a GPU other than the display's, its memory grows with every picture and its
   processor time with it, from about 3 % of a core to 30 in ten minutes, through either
-  decoder; the library's route alone does not. Left to W1.9.
+  decoder; the library's route alone does not. Left to W1.9. *Amended 2026-10-26* (found with
+  the library's demo on a laptop for W4's gate): the decoder is initialised at the size the
+  stream shows, since an older runtime decoded nothing of a cropped stream initialised at its
+  coded size ([10 §5.2](10-client.md)); checked by a cropped clip of each codec, failing there
+  before and passing after, and by a 1920x1080 stream from this project's host live.
 - [x] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
   runtime, loaded at run time from where the display driver installs it, and through its
   older runtime (MFX) for the Intel parts the current one does not reach; planes, then
@@ -2546,6 +2550,8 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W1.6 amended: AMD's decoder initialised at the size a stream shows, an older
+  runtime decoding nothing of a cropped one at its coded size ([10 §5.2](10-client.md)).
 - 2026-10-26: W4.3 built: the report pads as their products on the input driver behind
   `virtual_pads` (minor 33), checked on the machine and live with a macOS client's DualSense; a
   device's readiness fixed for all three kinds, every collection listed under a handle of its

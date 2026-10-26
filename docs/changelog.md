@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - AMD's decoder at the size a stream shows
+
+### Fixed
+- **A cropped stream decoded nothing on an older AMD runtime** ([10 §5.2](10-client.md)): the
+  decoder was initialised at the stream's coded size, and runtime 1.4.31 answered every unit
+  of a 1920x1080 stream -- coded at 1088 -- that its size had changed. The client rebuilt, asked
+  the host for a keyframe at every unit and showed nothing, the host sending keyframes alone at
+  7 Mbit/s. It is initialised at the size the stream shows now; 1.4.37 took either.
+
+### Checked
+- A cropped clip of each codec committed beside the others, 136x120 coded at 144x128 and
+  150x146 coded at 152x152: on the laptop with runtime 1.4.31 the H.264 one failed at its
+  first unit before and both decode bit for bit after; on the development machine's AMD GPU
+  both decode bit for bit, and through every other decoder there -- the system's interface on
+  three GPUs, NVIDIA's, Intel's and the system's own -- every clip with them.
+- Live, the library's demo on that laptop against this project's host: 1920x1080 H.264 decoded
+  with no fault where it had decoded none, and 2560x1440, uncropped, as before.
+
+### Open
+- Ten-bit HEVC on runtime 1.4.31 ended the process mid-clip, once in the runtime and twice in
+  an abort.
+
 ## 2026-10-26 - W4.3 built: the report pads as their products on the host's own input driver
 
 ### Built

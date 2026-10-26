@@ -884,7 +884,14 @@ mid-session cost one second and twelve skipped pictures. Every committed 4:2:0 c
 bit for bit by planes and through the textures, in the order the system's interface lets the
 same clip out in; full chroma is refused, the GPU having no such profile, and the declaration
 masked by it. *Open*: a stream larger than the engine decodes fails at each keyframe here,
-where the system's interface refuses it once.
+where the system's interface refuses it once. *Amended 2026-10-26:* **the decoder is
+initialised at the size the stream shows, not its coded size.** An older runtime, 1.4.31 on a
+laptop's integrated Radeon, answered every unit of a cropped stream -- a 1080-line picture is
+coded at 1088 -- that its size had changed when initialised at the coded size, so a 1920x1080
+stream decoded nothing and asked the host for a keyframe at every unit; 1.4.37 takes either.
+A cropped clip of each codec is committed beside the others, and every decoder here decodes
+them bit for bit. *Open*: ten-bit HEVC on that runtime ended the process mid-clip, once in
+the runtime and twice in an abort; not followed further.
 
 **On an AMD GPU it comes first**, where its runtime has the low-latency mode. Against the
 system's interface on the same GPU, in one session per codec and kind with the decoders
