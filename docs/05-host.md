@@ -882,6 +882,15 @@ call.
   that translation; the few keys a scancode cannot carry -- Pause, Break, SysRq -- go as the
   system's keyboard driver reports them, and **the power key is not mapped**, so a guest cannot
   put the host to sleep or turn it off (*2026-10-15*).
+- **While a peer's mask holds Command -- the GUI bits, Windows or Super elsewhere -- none of its
+  other keys stays held** (*2026-10-26*). A macOS peer's window never hears a key let go while
+  Command is down, so it never sends that release, and a key left held is typed again by the
+  host's own repeat -- the HID keyboard's, Linux's display server's -- until its next press (on
+  the batch input call it stays down unseen). The mask says Command whatever the key codes say: a
+  peer that swaps Command for Control swaps the codes alone (measured, a macOS client). So a key
+  down as Command arrives comes up then, and one pressed under it goes down and up at once -- a
+  keystroke per press or repeat the peer sends, which is all a shortcut is. The modifiers are
+  held as ever, and a release that does come finds nothing held and is dropped.
 - **Absolute coordinates arrive in stream space** and are mapped to the output's geometry at
   injection, accounting for rotation. Relative deltas pass through.
 - **The mapping is a normalisation at both ends, and that is why a stream smaller than the
@@ -924,6 +933,18 @@ call.
   captured output by the name both sides know it by. **A session that does not answer is not a
   degraded case**: with one output the picture is the desktop, which is exactly what the axis
   already spans ([07-platforms.md](07-platforms.md)).
+
+  *Amended 2026-10-26:* once is not enough. **The desktop moves around an output whose picture
+  stays** -- another display resized, added or taken away -- and nothing rebuilds for that, so a
+  place read only as the display opened spreads every position over a desktop that is not there
+  any more. Measured on Windows: a game leaving exclusive fullscreen put every display back at its
+  saved mode, the host's own display among them, and a 6400x1440 desktop still described as
+  7900x2148 squeezed every position by those ratios into the top left, a reconnect keeping it. So
+  the place follows the layout: on Linux lowlatd's session side tells it again as it changes; on
+  Windows the stream reads the system's listing again once a second -- the adapters left
+  undescribed, 0.17 ms a read -- and takes a rectangle the picture's size agrees with. One of
+  another size is the output's own mode moving, which its rebuild places, or a listing behind the
+  picture, which a later read finds caught up.
 
   **It also assumes the stream and the display are the same size**, which they are in the
   established model because a host changes the display mode rather than scaling a copy of it. A

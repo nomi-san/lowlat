@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - W4.1's first sitting: the pointer placed as the desktop changes, no key held under Command
+
+### Fixed
+- **An absolute pointer fell short after the desktop changed around the captured output**
+  ([05 §7](05-host.md)): the place was read only as a display opened, and a desktop that changes
+  around an output whose own picture stays rebuilds nothing. Seen live: a game leaving exclusive
+  fullscreen put every display back at its saved mode -- the host's own display from a guest's
+  3420x2148 to 1920x1080 -- and a guest of the 2560x1440 primary, its desktop now 6400x1440 but
+  still described as 7900x2148, reached only the top left of the screen, a reconnect keeping it.
+  On Windows the stream reads the system's listing again once a second, the adapters left
+  undescribed (0.17 against 1.44 ms a read), and takes a place whose rectangle the picture agrees
+  with.
+- **A key let go under Command stayed held from a macOS peer** ([05 §7](05-host.md)): its window
+  never hears that release, and the HID keyboard's own repeat typed the key on until its next
+  press -- Cmd+E, then `eeee`; on the batch input call the key stayed down unseen, and on Linux the
+  display server repeated it. While a peer's mask holds Command, or Windows, or Super, no other
+  key of it stays held: one down comes up as Command arrives, and one pressed under it goes down
+  and up at once.
+
+### Checked
+- Offline: the place followed as the desktop shrinks around the output and as a neighbour moves
+  past it; a rectangle of another size, a listing behind the picture and an output not listed
+  not taken, and the listing taken once caught up; a key under Command a keystroke and its repeat
+  another, its late release dropped, the right Command too, a key held as Command arrives let go
+  first, the modifiers held; each check broken once and seen to fail. On the development
+  machine: the cheaper listing the same as the full one, output for output, and an open
+  display's place made stale read back once. Both bars: on Windows 1450 tests passed, none
+  failed; on Linux 1420 passed, the licences and advisories clean, and the two dual-stack checks
+  the virtual machine's network fails as before.
+- Live, a macOS client against the service: after a game's exclusive fullscreen and back, the
+  pointer reaching every corner of the picture; Cmd shortcuts typing once and leaving nothing
+  held; Ctrl+Alt+Del asked for from the client leaving no key down.
+
+### Not run
+- The stream's read once a second has no offline check: no test drives the stream's loop on a
+  real display, so the live run is its check.
+
 ## 2026-10-26 - W4.1 built: a guest's keyboard on the host's own input driver, and the switch
 
 ### Built

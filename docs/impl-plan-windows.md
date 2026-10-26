@@ -2414,6 +2414,11 @@ are through. The decisions are recorded once, here; the design they add up to is
   development machine, a key held until the keyboard was listed and released across the switch
   both ways, and the library's calls switching it as the driver allowed. Owed: the live checks
   above, and W4.0's driver taken up at the next switch-on.
+  *Amended 2026-10-26, the first sitting (a macOS client, the service switched on):* keys and
+  pointer worked; two faults found, fixed and checked live again -- an absolute pointer short of
+  the picture after the desktop changed around the captured output, the place now followed as the
+  layout changes; and a key let go under Command left held and repeated, no key now held while a
+  peer's mask holds Command ([05 §7](05-host.md)).
 - [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
   multiplier, every button and wheel on the relative collection (*amended 2026-10-22*; as W4.0's
   measurement of the two collections settles it) -- and absolute positions as W4.0's measurement
@@ -2454,6 +2459,8 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W4.1's first sitting: the place followed as the desktop changes around the captured
+  output, and no key held while a peer's mask holds Command; both checked live.
 - 2026-10-26: W4.1 built: the input configuration in minor 32 with the Windows-only fields
   declared on Windows alone, a guest's keyboard on the input driver with the chord's rule, the
   switch, `--virtual-input`; the input driver's refusals given statuses of their own, and a
