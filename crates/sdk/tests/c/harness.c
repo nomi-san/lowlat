@@ -234,6 +234,7 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
      * input driver is not this boundary's to test. */
     cfg.input.size = (uint32_t) sizeof cfg.input;
     cfg.input.virtual_input = false;
+    cfg.input.virtual_pads = false;
 #endif
     if (host_start(hl, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
@@ -329,9 +330,9 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
     }
 
 #if defined(_WIN32)
-    /* The guests' input, live, on Windows alone: off is what a start with it
-     * off reads back, switching it off is always taken, and a structure
-     * shorter than the library's is refused. */
+    /* The guests' input, live, on Windows alone: off is what a start with
+     * both switches off reads back, switching them off is always taken, and a
+     * structure shorter than the library's is refused. */
     lowlat_status (*set_input)(lowlat_host *, const lowlat_host_input_config *);
     lowlat_status (*get_input)(lowlat_host *, lowlat_host_input_config *);
     RESOLVE(set_input, lib, "lowlat_host_set_input_config");
@@ -340,7 +341,9 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
     memset(&input_back, 0, sizeof input_back);
     input_back.size = (uint32_t) sizeof input_back;
     input_back.virtual_input = true;
-    if (get_input(hl, &input_back) != LOWLAT_OK || input_back.virtual_input != false) {
+    input_back.virtual_pads = true;
+    if (get_input(hl, &input_back) != LOWLAT_OK || input_back.virtual_input != false ||
+        input_back.virtual_pads != false) {
         fprintf(stderr, "harness: the input settings did not read back off\n");
         return 1;
     }

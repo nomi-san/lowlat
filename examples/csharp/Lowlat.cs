@@ -159,13 +159,15 @@ internal struct HostVideoConfig
 }
 
 #if WINDOWS
-/// How the guests' input reaches the system (minor 32; Windows alone).
+/// How the guests' input reaches the system (minor 32; Windows alone;
+/// `VirtualPads` from minor 33).
 [StructLayout(LayoutKind.Sequential)]
 internal struct HostInputConfig
 {
     public uint Size;
     public byte VirtualInputByte;
-    private byte reserved0, reserved1, reserved2;
+    public byte VirtualPadsByte;
+    private byte reserved0, reserved1;
 
     /// Whether a guest's keys and pointer go to a keyboard and a mouse of the
     /// host's own input driver.
@@ -175,6 +177,16 @@ internal struct HostInputConfig
     {
         get => VirtualInputByte != 0;
         set => VirtualInputByte = value ? (byte)1 : (byte)0;
+    }
+
+    /// Whether a DualShock 4 or a DualSense a guest sends as its reports is
+    /// presented as that product on the host's own input driver.
+    /// **Off by default**; switching it on where the driver is not installed
+    /// is refused, and a change reaches the pads plugged after it.
+    public bool VirtualPads
+    {
+        get => VirtualPadsByte != 0;
+        set => VirtualPadsByte = value ? (byte)1 : (byte)0;
     }
 }
 #endif
@@ -466,6 +478,16 @@ internal static partial class Native
 
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_create(CreateInfo* info, IntPtr* handle);
+
+#if WINDOWS
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_set_input_config(
+        IntPtr handle, HostInputConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_get_input_config(
+        IntPtr handle, HostInputConfig* cfg);
+#endif
 
     [LibraryImport(Library)]
     internal static partial void lowlat_host_destroy(IntPtr handle);

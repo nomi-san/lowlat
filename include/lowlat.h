@@ -49,7 +49,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 32
+#define LOWLAT_ABI_MINOR 33
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -849,9 +849,10 @@ typedef enum lowlat_pad_sink {
     /// to the guest by itself. **The default.**
     LOWLAT_PAD_SINK_DEVICE = 0,
     /// The application holds the device: it takes the reports from
-    /// `lowlat_host_poll_pad_report` and gives back what its device is
-    /// written with `lowlat_host_send_pad_report`. The permission gate,
-    /// the per-guest cap and the unplug rule apply as they do above.
+    /// `lowlat_host_poll_pad_report` and gives back the output reports its
+    /// device is written with `lowlat_host_send_pad_report`; a feature write
+    /// stays on the host (minor 33). The permission gate, the per-guest cap
+    /// and the unplug rule apply as they do above.
     LOWLAT_PAD_SINK_APP = 1,
 } lowlat_pad_sink;
 #endif
@@ -1076,7 +1077,22 @@ typedef struct lowlat_host_input_config {
     /// mouse's positions span the primary alone; its buttons, wheels and motion
     /// stay on the mouse.
     bool virtual_input;
-    uint8_t reserved[3];
+    /// Whether a DualShock 4 or a DualSense a guest sends as its own reports is
+    /// presented as that product on the host's own input driver, its touchpad,
+    /// motion, lights and trigger effects with it, rather than played as the
+    /// Xbox pad from its whole states (minor 33). **Default: off**, zero
+    /// included: a pad on the input driver never reaches a game that reads only
+    /// the Xbox pad's interface.
+    ///
+    /// Switching it on where the driver is not installed, or does not admit
+    /// this process, is refused and changes nothing, as `virtual_input` is; a
+    /// start asking for it there is not refused for it, says why once, and
+    /// reads back off. **A change reaches the pads plugged after it**: one
+    /// already plugged keeps what its first report made it. A pad whose device
+    /// never comes, or goes, plays on as the Xbox pad from its own reports. A
+    /// library of an earlier minor ignores this byte and reads it back zero.
+    bool virtual_pads;
+    uint8_t reserved[2];
 } lowlat_host_input_config;
 #endif
 
@@ -2786,12 +2802,13 @@ lowlat_status lowlat_host_get_audio_config(lowlat_host *hl,
 
 #if (defined(LOWLAT_HOST) && defined(_WIN32))
 /// Change how the guests' input reaches the system, while a host runs
-/// (minor 32; Windows alone).
+/// (minor 32; Windows alone; `virtual_pads` from minor 33).
 ///
-/// **Switching `virtual_input` on asks the host's input driver first**, and is
-/// refused where it is not installed or does not admit this process, the
-/// guests keeping the batch input call. Each seated guest moves on its next
-/// pass, what it holds on the old way released first.
+/// **Switching `virtual_input` or `virtual_pads` on asks the host's input
+/// driver first**, and is refused where it is not installed or does not admit
+/// this process, nothing changed: both fields are taken or neither. Each
+/// seated guest moves its keys and pointer on its next pass, what it holds on
+/// the old way released first; the pads plugged after a change follow it.
 ///
 /// @param[in] hl The handle from `lowlat_host_create`.
 /// @param[in] cfg One `lowlat_host_input_config` whose `size` says how much of it is
@@ -2806,10 +2823,11 @@ lowlat_status lowlat_host_get_audio_config(lowlat_host *hl,
 lowlat_status lowlat_host_set_input_config(lowlat_host *hl,
                                            const lowlat_host_input_config *cfg) LOWLAT_NOEXCEPT;
 
-/// How the guests' input reaches the system now (minor 32; Windows alone).
+/// How the guests' input reaches the system now (minor 32; Windows alone;
+/// `virtual_pads` from minor 33).
 ///
-/// **The settings and not the state**: `virtual_input` is what was last
-/// switched, which a driver lost since does not change.
+/// **The settings and not the state**: each switch is what was last asked,
+/// which a driver lost since does not change.
 ///
 /// @param[in] hl The handle from `lowlat_host_create`.
 /// @param[out] out One `lowlat_host_input_config` whose `size` says how much of it is
@@ -2908,8 +2926,9 @@ lowlat_status lowlat_host_poll_microphone(lowlat_host *hl,
 /// first input report (`LOWLAT_PAD_REPORT_INPUT`, 64 bytes), which is
 /// when the application creates its device; `LOWLAT_PAD_REPORT_UNPLUG`,
 /// with no report, comes after the pad's last one -- on the guest's unplug
-/// and on its leaving -- and is when the application destroys it. What that
-/// device is written goes back with `lowlat_host_send_pad_report`.
+/// and on its leaving -- and is when the application destroys it. The output
+/// reports that device is written go back with `lowlat_host_send_pad_report`;
+/// a feature write stays on the host.
 ///
 /// **Its own poll, not the event queue**, for the microphone's reason: a pad
 /// reports several hundred times a second. The queue is bounded; when the
@@ -2949,22 +2968,27 @@ lowlat_status lowlat_host_poll_pad_report(lowlat_host *hl,
                                           uint32_t *len,
                                           uint32_t *dropped) LOWLAT_NOEXCEPT;
 
-/// Give a guest's report pad what the application's device was written: an
-/// output report (`LOWLAT_PAD_REPORT_OUTPUT`: motors, lights, a
-/// DualSense's trigger effects) or a feature write
-/// (`LOWLAT_PAD_REPORT_FEATURE`), in the pad's USB form, identifier byte
-/// first. The pair of `lowlat_host_poll_pad_report`; the guest frames it
-/// for its pad's own transport.
+/// Give a guest's report pad the output report the application's device was
+/// written (`LOWLAT_PAD_REPORT_OUTPUT`: motors, lights, a DualSense's
+/// trigger effects), in the pad's USB form, identifier byte first. The pair
+/// of `lowlat_host_poll_pad_report`; the guest frames it for its pad's own
+/// transport.
+///
+/// **A feature write is refused** (minor 33): it stays on the host
+/// (docs/05-host.md section 7.2). A pad's features carry its pairing, test
+/// commands and firmware update, none a game needs, and the guest would write
+/// them to its own controller.
 ///
 /// @param[in] hl The handle from `lowlat_host_create`.
 /// @param[in] guest The guest holding the pad.
 /// @param[in] pad The pad, as the guest named it.
-/// @param[in] kind `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+/// @param[in] kind `LOWLAT_PAD_REPORT_OUTPUT`.
 /// @param[in] report The report, identifier byte first.
 /// @param[in] len How many bytes, at most 64.
 /// @returns `LOWLAT_OK`, `LOWLAT_ERR_UNKNOWN_GUEST` when no such guest is
 /// connected, `LOWLAT_ERR_INVALID_ARGUMENT` for a kind that does not go this
-/// way or a report no pad takes, or `LOWLAT_ERR_NOT_STARTED`.
+/// way -- `LOWLAT_PAD_REPORT_FEATURE` among them -- or a report no pad takes,
+/// or `LOWLAT_ERR_NOT_STARTED`.
 ///
 /// @attention `report` points to at least `len` readable bytes.
 lowlat_status lowlat_host_send_pad_report(lowlat_host *hl,

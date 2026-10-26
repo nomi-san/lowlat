@@ -107,6 +107,31 @@ _ = Task.Run(async () =>
     }
 });
 
+#if WINDOWS
+// **The input switches, live**, which a session's checks move mid-session: `i`
+// the guests' keyboard and mouse, `p` the pads sent as their reports.
+Console.WriteLine("keys: i switches the keyboard and mouse, p the pads, on the input driver");
+_ = Task.Run(async () =>
+{
+    while (!cancel.IsCancellationRequested)
+    {
+        if (!Console.IsInputRedirected && Console.KeyAvailable)
+        {
+            switch (char.ToLowerInvariant(Console.ReadKey(intercept: true).KeyChar))
+            {
+                case 'i':
+                    host.Toggle(pads: false);
+                    break;
+                case 'p':
+                    host.Toggle(pads: true);
+                    break;
+            }
+        }
+        await Task.Delay(50, cancel.Token).ConfigureAwait(false);
+    }
+});
+#endif
+
 var backoff = new Backoff();
 while (!cancel.IsCancellationRequested)
 {

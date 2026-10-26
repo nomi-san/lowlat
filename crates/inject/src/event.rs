@@ -596,26 +596,31 @@ impl Injector {
     /// A pad's own report: to the sink for a pad that is, or becomes, a
     /// report pad. An established peer's ten-byte block names no product and
     /// creates nothing; a report for a sixteen-button pad is dropped, and so
-    /// is every report a sink has nowhere to put.
+    /// is a new pad's report the sink has nowhere to put.
+    ///
+    /// **The sink's answer fixes a new pad's family alone**: a pad already
+    /// sent as its reports keeps them whatever the sink answers now, since it
+    /// drops its states and would do nothing at all.
     fn pad_report(&mut self, message: &Control<'_>, out: &mut impl Sink) {
         let Some(inbound) = pad::parse_report(message) else {
             return;
         };
-        if matches!(inbound, Inbound::TouchBlock) || !out.takes_reports() {
+        if matches!(inbound, Inbound::TouchBlock) {
             return;
         }
-        let Some(index) = self.pad(message.a1, true, out) else {
-            return;
-        };
-        let raw = self
+        let known = self
             .pads
-            .get(index)
-            .and_then(|p| p.as_ref())
-            .is_some_and(|p| p.raw);
-        if !raw {
-            return;
+            .iter()
+            .flatten()
+            .find(|p| p.id == message.a1)
+            .map(|p| p.raw);
+        let raw = match known {
+            Some(raw) => raw,
+            None => out.takes_reports() && self.pad(message.a1, true, out).is_some(),
+        };
+        if raw {
+            out.report(message.a1, &inbound);
         }
-        out.report(message.a1, &inbound);
     }
 
     fn unplug(&mut self, id: u32, out: &mut impl Sink) {
@@ -2707,6 +2712,51 @@ mod tests {
     )]
     const fn as_u32(value: i32) -> u32 {
         value as u32
+    }
+
+    /// **A pad sent as its reports keeps them when the sink stops taking new
+    /// ones**: the sink's answer fixes a new pad's family alone, so a report
+    /// pad plugged before goes on, and one plugged after is made from its
+    /// states.
+    #[test]
+    fn a_report_pad_keeps_its_reports_when_the_sink_stops_taking_new_ones() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        let report = |pad: u32| Control {
+            a0: 64,
+            a1: pad,
+            a2: 0x0CE6,
+            opcode: op::PAD_REPORT,
+            body: ds5,
+        };
+        inject.on_control(&report(3), &mut out);
+        assert_eq!(out.reports, vec![(3, true)]);
+
+        out.refuses_reports = true;
+        inject.on_control(&report(3), &mut out);
+        assert_eq!(
+            out.reports,
+            vec![(3, true), (3, true)],
+            "the pad already sent as its reports went quiet"
+        );
+        inject.on_control(&report(4), &mut out);
+        assert_eq!(out.reports.len(), 2, "a new pad's report was taken");
+        let state = pad_state_body(gamepad::bit::A, 0, 0, 0, 0, 0, 0);
+        inject.on_control(
+            &Control {
+                a0: 4,
+                a1: 0,
+                a2: 0,
+                opcode: op::GAMEPAD_STATE,
+                body: &state,
+            },
+            &mut out,
+        );
+        assert_eq!(
+            out.distinct_devices(),
+            1,
+            "the new pad not made from its states"
+        );
     }
 
     /// **The first message that can create a pad fixes its family.** A report

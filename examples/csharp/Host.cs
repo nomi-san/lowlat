@@ -78,8 +78,10 @@ internal sealed class Host
                     Size = (uint)sizeof(HostInputConfig),
                     // **The batch input call**, which needs no driver; the
                     // host's own input driver is the machine's administrator's
-                    // to install.
+                    // to install. Pads as the Xbox pad, for the same reason.
+                    // Both switch live: `i` and `p` while it runs.
                     VirtualInput = false,
+                    VirtualPads = false,
                 },
 #endif
             };
@@ -214,6 +216,39 @@ internal sealed class Host
             return Native.lowlat_host_set_video_config(handle, &cfg);
         }
     }
+
+#if WINDOWS
+    /// Flip one of the input switches while the host runs, `pads` naming which,
+    /// and say what the host now has. **Both or neither** is the boundary's
+    /// rule: the other switch is sent as it stands.
+    public void Toggle(bool pads)
+    {
+        unsafe
+        {
+            var cfg = new HostInputConfig { Size = (uint)sizeof(HostInputConfig) };
+            if (Native.lowlat_host_get_input_config(handle, &cfg) != Status.Ok)
+            {
+                Console.WriteLine("input: not hosting");
+                return;
+            }
+            if (pads)
+            {
+                cfg.VirtualPads = !cfg.VirtualPads;
+            }
+            else
+            {
+                cfg.VirtualInput = !cfg.VirtualInput;
+            }
+            var set = Native.lowlat_host_set_input_config(handle, &cfg);
+            var back = new HostInputConfig { Size = (uint)sizeof(HostInputConfig) };
+            Native.lowlat_host_get_input_config(handle, &back);
+            Console.WriteLine(
+                $"input: {(set == Status.Ok ? "switched" : $"refused ({Text.Describe(set)})")}"
+                + $", keyboard and mouse on the driver={back.VirtualInput}"
+                + $", pads on the driver={back.VirtualPads}");
+        }
+    }
+#endif
 
     public HostStatus State()
     {

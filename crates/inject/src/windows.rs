@@ -26,10 +26,15 @@
 //! held goes through the batch input call, which raises no secure screen. **A
 //! position off the primary display goes through the batch input call** too:
 //! the mouse's absolute collection spans the primary alone.
+//!
+//! **Where the owner sets `virtual_pads`**, a DualShock 4 or a DualSense a
+//! guest sends as its own reports is presented as that product on the same
+//! driver, and what a program writes to it goes back to the guest; a pad whose
+//! device never comes, or goes, plays on the bus from its own reports.
 
-use lowlat_core::pad::Inbound;
-use lowlat_hid_proto::control::Features;
-use lowlat_hid_proto::{GUEST_SLOTS, Kind, keyboard, mouse};
+use lowlat_core::pad::{self, Feature, Inbound, Product};
+use lowlat_hid_proto::control::{self, Features, WrittenKind};
+use lowlat_hid_proto::{Kind, keyboard, mouse};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
     CM_Get_Device_Interface_ListW, CR_SUCCESS,
@@ -64,9 +69,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, XBUTTON1, XBUTTON2,
 };
 
+use crate::answers;
 use crate::event::{self, Device, Event, Locks, SCRATCH, Sink};
 use crate::gamepad::{self, MAX_PADS};
-use crate::handback::{Forward, Forwarding, PadWritten, Rumble};
+use crate::handback::{Forward, Forwarding, PadWritten, Rumble, WRITTEN_MAX, Written};
 use crate::hid;
 use crate::scancode::{MAKE_ONLY, PAUSE, SET1, SYSRQ};
 use crate::usage::{self, HidKey};
@@ -154,6 +160,17 @@ pub struct Devices {
     mouse: Option<HidMouse>,
     /// What the pointer was sent while that one could not deliver yet.
     mouse_held: Held,
+    /// The owner's setting: a pad sent as its reports is presented as its
+    /// product on the input driver while it is on.
+    virtual_pads: bool,
+    /// The driver gave a pad none, so the pads plugged after it are played
+    /// from their whole states, until the setting is asked again.
+    no_hid_pads: bool,
+    /// The pads sent as their reports, on the input driver or, where it gave
+    /// none, on the bus from their reports.
+    hid_pads: [Option<HidPad>; MAX_PADS],
+    /// The middle of every such pad's address: this guest's.
+    middle: [u8; 3],
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
     desktop: Option<Desktop>,
@@ -169,6 +186,8 @@ impl core::fmt::Debug for Devices {
             .field("virtual_input", &self.virtual_input)
             .field("hid", &self.hid)
             .field("mouse", &self.mouse)
+            .field("virtual_pads", &self.virtual_pads)
+            .field("hid_pads", &self.hid_pads.iter().flatten().count())
             .finish_non_exhaustive()
     }
 }
@@ -176,7 +195,7 @@ impl core::fmt::Debug for Devices {
 impl Devices {
     /// Make a guest's devices, on the guest's own thread: the thread made
     /// per-monitor aware and attached to the input desktop as it is now.
-    pub fn create(_guest: &str) -> Result<Self, Error> {
+    pub fn create(guest: &str) -> Result<Self, Error> {
         let aware = Aware::per_monitor();
         let desktop = Desktop::attach();
         if desktop.is_none() {
@@ -197,6 +216,10 @@ impl Devices {
             held: Held::default(),
             mouse: None,
             mouse_held: Held::default(),
+            virtual_pads: false,
+            no_hid_pads: false,
+            hid_pads: [const { None }; MAX_PADS],
+            middle: answers::middle(guest),
             refusing: false,
             desktop,
             _aware: aware,
@@ -391,7 +414,7 @@ impl Devices {
         };
         if !hid.ready {
             let after_ms = lowlat_common::clock::elapsed_ms(hid.made);
-            if hid::listed(Kind::Keyboard, hid.slot) {
+            if hid.device.listed() {
                 hid.ready = true;
                 lowlat_common::log_info!(
                     "inject: the input driver's keyboard delivers, slot={} after_ms={after_ms:.0}",
@@ -436,16 +459,16 @@ impl Devices {
     /// system lists it, or through the batch input call once it is past its
     /// time.
     fn tick_mouse(&mut self) {
-        let Some((slot, made)) = self
+        let Some((slot, made, listed)) = self
             .mouse
             .as_ref()
             .filter(|mouse| !mouse.ready)
-            .map(|mouse| (mouse.slot, mouse.made))
+            .map(|mouse| (mouse.slot, mouse.made, mouse.device.listed()))
         else {
             return;
         };
         let after_ms = lowlat_common::clock::elapsed_ms(made);
-        if hid::listed(Kind::Mouse, slot) {
+        if listed {
             if let Some(mouse) = self.mouse.as_mut() {
                 mouse.ready = true;
             }
@@ -466,6 +489,148 @@ impl Devices {
         }
     }
 
+    /// The owner's setting for the pads sent as their reports (docs/06-api.md
+    /// section 3): presented as their products on the input driver while it
+    /// is on. **A change reaches the pads plugged after it**: one already
+    /// plugged keeps the family its first message fixed.
+    pub fn set_virtual_pads(&mut self, on: bool) {
+        self.virtual_pads = on;
+        if on {
+            // The driver may give the next pad one where it gave the last none.
+            self.no_hid_pads = false;
+        }
+    }
+
+    /// The report pad for a peer's identifier, a slot taken if it is new;
+    /// none past the cap, or for a product other than the one its first
+    /// message fixed.
+    fn hid_pad(&mut self, id: u32, product: Product) -> Option<usize> {
+        if let Some(index) = self
+            .hid_pads
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.id == id))
+        {
+            let same = self
+                .hid_pads
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|p| p.product == product);
+            return same.then_some(index);
+        }
+        let index = self.hid_pads.iter().position(Option::is_none)?;
+        *self.hid_pads.get_mut(index)? = Some(HidPad::new(id, product));
+        Some(index)
+    }
+
+    /// A report pad's own report: a feature report kept for its device's
+    /// answers; an input report into its device -- made at the first, the
+    /// report held until the system lists it -- or onto the bus where it has
+    /// none.
+    fn pad_report(&mut self, id: u32, inbound: &Inbound<'_>) {
+        let (product, report) = match inbound {
+            Inbound::Feature {
+                product,
+                feature,
+                report,
+            } => {
+                if let Some(index) = self.hid_pad(id, *product)
+                    && let Some(pad) = self.hid_pads.get_mut(index).and_then(Option::as_mut)
+                {
+                    pad.features.set(*feature, report);
+                }
+                return;
+            }
+            Inbound::Input { product, report } => (*product, *report),
+            Inbound::TouchBlock => return,
+        };
+        let Some(index) = self.hid_pad(id, product) else {
+            return;
+        };
+        let address = answers::address(self.middle, index);
+        let Some(pad) = self.hid_pads.get_mut(index).and_then(Option::as_mut) else {
+            return;
+        };
+        if !pad.on_bus && pad.device.is_none() && !pad.make(address) {
+            // **The pads plugged after it are made from their states**, the
+            // driver having given this one none; this one plays on the bus
+            // from its reports.
+            pad.on_bus = true;
+            self.no_hid_pads = true;
+        }
+        let on_bus = if pad.on_bus {
+            true
+        } else if pad.ready {
+            !pad.put(&report)
+        } else {
+            pad.held = Some(report);
+            false
+        };
+        if on_bus {
+            self.play_on_bus(id, bus_report(product, &report));
+        }
+    }
+
+    /// A report pad's state onto the bus, as the sixteen-button pad its own
+    /// reports carry.
+    fn play_on_bus(&mut self, id: u32, report: gamepad::Report) {
+        let Some(index) = self.pad(id) else {
+            return;
+        };
+        if let (Some(slot), Some(bus)) = (self.pads.get_mut(index), self.bus.as_ref())
+            && let Some(pad) = slot.as_mut()
+        {
+            pad.report = report;
+            if pad.settle(bus) {
+                pad.submit(bus);
+            } else {
+                *slot = None;
+            }
+        }
+    }
+
+    /// The input driver's pads, each pass: the report held for a pad written
+    /// once the system lists its device, or the pad onto the bus once it is
+    /// past its time.
+    fn tick_pads(&mut self) {
+        for index in 0..self.hid_pads.len() {
+            let Some(pad) = self.hid_pads.get_mut(index).and_then(Option::as_mut) else {
+                continue;
+            };
+            if pad.ready || pad.on_bus {
+                continue;
+            }
+            let Some(listed) = pad.device.as_ref().map(hid::Device::listed) else {
+                continue;
+            };
+            let after_ms = lowlat_common::clock::elapsed_ms(pad.made);
+            let held = if listed {
+                pad.ready = true;
+                lowlat_common::log_info!(
+                    "inject: the input driver's pad delivers, pad={} slot={} after_ms={after_ms:.0}",
+                    pad.id,
+                    pad.slot
+                );
+                pad.held
+                    .take()
+                    .filter(|report| !pad.put(report))
+                    .map(|report| (pad.id, pad.product, report))
+            } else if after_ms >= DELIVERS_WITHIN_MS {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's pad never delivered, it plays on the bus from its reports, pad={} slot={} after_ms={after_ms:.0}",
+                    pad.id,
+                    pad.slot
+                );
+                pad.leave_for_the_bus();
+                pad.held.take().map(|report| (pad.id, pad.product, report))
+            } else {
+                None
+            };
+            if let Some((id, product, report)) = held {
+                self.play_on_bus(id, bus_report(product, &report));
+            }
+        }
+    }
+
     /// Hand every report pad's reports to `to` instead of playing the pad
     /// from its whole states, and tell it when the pad is gone: the
     /// application's device stands in (docs/05-host.md section 7.2). Set
@@ -474,9 +639,32 @@ impl Devices {
         self.forward = Some(Forwarding::new(to));
     }
 
-    /// Nothing: no pad here is presented as its own product, so nothing is
-    /// written to one.
+    /// What a program wrote to one of this guest's pads on the input driver,
+    /// since the last ask; polled as [`Self::rumble`] is, and for the same
+    /// reason. A pad whose device answers no more plays on the bus from its
+    /// next report.
     pub fn written(&mut self) -> Option<PadWritten> {
+        for pad in self.hid_pads.iter_mut().flatten() {
+            let Some(device) = pad.device.as_mut() else {
+                continue;
+            };
+            match device.written() {
+                Ok(Some(written)) => {
+                    return Some(PadWritten {
+                        pad: pad.id,
+                        written: handed_back(&written),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    lowlat_common::log_warn!(
+                        "inject: the input driver's pad is gone, it plays on the bus from its reports, pad={} error={error}",
+                        pad.id
+                    );
+                    pad.leave_for_the_bus();
+                }
+            }
+        }
         None
     }
 
@@ -484,10 +672,11 @@ impl Devices {
     ///
     /// **Called from the loop that already runs**, so a pad that arrived with
     /// one message and nothing after it is still put in once it can be. The
-    /// input driver's keyboard and mouse are followed here too.
+    /// input driver's keyboard, mouse and pads are followed here too.
     pub fn tick(&mut self) {
         self.tick_keyboard();
         self.tick_mouse();
+        self.tick_pads();
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
@@ -655,6 +844,19 @@ impl Sink for Devices {
             }
             lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
         }
+        // **Let go of off this thread**: a device's end waits while its
+        // neutral report arrives, which the guest's loop is not held up by.
+        if let Some(slot) = self
+            .hid_pads
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|p| p.id == pad))
+            && let Some(taken) = slot.take()
+        {
+            if let Some(device) = taken.device {
+                close_aside(device);
+            }
+            lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
+        }
         if self.forward.as_mut().is_some_and(|f| f.unplug(pad)) {
             lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
         }
@@ -663,14 +865,18 @@ impl Sink for Devices {
     fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
         if let Some(forward) = self.forward.as_mut() {
             forward.report(pad, inbound);
+            return;
         }
+        self.pad_report(pad, inbound);
     }
 
-    /// **Only to an application holding the device.** There is no device of
-    /// this host's own for a pad's own report, so without one the report is
-    /// not taken and the pad is played from its whole states.
+    /// **To an application holding the device, or to the input driver where
+    /// the owner has `virtual_pads` on** and the driver has not given a pad
+    /// none: otherwise a new pad's own report is not taken, and the pad is
+    /// played from its whole states. A pad already sent as its reports keeps
+    /// them whatever this says.
     fn takes_reports(&self) -> bool {
-        self.forward.is_some()
+        self.forward.is_some() || (self.virtual_pads && !self.no_hid_pads)
     }
 
     fn host_locks(&self) -> Option<Locks> {
@@ -1002,7 +1208,12 @@ impl HidKeyboard {
     /// A keyboard in the first slot the driver gives, or the reason it gives
     /// none, said.
     fn make() -> Option<Self> {
-        let (device, slot) = made(Kind::Keyboard, "keyboard", "keys go")?;
+        let (device, slot) = made(
+            Kind::Keyboard,
+            Features::new(),
+            "keyboard",
+            "keys go through the batch input call",
+        )?;
         Some(Self {
             device,
             slot,
@@ -1035,13 +1246,13 @@ impl HidKeyboard {
     }
 }
 
-/// A device of `kind` in the first slot the driver gives, with that slot, or
-/// the reason it gives none said: the device `named`, and what `goes` through
-/// the batch input call instead.
-fn made(kind: Kind, named: &str, goes: &str) -> Option<(hid::Device, u8)> {
+/// A device of `kind` answering `features` in the first slot the driver gives
+/// that kind, with that slot, or the reason it gives none said: the device
+/// `named`, and what happens `instead`.
+fn made(kind: Kind, features: Features, named: &str, instead: &str) -> Option<(hid::Device, u8)> {
     let mut why = hid::Error::Absent;
-    for slot in 0..u8::try_from(GUEST_SLOTS).unwrap_or(0) {
-        match hid::Device::create(kind, slot, Features::new()) {
+    for slot in 0..u8::try_from(kind.slots()).unwrap_or(0) {
+        match hid::Device::create(kind, slot, features) {
             Ok(device) => {
                 lowlat_common::log_info!("inject: the input driver's {named} made, slot={slot}");
                 return Some((device, slot));
@@ -1056,9 +1267,7 @@ fn made(kind: Kind, named: &str, goes: &str) -> Option<(hid::Device, u8)> {
             }
         }
     }
-    lowlat_common::log_warn!(
-        "inject: no {named} from the input driver, {goes} through the batch input call, error={why}"
-    );
+    lowlat_common::log_warn!("inject: no {named} from the input driver, {instead}, error={why}");
     None
 }
 
@@ -1254,7 +1463,12 @@ impl HidMouse {
     /// A mouse in the first slot the driver gives, or the reason it gives none,
     /// said.
     fn make() -> Option<Self> {
-        let (device, slot) = made(Kind::Mouse, "mouse", "the pointer goes")?;
+        let (device, slot) = made(
+            Kind::Mouse,
+            Features::new(),
+            "mouse",
+            "the pointer goes through the batch input call",
+        )?;
         Some(Self {
             device,
             slot,
@@ -1266,6 +1480,161 @@ impl HidMouse {
 
     fn close_aside(self) {
         close_aside(self.device);
+    }
+}
+
+/// A pad sent as its own reports, presented as its product on the host's own
+/// input driver (docs/11-drivers.md section 2.3).
+///
+/// **Played on the bus from its own reports where its device never comes, or
+/// goes**: its first report fixed it as a pad that drops the sixteen-button
+/// states sent beside the reports, so otherwise it would do nothing at all.
+#[derive(Debug)]
+struct HidPad {
+    /// The peer's identifier for it.
+    id: u32,
+    product: Product,
+    /// What the peer sent ahead of its first input report, for its device's
+    /// answers.
+    features: answers::Features,
+    /// From the first input report until it goes.
+    device: Option<hid::Device>,
+    /// The driver's slot for it.
+    slot: u8,
+    /// Whether the system lists it, from when what is written reaches the
+    /// system.
+    ready: bool,
+    made: lowlat_common::clock::Time,
+    /// The latest report while the device cannot deliver yet: each report is
+    /// the whole pad, so the last is all that is owed.
+    held: Option<[u8; pad::INPUT_LEN]>,
+    /// Played on the bus from its reports.
+    on_bus: bool,
+}
+
+impl HidPad {
+    fn new(id: u32, product: Product) -> Self {
+        Self {
+            id,
+            product,
+            features: answers::Features::new(),
+            device: None,
+            slot: 0,
+            ready: false,
+            made: lowlat_common::clock::Time::now(),
+            held: None,
+            on_bus: false,
+        }
+    }
+
+    /// The device, in the first slot the driver gives its kind, answering the
+    /// table its peer's answers and its address make; false where the driver
+    /// gives none, said.
+    fn make(&mut self, address: [u8; 6]) -> bool {
+        let Some(kind) = kind_of(self.product) else {
+            return false;
+        };
+        let table = table(self.product, &self.features, &address);
+        let Some((device, slot)) = made(kind, table, "pad", "it plays on the bus") else {
+            return false;
+        };
+        self.device = Some(device);
+        self.slot = slot;
+        self.made = lowlat_common::clock::Time::now();
+        true
+    }
+
+    /// One report into the device; false where it refuses, the device then
+    /// let go and the pad on the bus.
+    fn put(&mut self, report: &[u8; pad::INPUT_LEN]) -> bool {
+        let Some(device) = self.device.as_mut() else {
+            return false;
+        };
+        match device.write(report) {
+            Ok(()) => true,
+            Err(error) => {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's pad is gone, it plays on the bus from its reports, pad={} error={error}",
+                    self.id
+                );
+                self.leave_for_the_bus();
+                false
+            }
+        }
+    }
+
+    /// Let the device go, off this thread, and play the pad on the bus.
+    fn leave_for_the_bus(&mut self) {
+        if let Some(device) = self.device.take() {
+            close_aside(device);
+        }
+        self.on_bus = true;
+    }
+}
+
+/// The input driver's kind for a product.
+fn kind_of(product: Product) -> Option<Kind> {
+    match product {
+        Product::DualShock4 => Some(Kind::DualShock4),
+        Product::DualSense => Some(Kind::DualSense),
+        _ => None,
+    }
+}
+
+/// What a pad's device answers the system's questions with: its calibration
+/// and firmware -- the peer's, else a real pad's -- and its pairing around
+/// this host's address for it, each identifier byte first, as the Linux host
+/// answers each question as it is asked.
+fn table(product: Product, features: &answers::Features, address: &[u8; 6]) -> Features {
+    let mut table = Features::new();
+    let mut out = [0u8; pad::FEATURE_MAX];
+    for id in [
+        Feature::Calibration.id(product),
+        Feature::Firmware.id(product),
+        answers::pairing_id(product),
+    ] {
+        if let Some(len) = features.answer(product, id, address, &mut out)
+            && let Some(report) = out.get(..len)
+        {
+            // Three reports, fewer than a table holds and each within its
+            // room, which the tests check.
+            let _ = table.set(report);
+        }
+    }
+    table
+}
+
+/// The bus pad's report for what a pad's own report says: the sixteen-button
+/// state it carries, but for the touchpad's click, which the bus pad has no
+/// button for.
+fn bus_report(product: Product, report: &[u8; pad::INPUT_LEN]) -> gamepad::Report {
+    let state = pad::state(product, report);
+    gamepad::Report {
+        buttons: state.buttons & !gamepad::bit::TOUCHPAD,
+        lx: state.lx,
+        ly: state.ly,
+        rx: state.rx,
+        ry: state.ry,
+        left_trigger: state.lt,
+        right_trigger: state.rt,
+    }
+}
+
+/// What the driver says a program wrote, as the guest's loop hands it back.
+fn handed_back(written: &control::Written) -> Written {
+    let bytes = written.report();
+    let mut report = [0u8; WRITTEN_MAX];
+    let len = bytes.len().min(report.len());
+    if let (Some(dst), Some(src)) = (report.get_mut(..len), bytes.get(..len)) {
+        dst.copy_from_slice(src);
+    }
+    Written {
+        kind: match written.kind {
+            WrittenKind::Output => pad::OutputKind::Output,
+            WrittenKind::Feature => pad::OutputKind::Feature,
+        },
+        len,
+        report,
     }
 }
 
@@ -2546,6 +2915,118 @@ mod tests {
 /// cargo test -p lowlat-inject -- --ignored --test-threads 1
 /// ```
 #[cfg(test)]
+mod pad_tests {
+    use super::*;
+    use lowlat_hid_proto::control::Create;
+
+    const DS4_HELD: &[u8; pad::INPUT_LEN] =
+        include_bytes!("../../core/tests/data/pad/ds4/input-held.bin");
+    const DS5_HELD: &[u8; pad::INPUT_LEN] =
+        include_bytes!("../../core/tests/data/pad/ds5/input-held.bin");
+
+    /// **A report pad played on the bus is the state its report carries**:
+    /// the cross its report holds is the bus pad's A, the sticks and triggers
+    /// where the report has them, and the touchpad's click, which the bus pad
+    /// has no button for, left out.
+    #[test]
+    fn a_report_pad_on_the_bus_plays_its_reports_state() {
+        for (product, held) in [
+            (Product::DualShock4, DS4_HELD),
+            (Product::DualSense, DS5_HELD),
+        ] {
+            let state = pad::state(product, held);
+            let bus = bus_report(product, held);
+            assert_ne!(
+                bus.buttons & gamepad::bit::A,
+                0,
+                "{product:?}: the cross held"
+            );
+            assert_eq!(bus.buttons, state.buttons, "{product:?}");
+            assert_eq!(
+                (bus.lx, bus.ly, bus.rx, bus.ry),
+                (state.lx, state.ly, state.rx, state.ry),
+                "{product:?}"
+            );
+            assert_eq!(
+                (bus.left_trigger, bus.right_trigger),
+                (state.lt, state.rt),
+                "{product:?}"
+            );
+        }
+        // The DualSense's third button byte, the touchpad's click its second
+        // bit.
+        let mut clicked = *DS5_HELD;
+        clicked[10] |= 0x02;
+        assert_ne!(
+            pad::state(Product::DualSense, &clicked).buttons & gamepad::bit::TOUCHPAD,
+            0
+        );
+        let bus = bus_report(Product::DualSense, &clicked);
+        assert_eq!(
+            bus.buttons & gamepad::bit::TOUCHPAD,
+            0,
+            "the touchpad's click on the bus"
+        );
+        assert_ne!(bus.buttons & gamepad::bit::A, 0);
+    }
+
+    /// **A report pad's table is the answers the Linux host gives**: its
+    /// calibration and firmware -- the peer's where it sent them, else a
+    /// real pad's -- and its pairing around this host's address, three
+    /// reports the create carries whole.
+    #[test]
+    fn a_pads_table_is_the_answers_the_linux_host_gives() {
+        let address = answers::address(answers::middle("7"), 2);
+        for product in [Product::DualShock4, Product::DualSense] {
+            let mut sent = answers::Features::new();
+            let mut calibration = answers::canned(product, Feature::Calibration).to_vec();
+            calibration[1] ^= 0xFF;
+            sent.set(Feature::Calibration, &calibration);
+            for features in [answers::Features::new(), sent] {
+                let table = table(product, &features, &address);
+                assert_eq!(table.len(), 3, "{product:?}");
+                for id in [
+                    Feature::Calibration.id(product),
+                    Feature::Firmware.id(product),
+                    answers::pairing_id(product),
+                ] {
+                    let mut out = [0u8; pad::FEATURE_MAX];
+                    let len = features.answer(product, id, &address, &mut out).unwrap();
+                    assert_eq!(table.get(id), Some(&out[..len]), "{product:?} {id:#x}");
+                }
+                let kind = kind_of(product).unwrap();
+                let mut request = [0u8; Create::LEN];
+                Create {
+                    kind,
+                    slot: 9,
+                    features: table,
+                }
+                .encode(&mut request)
+                .unwrap();
+                assert_eq!(Create::decode(&request).unwrap().features, table);
+            }
+            assert_eq!(
+                table(product, &sent, &address).get(Feature::Calibration.id(product)),
+                Some(&calibration[..]),
+                "{product:?}: the peer's own calibration"
+            );
+        }
+    }
+
+    /// **What the driver says a program wrote goes to the loop as it came**:
+    /// its kind, its length and its bytes.
+    #[test]
+    fn a_write_is_handed_back_as_it_came() {
+        let report = [0x02, 0x03, 0x14, 0xFF];
+        let output = handed_back(&control::Written::new(WrittenKind::Output, &report).unwrap());
+        assert_eq!(output.kind, pad::OutputKind::Output);
+        assert_eq!(&output.report[..output.len], &report);
+        let feature = handed_back(&control::Written::new(WrittenKind::Feature, &report).unwrap());
+        assert_eq!(feature.kind, pad::OutputKind::Feature);
+    }
+}
+
+#[cfg(test)]
 mod bus_tests {
     use super::*;
     use crate::event::{Extents, Injector};
@@ -2833,6 +3314,10 @@ mod hid_tests {
     /// move goes through the relative one, the mouse kept throughout; switched
     /// off, the mouse goes. No button is pressed: a click would land on the
     /// desk.
+    ///
+    /// Run after the keyboard check, as a run orders them, its mouse is made
+    /// while raw input may still list that check's in the same slot: held
+    /// until the system lists it under a handle of its own.
     #[test]
     #[ignore = "moves the desk's pointer through the input driver"]
     fn a_guests_pointer_goes_to_the_drivers_mouse() {
@@ -2868,6 +3353,7 @@ mod hid_tests {
             .as_ref()
             .expect("a mouse from the driver")
             .slot;
+        let stale = hid::listed(Kind::Mouse, slot);
         let ready = until(&mut devices, Duration::from_secs(10), "listed", |d| {
             d.mouse.as_ref().is_some_and(|mouse| mouse.ready)
         });
@@ -2896,8 +3382,200 @@ mod hid_tests {
         });
         drop(devices);
         println!(
-            "primary {width}x{height}: listed after {ready:?}, positions landed after \
-             {landed:?}, moved from {before:?}; unlisted {gone:?} after the switch"
+            "primary {width}x{height}: the slot listed as the mouse was made: {stale}; \
+             listed after {ready:?}, positions landed after {landed:?}, moved from {before:?}; \
+             unlisted {gone:?} after the switch"
+        );
+    }
+
+    /// A game's handle on a pad, closed however the check ends: one left open
+    /// holds the removed pad's node until the process goes.
+    struct Game(HANDLE);
+
+    impl Drop for Game {
+        fn drop(&mut self) {
+            // SAFETY: the handle this owns, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// The input driver's pad of `product`, as a game finds it: the HID
+    /// interface of Sony's identity whose path names the framework, opened
+    /// for reading and writing beside every other user.
+    fn drivers_pad(product: u16) -> Option<Game> {
+        use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+            GUID_DEVINTERFACE_HID, HIDD_ATTRIBUTES, HidD_GetAttributes,
+        };
+        let class = GUID_DEVINTERFACE_HID;
+        let mut len = 0u32;
+        // SAFETY: live outputs; no device filter.
+        unsafe {
+            CM_Get_Device_Interface_List_SizeW(
+                &raw mut len,
+                &raw const class,
+                core::ptr::null(),
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        };
+        let mut list = vec![0u16; usize::try_from(len).ok()? + 1];
+        // SAFETY: a buffer of the length given.
+        let cr = unsafe {
+            CM_Get_Device_Interface_ListW(
+                &raw const class,
+                core::ptr::null(),
+                list.as_mut_ptr(),
+                u32::try_from(list.len()).ok()?,
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        };
+        assert_eq!(cr, CR_SUCCESS);
+        for path in list.split(|unit| *unit == 0).filter(|p| !p.is_empty()) {
+            let name = String::from_utf16_lossy(path).to_uppercase();
+            if !name.contains("HID_DEVICE_SYSTEM_VHF") {
+                continue;
+            }
+            let path: Vec<u16> = path.iter().copied().chain(Some(0)).collect();
+            // SAFETY: a terminated path.
+            let handle = unsafe {
+                CreateFileW(
+                    path.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    core::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    core::ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            let mut attributes = HIDD_ATTRIBUTES {
+                Size: u32::try_from(size_of::<HIDD_ATTRIBUTES>()).unwrap(),
+                VendorID: 0,
+                ProductID: 0,
+                VersionNumber: 0,
+            };
+            // SAFETY: the handle just opened and a sized structure.
+            let ours = unsafe { HidD_GetAttributes(handle, &raw mut attributes) }
+                && attributes.VendorID == pad::Product::VENDOR_ID
+                && attributes.ProductID == product;
+            if ours {
+                return Some(Game(handle));
+            }
+            // SAFETY: the handle just opened, closed once.
+            unsafe { CloseHandle(handle) };
+        }
+        None
+    }
+
+    /// **A guest's DualSense goes to the input driver's pad while the owner
+    /// has the setting on, and what a game writes comes back**: made at its
+    /// first report, held until the system lists it, then the report a game
+    /// reads; an output report a game writes -- to the interrupt pipe, as games
+    /// write one -- handed back for the guest; the pad gone at its unplug.
+    #[test]
+    #[ignore = "makes a DualSense on the input driver"]
+    fn a_guests_dualsense_goes_to_the_drivers_pad_and_its_writes_come_back() {
+        use windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_GetInputReport;
+        use windows_sys::Win32::Storage::FileSystem::WriteFile;
+        const HELD: &[u8; pad::INPUT_LEN] =
+            include_bytes!("../../core/tests/data/pad/ds5/input-held.bin");
+        let mut devices = Devices::create("hid-pad-test").unwrap();
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
+        devices.set_virtual_pads(true);
+        assert!(devices.takes_reports(), "the setting on, the reports taken");
+        let report = Control {
+            a0: 64,
+            a1: 7,
+            a2: u32::from(pad::Product::DualSense.product_id()),
+            opcode: op::PAD_REPORT,
+            body: HELD,
+        };
+        inject.on_control(&report, &mut devices);
+        let slot = devices
+            .hid_pads
+            .iter()
+            .flatten()
+            .next()
+            .expect("a pad from the driver")
+            .slot;
+        let ready = until(&mut devices, Duration::from_secs(10), "listed", |d| {
+            d.hid_pads.iter().flatten().any(|pad| pad.ready)
+        });
+
+        let game =
+            drivers_pad(pad::Product::DualSense.product_id()).expect("the pad as a game finds it");
+        let game_handle = game.0;
+        let mut read = [0u8; pad::INPUT_LEN];
+        read[0] = pad::USB_INPUT_ID;
+        // SAFETY: the game's handle and a buffer of its length.
+        let got = unsafe {
+            HidD_GetInputReport(
+                game_handle,
+                read.as_mut_ptr().cast(),
+                u32::try_from(read.len()).unwrap(),
+            )
+        };
+        assert!(got, "the pad's input report not read");
+        assert_eq!(&read, HELD, "the report a game reads is not the guest's");
+
+        let mut lights = [0u8; pad::DS5_OUTPUT_MIN_LEN];
+        lights[0] = pad::DS5_OUTPUT_ID;
+        lights[2] = 0x04;
+        lights[45..48].copy_from_slice(&[0x00, 0xFF, 0x40]);
+        let mut moved = 0u32;
+        // SAFETY: the game's handle, opened for synchronous requests, and a
+        // buffer of its length.
+        let wrote = unsafe {
+            WriteFile(
+                game_handle,
+                lights.as_ptr(),
+                u32::try_from(lights.len()).unwrap(),
+                &raw mut moved,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(
+            wrote != 0,
+            "the game's output report refused, error={}",
+            last_error()
+        );
+        // Another program on the machine may write to a pad as it appears --
+        // its own lightbar -- so the game's report is looked for among them.
+        let mut back = None;
+        let came = until(&mut devices, Duration::from_secs(2), "handed back", |d| {
+            while back.is_none()
+                && let Some(written) = d.written()
+            {
+                if written.written.report.get(..written.written.len) == Some(&lights[..]) {
+                    back = Some(written);
+                }
+            }
+            back.is_some()
+        });
+        let back = back.unwrap();
+        assert_eq!(back.pad, 7);
+        assert_eq!(back.written.kind, pad::OutputKind::Output);
+        drop(game);
+
+        inject.on_control(
+            &Control {
+                a0: 0,
+                a1: 0,
+                a2: 7,
+                opcode: op::GAMEPAD_UNPLUG,
+                body: &[],
+            },
+            &mut devices,
+        );
+        let gone = until(&mut devices, Duration::from_secs(5), "unlisted", |_| {
+            !hid::listed(Kind::DualSense, slot)
+        });
+        drop(devices);
+        println!(
+            "listed after {ready:?}; a game's output report handed back {came:?} after; \
+             unlisted {gone:?} after the unplug"
         );
     }
 }

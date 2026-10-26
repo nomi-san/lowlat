@@ -318,6 +318,10 @@ pub struct Device {
     held: Box<Held>,
     notification: HCMNOTIFICATION,
     kind: Kind,
+    slot: u8,
+    /// Raw input's handles in the device's container before it was asked for:
+    /// the previous device of its slot's, never its own.
+    before: Vec<usize>,
     event: OwnedHandle,
     /// Freed at the end only once the system writes it no more.
     read: ManuallyDrop<Box<Read>>,
@@ -339,6 +343,7 @@ impl Device {
     /// kind's own -- a pad's peer's calibration and firmware, the pairing the
     /// host made up for it.
     pub fn create(kind: Kind, slot: u8, features: Features) -> Result<Self, Error> {
+        let before = handles(kind, slot);
         let handle = open()?;
         let target = handle.as_raw_handle();
         let read_event = event()?;
@@ -346,6 +351,8 @@ impl Device {
             held: Box::new(Held(Mutex::new(Some(handle)))),
             notification: core::ptr::null_mut(),
             kind,
+            slot,
+            before,
             event: event()?,
             read: ManuallyDrop::new(Box::new(Read {
                 overlapped: overlapped(&read_event),
@@ -403,6 +410,23 @@ impl Device {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// Whether the system's raw input lists this device: what is written to
+    /// it reaches the system from then on, and every report written before is
+    /// lost (docs/11-drivers.md section 2.4).
+    ///
+    /// **Every collection, under a handle of its own**: a mouse's absolute
+    /// collection is listed after its relative one, and a position written
+    /// between is lost; the previous device of its slot had its name and
+    /// container, and raw input can go on listing that one for up to a second
+    /// after it has gone.
+    pub fn listed(&self) -> bool {
+        let mut own = 0;
+        lists(self.kind, self.slot, |handle| {
+            own += usize::from(!self.before.contains(&handle));
+            own == collections(self.kind)
+        })
     }
 
     /// One control request, waited for.
@@ -542,10 +566,37 @@ impl Drop for Device {
 /// this driver's.
 const LISTED_MAX: usize = 256;
 
-/// Whether the system's raw input lists `kind`'s device in `slot`: what is
-/// written to a device reaches the system from then on, and every report
-/// written before is lost (docs/11-drivers.md section 2.4).
+/// Whether the system's raw input lists a device in `kind`'s and `slot`'s
+/// container: the one there now, or the one before it, which raw input can go
+/// on listing for up to a second after it has gone. [`Device::listed`] tells
+/// a device's own.
 pub fn listed(kind: Kind, slot: u8) -> bool {
+    lists(kind, slot, |_| true)
+}
+
+/// How many of a device's collections raw input lists as its kind's type: a
+/// mouse's relative and absolute ones, one of every other kind's.
+fn collections(kind: Kind) -> usize {
+    match kind {
+        Kind::Mouse => 2,
+        Kind::Keyboard | Kind::DualShock4 | Kind::DualSense => 1,
+    }
+}
+
+/// Raw input's handles in `kind`'s and `slot`'s container.
+fn handles(kind: Kind, slot: u8) -> Vec<usize> {
+    let mut handles = Vec::new();
+    lists(kind, slot, |handle| {
+        handles.push(handle);
+        false
+    });
+    handles
+}
+
+/// Whether raw input lists, in `kind`'s and `slot`'s container, a device of
+/// the kind's type under a handle that `counts`; asked of each one it finds
+/// until one does.
+fn lists(kind: Kind, slot: u8, mut counts: impl FnMut(usize) -> bool) -> bool {
     let wanted = match kind {
         Kind::Keyboard => RIM_TYPEKEYBOARD,
         Kind::Mouse => RIM_TYPEMOUSE,
@@ -575,6 +626,7 @@ pub fn listed(kind: Kind, slot: u8) -> bool {
     listed.unwrap_or_default().iter().any(|device| {
         device.dwType == wanted
             && container_of(device.hDevice).is_some_and(|c| same(&c, &container))
+            && counts(device.hDevice.addr())
     })
 }
 
@@ -1018,6 +1070,182 @@ mod tests {
             ours(Kind::Keyboard, 11).is_empty()
         });
         assert!(gone.is_some(), "the killed host's keyboard still listed");
+    }
+
+    /// A game's handle on a device's HID interface, closed however the check
+    /// ends: one left open holds the removed device's node until the process
+    /// goes.
+    struct Game(HANDLE);
+
+    impl Drop for Game {
+        fn drop(&mut self) {
+            // SAFETY: the handle this owns, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A device's HID interface as a game opens it -- for reading and writing,
+    /// beside every other user -- found by the container of `kind`'s device in
+    /// `slot`.
+    fn as_a_game_finds(kind: Kind, slot: u8) -> Option<Game> {
+        use windows_sys::Win32::Devices::HumanInterfaceDevice::GUID_DEVINTERFACE_HID;
+        let class = GUID_DEVINTERFACE_HID;
+        let mut len = 0u32;
+        // SAFETY: live outputs; no device filter.
+        unsafe {
+            CM_Get_Device_Interface_List_SizeW(
+                &raw mut len,
+                &raw const class,
+                core::ptr::null(),
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        };
+        let mut list = vec![0u16; usize::try_from(len).ok()? + 1];
+        // SAFETY: a buffer of the length given.
+        unsafe {
+            CM_Get_Device_Interface_ListW(
+                &raw const class,
+                core::ptr::null(),
+                list.as_mut_ptr(),
+                u32::try_from(list.len()).ok()?,
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        };
+        let wanted = container(kind, slot);
+        for path in list.split(|unit| *unit == 0).filter(|p| !p.is_empty()) {
+            // `\\?\HID#a#b#{class}`: the instance between the prefix and the
+            // class, a `#` for each `\`.
+            let text = String::from_utf16_lossy(path);
+            let Some(inner) = text
+                .get(4..)
+                .and_then(|t| t.rsplit_once('#'))
+                .map(|(i, _)| i)
+            else {
+                continue;
+            };
+            let instance = inner.replace('#', "\\");
+            let held = node(&instance)
+                .and_then(|node| strings(node, CM_DRP_BASE_CONTAINERID).into_iter().next());
+            if held.as_deref() != Some(wanted.as_str()) {
+                continue;
+            }
+            let path: Vec<u16> = path.iter().copied().chain(Some(0)).collect();
+            // SAFETY: a terminated path.
+            let handle = unsafe {
+                CreateFileW(
+                    path.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    core::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    core::ptr::null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                return Some(Game(handle));
+            }
+        }
+        None
+    }
+
+    /// **A pad's feature write is answered and handed to no one; its output
+    /// report comes back**: what a game writes to a DualSense's calibration
+    /// succeeds, leaves the answer as it was and reaches no read of the
+    /// host's, where the output report the game writes next -- as a game writes
+    /// one, to the device's interrupt pipe -- reaches one. An input driver older
+    /// than this tree's hands the feature write back. Said, not checked: what
+    /// the framework answers an output report sent as a set-report instead.
+    #[test]
+    #[ignore = "needs this tree's input driver installed and an elevated shell"]
+    fn a_pads_feature_write_reaches_no_one_and_its_output_report_comes_back() {
+        use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+            HidD_GetFeature, HidD_SetFeature, HidD_SetOutputReport,
+        };
+        let mut pad = Device::create(Kind::DualSense, 62, Features::new()).unwrap();
+        pad.write(pad::DS5_NEUTRAL).unwrap();
+        let started = Instant::now();
+        while !pad.listed() {
+            assert!(started.elapsed() < Duration::from_secs(10), "never listed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let game = as_a_game_finds(Kind::DualSense, 62).expect("the pad as a game finds it");
+        let game_handle = game.0;
+        let calibration = Kind::DualSense
+            .features()
+            .iter()
+            .find(|report| report.first() == Some(&0x05))
+            .copied()
+            .unwrap();
+
+        let mut write = [0u8; 64];
+        write[0] = 0x05;
+        write[1..41].fill(0xEE);
+        // SAFETY: the game's handle and a buffer of its length.
+        let taken = unsafe { HidD_SetFeature(game_handle, write.as_mut_ptr().cast(), 64) };
+        assert!(taken, "the game's feature write refused");
+        let mut read = [0u8; 64];
+        read[0] = 0x05;
+        // SAFETY: the game's handle and a buffer of its length.
+        let answered = unsafe { HidD_GetFeature(game_handle, read.as_mut_ptr().cast(), 64) };
+        assert!(answered, "the calibration not answered");
+        assert_eq!(
+            &read[..calibration.len()],
+            calibration,
+            "the feature write kept as the answer"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            pad.written(),
+            Ok(None),
+            "the feature write handed to the host"
+        );
+
+        let mut lights = [0u8; 48];
+        lights[0] = 0x02;
+        lights[2] = 0x04;
+        lights[45..48].copy_from_slice(&[0x00, 0xFF, 0x40]);
+        // SAFETY: the game's handle and a buffer of its length.
+        let set = unsafe { HidD_SetOutputReport(game_handle, lights.as_mut_ptr().cast(), 48) };
+        println!(
+            "an output report sent as a set-report: taken={set} error={}",
+            if set { 0 } else { last_error() }
+        );
+        while pad.written().unwrap().is_some() {}
+        let mut moved = 0u32;
+        // SAFETY: the game's handle, opened for synchronous requests, and a
+        // buffer of its length.
+        let wrote = unsafe {
+            WriteFile(
+                game_handle,
+                lights.as_ptr(),
+                48,
+                &raw mut moved,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(
+            wrote != 0,
+            "the game's output report refused, error={}",
+            last_error()
+        );
+        // Another program on the machine may write to a pad as it appears --
+        // its own lightbar -- so the game's report is looked for among them.
+        let started = Instant::now();
+        let back = loop {
+            if let Some(written) = pad.written().unwrap()
+                && written.report() == lights
+            {
+                break written;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the output report never came back"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(back.kind, lowlat_hid_proto::control::WrittenKind::Output);
+        drop(game);
     }
 
     /// **A kind and slot is one device at a time**: a second handle asking

@@ -242,7 +242,22 @@ pub struct lowlat_host_input_config {
     /// mouse's positions span the primary alone; its buttons, wheels and motion
     /// stay on the mouse.
     pub virtual_input: bool,
-    pub reserved: [u8; 3],
+    /// Whether a DualShock 4 or a DualSense a guest sends as its own reports is
+    /// presented as that product on the host's own input driver, its touchpad,
+    /// motion, lights and trigger effects with it, rather than played as the
+    /// Xbox pad from its whole states (minor 33). **Default: off**, zero
+    /// included: a pad on the input driver never reaches a game that reads only
+    /// the Xbox pad's interface.
+    ///
+    /// Switching it on where the driver is not installed, or does not admit
+    /// this process, is refused and changes nothing, as `virtual_input` is; a
+    /// start asking for it there is not refused for it, says why once, and
+    /// reads back off. **A change reaches the pads plugged after it**: one
+    /// already plugged keeps what its first report made it. A pad whose device
+    /// never comes, or goes, plays on as the Xbox pad from its own reports. A
+    /// library of an earlier minor ignores this byte and reads it back zero.
+    pub virtual_pads: bool,
+    pub reserved: [u8; 2],
 }
 
 /// Where a report pad's reports go: which side holds the virtual device for
@@ -256,9 +271,10 @@ pub enum lowlat_pad_sink {
     /// to the guest by itself. **The default.**
     LOWLAT_PAD_SINK_DEVICE = 0,
     /// The application holds the device: it takes the reports from
-    /// [`lowlat_host_poll_pad_report`] and gives back what its device is
-    /// written with [`lowlat_host_send_pad_report`]. The permission gate,
-    /// the per-guest cap and the unplug rule apply as they do above.
+    /// [`lowlat_host_poll_pad_report`] and gives back the output reports its
+    /// device is written with [`lowlat_host_send_pad_report`]; a feature write
+    /// stays on the host (minor 33). The permission gate, the per-guest cap
+    /// and the unplug rule apply as they do above.
     LOWLAT_PAD_SINK_APP = 1,
 }
 
@@ -432,7 +448,8 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_input_config>())
                 .unwrap_or(u32::MAX),
             virtual_input: false,
-            reserved: [0; 3],
+            virtual_pads: false,
+            reserved: [0; 2],
         },
     }
 }
@@ -844,11 +861,11 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
 /// devices it asks for is answered by the host, which alone can ask the
 /// driver.
 #[cfg(windows)]
-fn input_configured(cfg: &lowlat_host_input_config) -> Option<bool> {
+fn input_configured(cfg: &lowlat_host_input_config) -> Option<(bool, bool)> {
     if (cfg.size as usize) < core::mem::size_of::<lowlat_host_input_config>() {
         return None;
     }
-    Some(cfg.virtual_input)
+    Some((cfg.virtual_input, cfg.virtual_pads))
 }
 
 /// The input driver's refusal, as an application reads it.
@@ -1023,6 +1040,14 @@ pub unsafe extern "C" fn lowlat_host_start(
             {
                 lowlat_common::log_warn!(
                     "abi: the guests' keys on the input driver refused at start, keys go through the batch input call, error={error}"
+                );
+            }
+            #[cfg(windows)]
+            if cfg.input.virtual_pads
+                && let Err(error) = seam.set_virtual_pads(true)
+            {
+                lowlat_common::log_warn!(
+                    "abi: the guests' pads on the input driver refused at start, they play as the Xbox pad, error={error}"
                 );
             }
             #[cfg(not(windows))]
@@ -2233,12 +2258,13 @@ pub unsafe extern "C" fn lowlat_host_get_audio_config(
 }
 
 /// Change how the guests' input reaches the system, while a host runs
-/// (minor 32; Windows alone).
+/// (minor 32; Windows alone; `virtual_pads` from minor 33).
 ///
-/// **Switching `virtual_input` on asks the host's input driver first**, and is
-/// refused where it is not installed or does not admit this process, the
-/// guests keeping the batch input call. Each seated guest moves on its next
-/// pass, what it holds on the old way released first.
+/// **Switching `virtual_input` or `virtual_pads` on asks the host's input
+/// driver first**, and is refused where it is not installed or does not admit
+/// this process, nothing changed: both fields are taken or neither. Each
+/// seated guest moves its keys and pointer on its next pass, what it holds on
+/// the old way released first; the pads plugged after a change follow it.
 ///
 /// @param[in] hl The handle from [`lowlat_host_create`].
 /// @param[in] cfg One [`lowlat_host_input_config`] whose `size` says how much of it is
@@ -2263,18 +2289,18 @@ pub unsafe extern "C" fn lowlat_host_set_input_config(
             let Some(cfg) = cfg.as_ref() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            let Some(virtual_input) = input_configured(cfg) else {
+            let Some((virtual_input, virtual_pads)) = input_configured(cfg) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
             let mut held = handle.held();
             let Some(seam) = held.seam.as_mut() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            match seam.set_virtual_input(virtual_input) {
+            match seam.set_input(virtual_input, virtual_pads) {
                 Ok(()) => LOWLAT_OK,
                 Err(error) => {
                     lowlat_common::log_warn!(
-                        "abi: the guests' keys on the input driver refused, unchanged, error={error}"
+                        "abi: the guests' input on the input driver refused, unchanged, error={error}"
                     );
                     input_refused(error)
                 }
@@ -2283,10 +2309,11 @@ pub unsafe extern "C" fn lowlat_host_set_input_config(
     }
 }
 
-/// How the guests' input reaches the system now (minor 32; Windows alone).
+/// How the guests' input reaches the system now (minor 32; Windows alone;
+/// `virtual_pads` from minor 33).
 ///
-/// **The settings and not the state**: `virtual_input` is what was last
-/// switched, which a driver lost since does not change.
+/// **The settings and not the state**: each switch is what was last asked,
+/// which a driver lost since does not change.
 ///
 /// @param[in] hl The handle from [`lowlat_host_create`].
 /// @param[out] out One [`lowlat_host_input_config`] whose `size` says how much of it is
@@ -2317,7 +2344,8 @@ pub unsafe extern "C" fn lowlat_host_get_input_config(
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
             slot.virtual_input = seam.virtual_input();
-            slot.reserved = [0; 3];
+            slot.virtual_pads = seam.virtual_pads();
+            slot.reserved = [0; 2];
             LOWLAT_OK
         })
     }
@@ -2532,8 +2560,9 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
 /// first input report ([`LOWLAT_PAD_REPORT_INPUT`], 64 bytes), which is
 /// when the application creates its device; [`LOWLAT_PAD_REPORT_UNPLUG`],
 /// with no report, comes after the pad's last one -- on the guest's unplug
-/// and on its leaving -- and is when the application destroys it. What that
-/// device is written goes back with [`lowlat_host_send_pad_report`].
+/// and on its leaving -- and is when the application destroys it. The output
+/// reports that device is written go back with [`lowlat_host_send_pad_report`];
+/// a feature write stays on the host.
 ///
 /// **Its own poll, not the event queue**, for the microphone's reason: a pad
 /// reports several hundred times a second. The queue is bounded; when the
@@ -2657,22 +2686,27 @@ fn pad_type(product: lowlat_core::pad::Product) -> lowlat_pad_type {
     }
 }
 
-/// Give a guest's report pad what the application's device was written: an
-/// output report ([`LOWLAT_PAD_REPORT_OUTPUT`]: motors, lights, a
-/// DualSense's trigger effects) or a feature write
-/// ([`LOWLAT_PAD_REPORT_FEATURE`]), in the pad's USB form, identifier byte
-/// first. The pair of [`lowlat_host_poll_pad_report`]; the guest frames it
-/// for its pad's own transport.
+/// Give a guest's report pad the output report the application's device was
+/// written ([`LOWLAT_PAD_REPORT_OUTPUT`]: motors, lights, a DualSense's
+/// trigger effects), in the pad's USB form, identifier byte first. The pair
+/// of [`lowlat_host_poll_pad_report`]; the guest frames it for its pad's own
+/// transport.
+///
+/// **A feature write is refused** (minor 33): it stays on the host
+/// (docs/05-host.md section 7.2). A pad's features carry its pairing, test
+/// commands and firmware update, none a game needs, and the guest would write
+/// them to its own controller.
 ///
 /// @param[in] hl The handle from [`lowlat_host_create`].
 /// @param[in] guest The guest holding the pad.
 /// @param[in] pad The pad, as the guest named it.
-/// @param[in] kind [`LOWLAT_PAD_REPORT_OUTPUT`] or [`LOWLAT_PAD_REPORT_FEATURE`].
+/// @param[in] kind [`LOWLAT_PAD_REPORT_OUTPUT`].
 /// @param[in] report The report, identifier byte first.
 /// @param[in] len How many bytes, at most 64.
 /// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_UNKNOWN_GUEST`] when no such guest is
 /// connected, [`LOWLAT_ERR_INVALID_ARGUMENT`] for a kind that does not go this
-/// way or a report no pad takes, or [`LOWLAT_ERR_NOT_STARTED`].
+/// way -- [`LOWLAT_PAD_REPORT_FEATURE`] among them -- or a report no pad takes,
+/// or [`LOWLAT_ERR_NOT_STARTED`].
 ///
 /// # Safety
 ///
@@ -2688,15 +2722,9 @@ pub unsafe extern "C" fn lowlat_host_send_pad_report(
 ) -> lowlat_status {
     unsafe {
         entered(hl, |handle| {
-            let kind = match kind {
-                k if k == lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT as u32 => {
-                    lowlat_core::pad::OutputKind::Output
-                }
-                k if k == lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32 => {
-                    lowlat_core::pad::OutputKind::Feature
-                }
-                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
-            };
+            if kind != lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT as u32 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
             if report.is_null() || len == 0 || len as usize > lowlat_core::pad::FEATURE_MAX {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
@@ -2705,7 +2733,7 @@ pub unsafe extern "C" fn lowlat_host_send_pad_report(
             let Some(seam) = held.seam.as_mut() else {
                 return LOWLAT_ERR_NOT_STARTED;
             };
-            if seam.send_pad_report(guest, pad, kind, body) {
+            if seam.send_pad_report(guest, pad, body) {
                 LOWLAT_OK
             } else {
                 LOWLAT_ERR_UNKNOWN_GUEST
@@ -3121,7 +3149,8 @@ mod start_tests {
             size: u32::try_from(core::mem::size_of::<lowlat_host_input_config>())
                 .unwrap_or(u32::MAX),
             virtual_input: false,
-            reserved: [0; 3],
+            virtual_pads: false,
+            reserved: [0; 2],
         }
     }
 
@@ -3311,6 +3340,11 @@ mod start_tests {
             // The three words, and four bytes taking it to a multiple of eight.
             assert_eq!(video, shared + 12 + 4);
             assert_eq!(core::mem::size_of::<lowlat_host_input_config>(), 8);
+            // Minor 33's switch in the first reserved byte: nothing moved.
+            assert_eq!(
+                core::mem::offset_of!(lowlat_host_input_config, virtual_pads),
+                5
+            );
             assert_eq!(
                 core::mem::offset_of!(lowlat_host_config, input),
                 core::mem::offset_of!(lowlat_host_config, audio)
@@ -3408,6 +3442,60 @@ mod start_tests {
             unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
             LOWLAT_ERR_INVALID_ARGUMENT
         );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **The pads' switch follows the input switch's rule**: switching it on
+    /// is answered as the driver answers this process -- taken and read back
+    /// on where the driver can be used, refused with its reason and nothing
+    /// changed where it cannot -- and a set carrying both switches takes both
+    /// or neither. A start asking for it is not refused for it.
+    #[cfg(windows)]
+    #[test]
+    fn the_pads_switch_asks_the_driver_and_a_set_takes_both_or_neither() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.input.virtual_pads = true;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK,
+            "a start is not refused for the input driver"
+        );
+        let probed = lowlat_inject::hid::probe();
+        let read = || {
+            let mut back = input();
+            back.virtual_input = !probed.is_ok();
+            back.virtual_pads = !probed.is_ok();
+            assert_eq!(
+                unsafe { lowlat_host_get_input_config(handle, &raw mut back) },
+                LOWLAT_OK
+            );
+            (back.virtual_input, back.virtual_pads)
+        };
+        assert_eq!(
+            read(),
+            (false, probed.is_ok()),
+            "the start's ask, as the driver answered it"
+        );
+
+        let mut asked = input();
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            LOWLAT_OK
+        );
+        assert_eq!(read(), (false, false), "both switched off");
+        asked.virtual_input = true;
+        asked.virtual_pads = true;
+        let expected = match probed {
+            Ok(()) => LOWLAT_OK,
+            Err(error) => input_refused(error),
+        };
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            expected
+        );
+        let on = probed.is_ok();
+        assert_eq!(read(), (on, on), "both or neither");
         unsafe { lowlat_host_destroy(handle) };
     }
 
@@ -4561,8 +4649,9 @@ mod pad_sink_tests {
         unsafe { lowlat_host_destroy(handle) };
     }
 
-    /// The way back refuses a kind that does not go that way and a report no
-    /// pad takes, and says when nobody was there to take it.
+    /// The way back refuses a kind that does not go that way -- a feature
+    /// write among them, which stays on the host -- and a report no pad takes,
+    /// and says when nobody was there to take it.
     #[test]
     fn a_report_sent_back_is_checked_at_the_call() {
         let handle = handle();
@@ -4581,6 +4670,12 @@ mod pad_sink_tests {
         assert_eq!(
             unsafe { lowlat_host_send_pad_report(handle, 1, 3, input, report.as_ptr(), 32) },
             LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let feature = lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32;
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, feature, report.as_ptr(), 32) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a feature write left the host"
         );
         assert_eq!(
             unsafe { lowlat_host_send_pad_report(handle, 1, 3, output, report.as_ptr(), 0) },

@@ -12,7 +12,8 @@ the policy bypass shown, or Unblock-File on the scripts first.
      powershell -ExecutionPolicy Bypass -File install-driver.ps1
 
    The input driver the same way, if wanted; the host types and points
-   through it only when started with --virtual-input:
+   through it only when started with --virtual-input, and presents a guest's
+   DualShock 4 or DualSense as that pad on it only with --virtual-pads:
 
      powershell -ExecutionPolicy Bypass -File install-input-driver.ps1
 

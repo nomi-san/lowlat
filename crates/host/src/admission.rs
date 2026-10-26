@@ -733,7 +733,7 @@ pub struct Metrics {
 /// messages use one: the guest's own thread is the only thing that may touch
 /// its session or its input devices, so an ask is delivered to it rather than
 /// applied behind its back.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Ask {
     /// End this guest, telling it why on the way out.
     Kick(i32),
@@ -744,6 +744,10 @@ enum Ask {
     /// Move its keys to a keyboard of the host's own input driver, or back.
     #[cfg(windows)]
     VirtualInput(bool),
+    /// Present the pads it sends as their reports, from the next, on the
+    /// host's own input driver, or not.
+    #[cfg(windows)]
+    VirtualPads(bool),
 }
 
 /// One message on its way to a guest, built where the caller is.
@@ -819,6 +823,10 @@ pub struct Admission {
     /// driver ([`Admission::set_virtual_input`]).
     #[cfg(windows)]
     virtual_input: bool,
+    /// Whether the guests' pads sent as their reports go to it
+    /// ([`Admission::set_virtual_pads`]).
+    #[cfg(windows)]
+    virtual_pads: bool,
 }
 
 impl core::fmt::Debug for Attempt {
@@ -868,6 +876,8 @@ impl Admission {
             next_guest: 1,
             #[cfg(windows)]
             virtual_input: false,
+            #[cfg(windows)]
+            virtual_pads: false,
         }
     }
 
@@ -884,23 +894,61 @@ impl Admission {
     /// for what is already so changes nothing.
     #[cfg(windows)]
     pub fn set_virtual_input(&mut self, on: bool) -> Result<(), lowlat_inject::hid::Error> {
-        if on == self.virtual_input {
-            return Ok(());
-        }
+        self.set_input(on, self.virtual_pads)
+    }
+
+    /// Present a DualShock 4 or a DualSense a guest sends as its reports as
+    /// that product on the host's own input driver, or play it as the Xbox
+    /// pad from its whole states (docs/06-api.md section 3), live.
+    ///
+    /// **Switching it on asks the driver first** and is refused, changing
+    /// nothing, as [`Self::set_virtual_input`] is. **A change reaches the
+    /// pads plugged after it**: one already plugged keeps the family its first
+    /// message fixed. Asking for what is already so changes nothing.
+    #[cfg(windows)]
+    pub fn set_virtual_pads(&mut self, on: bool) -> Result<(), lowlat_inject::hid::Error> {
+        self.set_input(self.virtual_input, on)
+    }
+
+    /// Both of the input switches at once, **both or neither**: switching
+    /// either on asks the driver first, and a driver that cannot be used
+    /// refuses the pair, changing nothing.
+    #[cfg(windows)]
+    pub fn set_input(
+        &mut self,
+        virtual_input: bool,
+        virtual_pads: bool,
+    ) -> Result<(), lowlat_inject::hid::Error> {
+        let on = (virtual_input && !self.virtual_input) || (virtual_pads && !self.virtual_pads);
         if on {
             lowlat_inject::hid::probe()?;
         }
-        self.virtual_input = on;
-        lowlat_common::log_info!(
-            "input: the guests' keyboard and mouse on the input driver={}",
-            u8::from(on)
-        );
-        for attempt in self.attempts.values() {
-            if let Some(ask) = attempt.ask.as_ref() {
-                let _ = ask.send(Ask::VirtualInput(on));
-            }
+        if virtual_input != self.virtual_input {
+            self.virtual_input = virtual_input;
+            lowlat_common::log_info!(
+                "input: the guests' keyboard and mouse on the input driver={}",
+                u8::from(virtual_input)
+            );
+            self.tell_guests(Ask::VirtualInput(virtual_input));
+        }
+        if virtual_pads != self.virtual_pads {
+            self.virtual_pads = virtual_pads;
+            lowlat_common::log_info!(
+                "input: the guests' pads sent as their reports on the input driver={}",
+                u8::from(virtual_pads)
+            );
+            self.tell_guests(Ask::VirtualPads(virtual_pads));
         }
         Ok(())
+    }
+
+    #[cfg(windows)]
+    fn tell_guests(&self, ask: Ask) {
+        for attempt in self.attempts.values() {
+            if let Some(asked) = attempt.ask.as_ref() {
+                let _ = asked.send(ask);
+            }
+        }
     }
 
     /// Whether the guests' keys and pointers go to the host's own input
@@ -910,6 +958,15 @@ impl Admission {
     #[must_use]
     pub fn virtual_input(&self) -> bool {
         self.virtual_input
+    }
+
+    /// Whether the guests' pads sent as their reports go to the host's own
+    /// input driver: what was last switched, which a driver lost since does
+    /// not change.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn virtual_pads(&self) -> bool {
+        self.virtual_pads
     }
 
     /// Guests currently admitted, which is what the advertisement publishes.
@@ -1127,6 +1184,8 @@ impl Admission {
         let pad_sink = self.config.pad_sink.clone();
         #[cfg(windows)]
         let virtual_input = self.virtual_input;
+        #[cfg(windows)]
+        let virtual_pads = self.virtual_pads;
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -1156,6 +1215,8 @@ impl Admission {
                         rumble_probe,
                         #[cfg(windows)]
                         virtual_input,
+                        #[cfg(windows)]
+                        virtual_pads,
                     },
                 },
                 wake,
@@ -1284,21 +1345,15 @@ impl Admission {
         .is_ok()
     }
 
-    /// Give a guest's report pad what the application's device was written
-    /// (docs/05-host.md section 7.2): an output report or a feature write,
-    /// in the pad's USB form, identifier byte first. The pair of
-    /// [`Config::pad_sink`], and the road a device of this host's own takes
-    /// by itself.
+    /// Give a guest's report pad the output report the application's device
+    /// was written (docs/05-host.md section 7.2), in the pad's USB form,
+    /// identifier byte first. The pair of [`Config::pad_sink`], and the road a
+    /// device of this host's own takes by itself. **An output report alone**:
+    /// a feature write stays on the host, so there is no road for one.
     ///
     /// Answers whether the guest is one that could be reached at all. A
     /// report longer than any the pads take is refused here.
-    pub fn send_pad_report(
-        &mut self,
-        guest: u32,
-        pad: u32,
-        kind: lowlat_core::pad::OutputKind,
-        report: &[u8],
-    ) -> bool {
+    pub fn send_pad_report(&mut self, guest: u32, pad: u32, report: &[u8]) -> bool {
         if report.is_empty() || report.len() > lowlat_inject::WRITTEN_MAX {
             lowlat_common::log_warn!(
                 "guest: refusing a pad report of {} bytes for guest {guest}",
@@ -1318,7 +1373,7 @@ impl Admission {
         };
         say.send(Said {
             opcode: lowlat_core::control::op::PAD_OUTPUT,
-            a1: kind.wire(),
+            a1: lowlat_core::pad::OutputKind::Output.wire(),
             a2: pad,
             body: report.to_vec(),
         })
@@ -1677,6 +1732,9 @@ struct Driven {
     /// Whether its keys and pointer start on the host's own input driver.
     #[cfg(windows)]
     virtual_input: bool,
+    /// Whether its pads sent as their reports start on it.
+    #[cfg(windows)]
+    virtual_pads: bool,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -1928,6 +1986,14 @@ fn send_pad_written<M: Media>(session: &mut M, written: &lowlat_inject::PadWritt
             body: report,
         },
     );
+}
+
+/// Whether what a pad was written goes back to its peer: **an output report
+/// alone**. A feature write stays on the host (docs/05-host.md section 7.2):
+/// a pad's features carry its pairing, test commands and firmware update,
+/// none a game needs, and the peer would write them to its own controller.
+fn travels(written: &lowlat_inject::PadWritten) -> bool {
+    written.written.kind == lowlat_core::pad::OutputKind::Output
 }
 
 /// Ask a peer's controller to vibrate.
@@ -2484,11 +2550,16 @@ fn drive<M: Media>(
         // is on, so their readiness overlaps the connection's setup as the
         // other devices' does.
         #[cfg(windows)]
-        input.sink.set_virtual_input(args.virtual_input);
+        {
+            input.sink.set_virtual_input(args.virtual_input);
+            input.sink.set_virtual_pads(args.virtual_pads);
+        }
     }
     // A reason the application gave for ending this guest, waiting for the one
     // path below that knows how to end one.
     let mut asked_kick: Option<i32> = None;
+    // A pad's feature write kept on the host has been said, so the next is not.
+    let mut feature_kept = false;
     // What the tally said last pass, so a stamp is written when input arrived
     // rather than on every pass regardless.
     let mut counted = lowlat_inject::event::Tally::default();
@@ -2705,6 +2776,18 @@ fn drive<M: Media>(
             // are in that report and have no other road, so it is never
             // folded into the rumble message (docs/05-host.md section 7.2).
             while let Some(written) = input.sink.written() {
+                if !travels(&written) {
+                    if !feature_kept {
+                        feature_kept = true;
+                        lowlat_common::log_info!(
+                            "guest: number={} a pad's feature write kept on the host, pad={} id={:#04x}",
+                            args.guest,
+                            written.pad,
+                            written.written.report.first().copied().unwrap_or(0)
+                        );
+                    }
+                    continue;
+                }
                 lowlat_common::log_debug!(
                     "inject: pad written, pad={} kind={:?} len={}",
                     written.pad,
@@ -3121,6 +3204,20 @@ fn drive<M: Media>(
                     if let Some(input) = input.as_mut() {
                         input.release_for_the_switch();
                         input.sink.set_virtual_input(on);
+                    }
+                }
+                // **The pads plugged from now on follow it**; one already
+                // plugged keeps the family its first message fixed, so
+                // nothing is released.
+                #[cfg(windows)]
+                Ask::VirtualPads(on) => {
+                    lowlat_common::log_info!(
+                        "guest: number={} pads sent as their reports on the input driver={}",
+                        args.guest,
+                        u8::from(on)
+                    );
+                    if let Some(input) = input.as_mut() {
+                        input.sink.set_virtual_pads(on);
                     }
                 }
             }
@@ -3554,14 +3651,30 @@ mod tests {
         })
     }
 
+    /// **What a pad was written goes back to its peer as an output report
+    /// alone**: a feature write stays on the host.
+    #[test]
+    fn a_pads_feature_write_stays_on_the_host() {
+        use lowlat_core::pad::OutputKind;
+        let written = |kind| lowlat_inject::PadWritten {
+            pad: 3,
+            written: lowlat_inject::handback::Written {
+                kind,
+                len: 2,
+                report: [0u8; lowlat_inject::WRITTEN_MAX],
+            },
+        };
+        assert!(travels(&written(OutputKind::Output)));
+        assert!(!travels(&written(OutputKind::Feature)));
+    }
+
     /// A pad report longer than any a pad takes, or empty, is refused at the
     /// call rather than sent.
     #[test]
     fn a_pad_report_outside_what_a_pad_takes_is_refused() {
         let mut seam = admission(1);
-        let kind = lowlat_core::pad::OutputKind::Feature;
-        assert!(!seam.send_pad_report(1, 3, kind, &[]));
-        assert!(!seam.send_pad_report(1, 3, kind, &[0; 65]));
+        assert!(!seam.send_pad_report(1, 3, &[]));
+        assert!(!seam.send_pad_report(1, 3, &[0; 65]));
     }
 
     /// **A seated guest hears the microphone answer once, and again on every
@@ -5239,7 +5352,7 @@ mod geometry {
         });
         assert!(!seam.send_user_data(1, 0, b"hello"));
         assert_eq!(seam.send_user_data_all(0, b"hello"), 0);
-        assert!(!seam.send_pad_report(1, 3, lowlat_core::pad::OutputKind::Output, &[2; 48]));
+        assert!(!seam.send_pad_report(1, 3, &[2; 48]));
     }
 
     /// A guest with no devices is still a guest: its input is dropped and

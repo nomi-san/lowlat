@@ -23,6 +23,7 @@
 // The devices are each platform's; what a guest's input is before it lands on
 // one -- the events and the pads -- builds everywhere. The usage table is the
 // platform's own translation of a keyboard's keys, under one name.
+pub mod answers;
 pub mod event;
 pub mod gamepad;
 pub mod handback;

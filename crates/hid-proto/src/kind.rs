@@ -28,8 +28,9 @@ const OPEN_SOURCE: u16 = 0x1209;
 /// The pads carry the real products' own, which is what they are recognised
 /// by.
 const SONY: u16 = 0x054c;
-/// What the real pads report as their version.
-const PAD_VERSION: u16 = 0x8111;
+/// What the real pads report as their version on Windows, the USB device's
+/// own release.
+const PAD_VERSION: u16 = 0x0100;
 
 impl Kind {
     pub const ALL: [Kind; 4] = [
@@ -136,6 +137,15 @@ impl Kind {
             Kind::DualShock4 => &[pad::DS4_NEUTRAL],
             Kind::DualSense => &[pad::DS5_NEUTRAL],
         }
+    }
+
+    /// Whether a feature report the system writes is kept as the answer to its
+    /// identifier: the mouse's multipliers, which the system reads back. **A
+    /// pad's is answered and kept by no one** (docs/11-drivers.md section
+    /// 2.3): its features carry its pairing, test commands and firmware
+    /// update, none a game needs.
+    pub const fn keeps_feature_writes(self) -> bool {
+        matches!(self, Kind::Mouse)
     }
 
     /// The feature reports the device answers with until a caller's table or
@@ -249,5 +259,16 @@ mod tests {
         assert_ne!(Kind::Keyboard.identity(), Kind::Mouse.identity());
         assert_eq!(Kind::DualShock4.identity().product, 0x09cc);
         assert_eq!(Kind::DualSense.identity().product, 0x0ce6);
+        // The real pads' version as Windows reads it.
+        assert_eq!(Kind::DualShock4.identity().version, 0x0100);
+        assert_eq!(Kind::DualSense.identity().version, 0x0100);
+    }
+
+    /// **Only the mouse keeps what the system writes to its features.**
+    #[test]
+    fn the_mouse_alone_keeps_a_feature_write() {
+        for kind in Kind::ALL {
+            assert_eq!(kind.keeps_feature_writes(), kind == Kind::Mouse, "{kind:?}");
+        }
     }
 }

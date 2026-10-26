@@ -850,7 +850,6 @@ impl Devices {
     /// behaving oddly. The label is whatever the caller correlates its logs
     /// on; a long one is truncated rather than refused.
     pub fn create(guest: &str) -> Result<Self, Error> {
-        let crc = lowlat_core::crc32::of(guest.as_bytes()).to_le_bytes();
         Ok(Self {
             keyboard: keyboard(guest)?,
             pointer: pointer(guest)?,
@@ -864,7 +863,7 @@ impl Devices {
                 let _ = label.write_str(guest);
                 label
             },
-            address: [crc[0], crc[1], crc[2]],
+            address: crate::answers::middle(guest),
         })
     }
 
@@ -917,19 +916,6 @@ impl Devices {
             refused: false,
         });
         slot.as_mut()
-    }
-
-    /// The address of a HID pad: locally administered, this guest's middle,
-    /// the slot last -- unique on this host, which the driver insists on.
-    fn hid_address(&self, index: usize) -> [u8; 6] {
-        [
-            0x02,
-            self.address.first().copied().unwrap_or(0),
-            self.address.get(1).copied().unwrap_or(0),
-            self.address.get(2).copied().unwrap_or(0),
-            0x4c,
-            u8::try_from(index).unwrap_or(u8::MAX),
-        ]
     }
 
     /// Release anything held once the devices can deliver it.
@@ -1096,7 +1082,7 @@ impl Sink for Devices {
             }
             return;
         };
-        let address = self.hid_address(index);
+        let address = crate::answers::address(self.address, index);
         let Some(slot) = self.hid.get_mut(index).and_then(Option::as_mut) else {
             return;
         };

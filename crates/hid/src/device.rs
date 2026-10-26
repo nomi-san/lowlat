@@ -38,9 +38,12 @@ fn live() -> MutexGuard<'static, Live> {
     LIVE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// How many of the system's writes wait for the host; past it the oldest
-/// goes, each being a whole state.
-const WRITTEN_KEPT: usize = 8;
+/// How many of the system's writes wait for the host; past it the oldest goes,
+/// counted and said. **Not every write is a whole state**: a DualSense's output
+/// report names, by its flags, the parts it changes, so one lost can lose a
+/// lightbar or a trigger effect for good -- the guest's loop drains them each
+/// pass, and this is room for a pass that stretches.
+const WRITTEN_KEPT: usize = 32;
 
 /// The input reports a device remembers for the system's reads of them, one
 /// per identifier from 1.
@@ -50,8 +53,11 @@ const INPUT_IDS: usize = 2;
 const INPUT_MAX: usize = 64;
 
 /// How long the neutral reports have to arrive before the device goes: the
-/// system's keyboard path drops a report still on its way at the delete,
-/// and raw input then never sees the keys come up.
+/// system's keyboard path drops a report still on its way at the delete, and
+/// raw input then never sees the keys come up. **Every kind waits**: a device
+/// deleted before the system has finished setting it up -- a few milliseconds
+/// to tens -- holds the next device's removal for about five seconds, and the
+/// wait covers that.
 const NEUTRAL_SETTLE: Duration = Duration::from_millis(50);
 
 /// One handle's state.
@@ -405,6 +411,12 @@ impl File {
         }
         if state.written.push(written) {
             state.dropped = state.dropped.saturating_add(1);
+            if state.dropped == 1 {
+                log_warn!(
+                    "hid: a write the host had not read went, kind={:?} kept={WRITTEN_KEPT}",
+                    state.kind
+                );
+            }
         }
     }
 
@@ -551,8 +563,11 @@ unsafe extern "C" fn get_feature(
     unsafe { VhfAsyncOperationComplete(operation, status) };
 }
 
-/// **A feature write is kept as the identifier's answer and handed to the
-/// host**, completed at once.
+/// **A feature write is answered at once and handed to no one**
+/// (docs/11-drivers.md section 2.3): a pad's features carry its pairing, test
+/// commands and firmware update, none a game needs, so nothing of it travels.
+/// The mouse keeps its multipliers as their answer, which the system reads
+/// back.
 unsafe extern "C" fn set_feature(
     context: PVOID,
     operation: VHFOPERATIONHANDLE,
@@ -564,11 +579,9 @@ unsafe extern "C" fn set_feature(
         (Some(file), Some(packet)) => {
             // SAFETY: the packet is live for the callback.
             let report = unsafe { carried(packet) };
-            let kept = file.lock().features.set(report).is_ok();
-            if let Some(written) = Written::new(WrittenKind::Feature, report) {
-                file.deliver(written);
-            }
-            if kept {
+            let mut state = file.lock();
+            let keeps = state.kind.is_some_and(Kind::keeps_feature_writes);
+            if !keeps || state.features.set(report).is_ok() {
                 STATUS_SUCCESS
             } else {
                 STATUS_INVALID_PARAMETER

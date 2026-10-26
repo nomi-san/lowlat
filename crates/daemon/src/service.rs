@@ -994,6 +994,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "lowlatd: --virtual-input refused, keys and pointer go through the batch input call, error={error}"
         );
     }
+    // **The same for the pads sent as their reports**: presented as their
+    // products on the input driver only where the owner wants them there, a
+    // pad on it reaching no game that reads only the Xbox pad's interface.
+    #[cfg(windows)]
+    if flag_set("--virtual-pads")
+        && let Err(error) = seam.set_virtual_pads(true)
+    {
+        lowlat_common::log_warn!(
+            "lowlatd: --virtual-pads refused, pads play as the Xbox pad, error={error}"
+        );
+    }
 
     let params = Connect {
         server,

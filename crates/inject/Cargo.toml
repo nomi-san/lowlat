@@ -37,9 +37,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# The pad tests read a pad back the way a game does.
+# The pad tests read a pad back the way a game does: the bus's through the
+# Xbox pad's interface, the input driver's through its HID interface.
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_UI_Input_XboxController",
+] }
 
 [lints]
 workspace = true
