@@ -49,6 +49,12 @@ const USAGE_NUM_LOCK: u16 = 83;
 const MOD_NUM: u32 = 0x1000;
 const MOD_CAPS: u32 = 0x2000;
 
+/// The modifier bits for left and right Command, Windows or Super.
+const MOD_GUI: u32 = 0x0400 | 0x0800;
+
+/// The peer's codes for the eight modifiers, Control to right Command.
+const MODIFIERS: core::ops::RangeInclusive<u16> = 224..=231;
+
 /// The peer's codes for the attention chord, in the order it is pressed.
 ///
 /// **The peer's codes rather than the kernel's**, so the chord travels the
@@ -788,6 +794,20 @@ impl Injector {
             traced(code, modifiers, pressed, key, "lock");
             return;
         }
+        // **While the peer's mask holds Command, Windows or Super, none of its
+        // other keys stays held here.** A macOS peer's window never hears a key
+        // let go while Command is down, so it never sends the release, and a
+        // key left held is typed again by this machine's own repeat until the
+        // next press of it. The mask says Command whatever the codes say -- a
+        // peer that swaps Command for Control swaps the codes alone -- so a key
+        // down as Command arrives comes up then, and one pressed under it goes
+        // down and up at once: a keystroke per press or repeat the peer sends,
+        // which is all a shortcut is.
+        let commanding = modifiers & MOD_GUI != 0;
+        if commanding {
+            self.release_keys_but(out, is_modifier);
+        }
+        let tapped = commanding && pressed && !is_modifier(key);
         let Some(held) = self.keys.get_mut(usize::from(key)) else {
             traced(code, modifiers, pressed, key, "no-slot");
             return;
@@ -800,13 +820,22 @@ impl Injector {
             traced(code, modifiers, pressed, key, "not-held");
             return;
         }
-        *held = pressed;
+        *held = pressed && !tapped;
 
         self.used = 0;
         self.lock_sync(modifiers, key, host);
         self.key_events(peer_code, key, pressed);
+        if tapped {
+            self.key_events(peer_code, key, false);
+        }
         self.flush(Device::Keyboard, out);
-        traced(code, modifiers, pressed, key, "sent");
+        traced(
+            code,
+            modifiers,
+            pressed,
+            key,
+            if tapped { "tapped" } else { "sent" },
+        );
     }
 
     /// Bring the local locks into step with what the peer reports.
@@ -1000,9 +1029,26 @@ impl Injector {
     /// does: for keys about to go another way, so none is left down on the way
     /// they came (docs/05-host.md section 7).
     pub fn release_keys(&mut self, out: &mut impl Sink) {
+        self.release_keys_but(out, |_| false);
+        // The peer's locks are no longer known, rather than known to be off.
+        // Its next message sets the baseline again without toggling anything.
+        self.num_lock = None;
+        self.caps_lock = None;
+    }
+
+    /// Release every key this guest holds that `kept` does not keep.
+    fn release_keys_but(&mut self, out: &mut impl Sink, kept: impl Fn(u16) -> bool) {
         self.used = 0;
         for key in 0..KEY_SLOTS {
             if self.keys.get(key) != Some(&true) {
+                continue;
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the loop bound is the array length, which is 256"
+            )]
+            let code = key as u16;
+            if kept(code) {
                 continue;
             }
             if let Some(held) = self.keys.get_mut(key) {
@@ -1011,11 +1057,7 @@ impl Injector {
             // A release is not a keystroke, so the scanned code is left off:
             // nothing scanned anything, and a consumer correlating the two
             // would see a code with no cause.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "the loop bound is the array length, which is 256"
-            )]
-            self.push(EV_KEY, key as u16, 0);
+            self.push(EV_KEY, code, 0);
             if self.used + 1 >= SCRATCH {
                 self.report();
                 self.flush(Device::Keyboard, out);
@@ -1026,10 +1068,6 @@ impl Injector {
             self.report();
             self.flush(Device::Keyboard, out);
         }
-        // The peer's locks are no longer known, rather than known to be off.
-        // Its next message sets the baseline again without toggling anything.
-        self.num_lock = None;
-        self.caps_lock = None;
     }
 
     fn release_buttons(&mut self, out: &mut impl Sink) {
@@ -1163,6 +1201,14 @@ fn lock_owed(was: Option<bool>, now: bool, host: Option<bool>, named: bool) -> b
         Some(host) => was.map_or(now, |was| was != now) && host != now,
         None => !named && was == Some(!now),
     }
+}
+
+/// Whether a kernel key code is a modifier's, by the table's own translation
+/// of the peer's codes for them: one table to be wrong.
+fn is_modifier(key: u16) -> bool {
+    MODIFIERS
+        .into_iter()
+        .any(|usage| usage::key_code(usage) == Some(key))
 }
 
 fn button_code(button: u32) -> Option<u16> {
@@ -1614,9 +1660,9 @@ mod tests {
 
     /// **A modified keystroke leaves nothing behind**, which is the shape a
     /// key that would not release was reported in: a modifier held, a letter
-    /// tapped under it, then both let go. Nothing about a held modifier
-    /// reaches the expansion -- the mask is read for the locks alone -- so the
-    /// four messages are four independent keys, and this says so.
+    /// tapped under it, then both let go. Nothing about a held Control reaches
+    /// the expansion -- the mask is read for the locks and for Command alone --
+    /// so the four messages are four independent keys, and this says so.
     #[test]
     fn a_letter_typed_under_a_modifier_leaves_nothing_held() {
         let (mut inject, mut out) = (injector(), Recorder::default());
@@ -1638,11 +1684,12 @@ mod tests {
         );
     }
 
-    /// **A mask that reports the modifier on some messages and not others is
-    /// still only about the locks.** A peer's mask is its platform reporting
-    /// itself at that keystroke, and one sighting of a left control press
-    /// carrying only the meta bit is on the record, so a modifier missing from
-    /// the mask must not release anything.
+    /// **A mask that reports the modifier on some messages and not others
+    /// releases no modifier.** A peer's mask is its platform reporting itself
+    /// at that keystroke, and one sighting of a left control press carrying
+    /// only the meta bit is on the record -- a macOS peer's Command, its code
+    /// swapped for Control -- so a modifier missing from the mask must not
+    /// release anything.
     #[test]
     fn a_modifier_absent_from_the_mask_is_not_released() {
         let (mut inject, mut out) = (injector(), Recorder::default());
@@ -1651,6 +1698,75 @@ mod tests {
         inject.on_control(&control(op::KEYBOARD, 23, 0, 1), &mut out);
         assert_eq!(out.keys_at(0), Vec::<u16>::new());
         assert_eq!(out.keys_at(1), vec![20]);
+    }
+
+    /// **A key pressed under Command goes down and up at once**, its release
+    /// never awaited: a macOS peer sends none for a key let go while Command
+    /// is held, and a key left held is typed again by the host's own repeat.
+    /// Each press or repeat is one keystroke; the release that never came is
+    /// not missed, and one that does come finds nothing held. Command is the
+    /// mask's to say, its code here swapped for Control as such a peer sends it.
+    #[test]
+    fn a_key_pressed_under_command_is_a_keystroke_and_nothing_stays_held() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        const LGUI: u32 = 0x400;
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        out.batches.clear();
+        // e, then e again as the peer's repeat; no release of it.
+        inject.on_control(&control(op::KEYBOARD, 8, LGUI, 1), &mut out);
+        assert_eq!(out.batches.len(), 1, "a keystroke split across batches");
+        assert_eq!(out.keys_at(1), vec![18]);
+        assert_eq!(out.keys_at(0), vec![18]);
+        inject.on_control(&control(op::KEYBOARD, 8, LGUI, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![18, 18]);
+        assert_eq!(out.keys_at(0), vec![18, 18]);
+        // Command up, and a release of e that did arrive.
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 8, 0, 0), &mut out);
+        assert_eq!(out.keys_at(0), vec![18, 18, 29]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty(), "something was still held");
+
+        // The right Command says the same.
+        inject.on_control(&control(op::KEYBOARD, 25, 0x800, 1), &mut out);
+        assert_eq!(out.keys_at(0), vec![47], "held under the right Command");
+    }
+
+    /// **A key down as Command arrives comes up then**, before Command
+    /// itself: its release, made while Command is held, would never come. The
+    /// modifiers stay held, Shift pressed under Command among them, and the
+    /// letter under both is a keystroke.
+    #[test]
+    fn a_key_held_as_command_arrives_comes_up_and_the_modifiers_stay() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        const LGUI: u32 = 0x400;
+        let command = usage::key_code(227).unwrap();
+        inject.on_control(&control(op::KEYBOARD, 8, 0, 1), &mut out);
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 227, LGUI, 1), &mut out);
+        let order: Vec<(u16, i32)> = out
+            .all()
+            .into_iter()
+            .filter(|e| e.kind == EV_KEY)
+            .map(|e| (e.code, e.value))
+            .collect();
+        assert_eq!(order, vec![(18, 0), (command, 1)], "e not let go first");
+
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 225, LGUI | 0x1, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 29, LGUI | 0x1, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![42, 44]);
+        assert_eq!(out.keys_at(0), vec![44], "a modifier under Command let go");
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        let mut released = out.keys_at(0);
+        released.sort_unstable();
+        let mut held = vec![42, command];
+        held.sort_unstable();
+        assert_eq!(released, held);
     }
 
     /// The chord is typed as a person types it and leaves nothing of itself
