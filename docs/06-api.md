@@ -131,7 +131,7 @@ lowlat_status lowlat_host_get_video_config(lowlat_host *hl, lowlat_host_video_co
 lowlat_status lowlat_host_set_audio_config(lowlat_host *hl, const lowlat_host_audio_config *cfg);
 lowlat_status lowlat_host_get_audio_config(lowlat_host *hl, lowlat_host_audio_config *out);
 
-/* Windows alone; planned (W4) */
+/* Windows alone (minor 32) */
 lowlat_status lowlat_host_set_input_config(lowlat_host *hl, const lowlat_host_input_config *cfg);
 lowlat_status lowlat_host_get_input_config(lowlat_host *hl, lowlat_host_input_config *out);
 
@@ -281,17 +281,17 @@ whole:
 | `virtual_width`, `virtual_height` | yes | The host's own display's size, both or neither (minor 27). **Zero lets the host decide**: the size an owner states as it joins an empty room, else the size the display has, 1920x1080 when first plugged, either within the largest picture that guest accepts. A size is put through the system's display configuration where the monitor lists it and by plugging the monitor again with it added where it does not; the stream follows as it follows any resize. Refused outside 640x480 to 7680x4320 rather than clamped. Read back as asked, which the display's own size is not: that is the picture's, on the status. (*Amended 2026-10-21, at W3.11*: put as it is asked, and after that only over the mode the system's store holds for the display, which another monitor's arrival and a program leaving exclusive fullscreen put back; any other mode stands -- a program's own in exclusive fullscreen -- the stream following it.) |
 | `virtual_hz` | yes | The host's own display's refresh (minor 27). **Zero is the frame rate's ceiling**, `fps`, and 60 where that is zero too: a display composing faster than the stream takes pictures composes pictures nobody is sent. 24 to 480. (*Amended 2026-10-20, at W3.8*: where `fps` is zero too, **the display's own refresh**, which nothing puts back: the one the system restores for it as it is plugged -- the last its display settings saved -- 60 where it restores none, and whatever those settings set after, the stream pacing from it as from any display. Before, 60 was put back over a refresh a person set.) |
 
-**The fields only Windows acts on are declared on Windows alone** (*planned 2026-10-22*, W4):
-`virtual_width`, `virtual_height` and `virtual_hz` here, `virtual_fallback`, `wake_display` and
-`hold_memory_clock` in the settled half below, and the input configuration whole (below), exist where the header is
-compiled for Windows and nowhere else ([§11](#11-versioning)). Until that minor the ones that
-exist are accepted elsewhere and do nothing. A value whose meaning is Windows' alone, the output
-`virtual`, stays refused at the call elsewhere.
+**The fields only Windows acts on are declared on Windows alone** (*planned 2026-10-22*, W4;
+*built at minor 32*): `virtual_width`, `virtual_height` and `virtual_hz` here, `virtual_fallback`,
+`wake_display` and `hold_memory_clock` in the settled half below, and the input configuration
+whole (below), exist where the header is compiled for Windows and nowhere else
+([§11](#11-versioning)), so the configuration is laid out per platform. A value whose meaning is
+Windows' alone, the output `virtual`, stays refused at the call elsewhere.
 
 **On Windows they need the host's drivers installed** (*added 2026-10-22*): the host's own
 display -- the output `virtual`, `virtual_fallback`, `virtual_width`, `virtual_height` and
 `virtual_hz` -- exists only where its display driver is installed, and the input configuration's
-devices (W4, planned) only where its input driver is. Nothing of the library or `lowlatd`
+devices (W4) only where its input driver is. Nothing of the library or `lowlatd`
 installs either: the machine's administrator runs each driver's script
 ([07 §10](07-platforms.md)). Without the display driver the fields are accepted and nothing is
 plugged: a stream asked for `virtual` says why once and waits as for a display that is not
@@ -324,9 +324,9 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 | `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
 | `max_guests` | Advertised capacity, read when a guest asks for a seat. |
 | `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
-| `virtual_fallback` | Whether the host plugs its own display when nothing is lit (minor 27), checked at its start and again while it runs, and keeps it for as long as it runs. Lit is an output on the desktop with a monitor behind it: the last monitor's cable pulled leaves its output on the desktop with none, and that is nothing lit. **Off by default**, since it changes the machine; `lowlatd` turns it on. Windows alone has the display; elsewhere it is accepted and nothing is plugged. |
-| `wake_display` | Whether a stream wakes the display it captures as it starts, with one pointer move of no distance (minor 28). A stream holds its display on, but a display that slept before anybody arrived stays asleep under that and gives no pictures until input wakes it. **Off by default**, in `lowlatd` too (`--wake-display` turns it on): a guest's first input wakes the display, and a connection lights nothing at the desk by itself. Windows alone acts on it; elsewhere it is accepted and does nothing. |
-| `hold_memory_clock` | Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a floor for as long as it runs (minor 31): the lowest clock the GPU lists at or above half its top, the top its ceiling, the driver choosing between them. The driver's light-load memory states bound the encoder, 4 to 5 ms a picture at 1080p against 1 to 2 above them ([05 §4.2](05-host.md)). A hold outlives the process that took it, so a stream gives it back as it ends, and a host with this set gives back every NVIDIA GPU's as it starts. **Off by default**, since it changes the machine and needs the administrator; `lowlatd` turns it on. A host that cannot hold says why as each stream starts and streams on. Windows alone acts on it; elsewhere it is accepted and does nothing. |
+| `virtual_fallback` | Whether the host plugs its own display when nothing is lit (minor 27), checked at its start and again while it runs, and keeps it for as long as it runs. Lit is an output on the desktop with a monitor behind it: the last monitor's cable pulled leaves its output on the desktop with none, and that is nothing lit. **Off by default**, since it changes the machine; `lowlatd` turns it on. Windows alone has the display, and from minor 32 the field exists there alone. |
+| `wake_display` | Whether a stream wakes the display it captures as it starts, with one pointer move of no distance (minor 28). A stream holds its display on, but a display that slept before anybody arrived stays asleep under that and gives no pictures until input wakes it. **Off by default**, in `lowlatd` too (`--wake-display` turns it on): a guest's first input wakes the display, and a connection lights nothing at the desk by itself. Windows alone acts on it, and from minor 32 it exists there alone. |
+| `hold_memory_clock` | Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a floor for as long as it runs (minor 31): the lowest clock the GPU lists at or above half its top, the top its ceiling, the driver choosing between them. The driver's light-load memory states bound the encoder, 4 to 5 ms a picture at 1080p against 1 to 2 above them ([05 §4.2](05-host.md)). A hold outlives the process that took it, so a stream gives it back as it ends, and a host with this set gives back every NVIDIA GPU's as it starts. **Off by default**, since it changes the machine and needs the administrator; `lowlatd` turns it on. A host that cannot hold says why as each stream starts and streams on. Windows alone acts on it, and from minor 32 it exists there alone. |
 
 <a name="quality"></a>
 **`lowlat_quality` names where a host sits between delay and picture**, and it is the only
@@ -377,7 +377,7 @@ with and what `lowlat_host_set_audio_config` takes:
 arrives and given back when the last leaves, so a host that is advertised but empty holds no
 capture and no speakers.
 
-**Input has a live half of its own, on Windows alone** (*planned 2026-10-22*, W4):
+**Input has a live half of its own, on Windows alone** (*planned 2026-10-22*, W4; *minor 32*):
 `lowlat_host_input_config`, nested in `lowlat_host_config` as `input` and set and read back
 through its own pair of calls, as sound's is. Every field is live, and the structure, its member
 and its calls are declared where the header is compiled for Windows and nowhere else. It is not
@@ -386,8 +386,8 @@ neither carry nor re-send the stream's fields.
 
 | Field | Why it can change |
 |---|---|
-| `virtual_input` | Whether a guest's keyboard and mouse go through HID devices of the host's own input driver rather than the batch input call ([05 §7](05-host.md), [11 §2](11-drivers.md)). **Off by default**, zero included. Switching it on with no driver installed refuses the call and changes nothing; a driver lost while it is on gives the guests the batch input call again. The devices exist only while it is on, made for each seated guest on its next pass, and a switch either way first releases everything held on the old path. |
-| `virtual_pads` | Whether a DualShock 4 or a DualSense a guest sends as its reports is presented as that product on the host's input driver ([05 §7.2](05-host.md)). **Off by default**: off, the pad is played as the Xbox pad from its whole states, since a HID pad never reaches a game that reads only the Xbox pad's interface. **A change applies to the pads plugged after it**: a pad keeps the family its first message fixed. The pad sink set to the application takes the reports whatever this says. On Linux a pad sent as its reports is always presented as its product ([00 §D12](00-overview.md)). |
+| `virtual_input` | Whether a guest's keyboard and mouse go through HID devices of the host's own input driver rather than the batch input call ([05 §7](05-host.md), [11 §2](11-drivers.md)). **Off by default**, zero included. Switching it on with no driver installed refuses the call and changes nothing; a driver lost while it is on gives the guests the batch input call again. The devices exist only while it is on, made for each seated guest on its next pass, and a switch either way first releases everything held on the old path. (*Built 2026-10-26, minor 32, the keyboard*: the mouse follows at W4.2. A driver that cannot be used is refused with a status of its own, `LOWLAT_ERR_INPUT_DRIVER_ABSENT`, `_VERSION`, `_DENIED` or `_IO` ([§7](#7-status-codes)): an application can tell a driver to install from a process the driver does not admit, which is any but the system account and an administrator elevated. **A start asking for it is not refused for it**, as sound's is not for its server: the host says why once, keeps the batch input call, and reads back off; `lowlatd` asks for it with `--virtual-input`. A guest's keys wait the few milliseconds until the system takes its keyboard, and go through the batch input call where it never does.) |
+| `virtual_pads` | Whether a DualShock 4 or a DualSense a guest sends as its reports is presented as that product on the host's input driver ([05 §7.2](05-host.md)). **Off by default**: off, the pad is played as the Xbox pad from its whole states, since a HID pad never reaches a game that reads only the Xbox pad's interface. **A change applies to the pads plugged after it**: a pad keeps the family its first message fixed. The pad sink set to the application takes the reports whatever this says. On Linux a pad sent as its reports is always presented as its product ([00 §D12](00-overview.md)). (*Planned for W4.3's minor*, in one of the reserved bytes.) |
 
 Starting a host that is already running is refused rather than quietly reconfiguring, because a
 second configuration that looks accepted and is not is a host running settings nobody can see.
@@ -1574,22 +1574,21 @@ a caller built against an earlier minor gets UDP.
 `lowlat_vdd_monitor`, `lowlat_vdd_mode`, `lowlat_vdd_settings`, the `LOWLAT_VDD_*` constants,
 the statuses `LOWLAT_ERR_VDD_*` (-600 to -612) and `LOWLAT_FEATURE_VDD`. Nothing moves.
 
-**Planned 2026-10-22 (W4): the input configuration, and the configuration's layout by
-platform.** One minor brings `lowlat_host_input_config` with `virtual_input`, its member `input`
-appended to `lowlat_host_config` after the sound's, and `lowlat_host_set_input_config` and
-`lowlat_host_get_input_config`, all on Windows alone; the report pads' own minor gives
-`virtual_pads` one of its reserved bytes, moving nothing. The first of them also declares every
-other field only Windows acts on -- `virtual_width`, `virtual_height` and `virtual_hz` in
-`lowlat_host_video_config`, `virtual_fallback`, `wake_display` and `hold_memory_clock` in
-`lowlat_host_config` --
-where the header is compiled for Windows alone, so elsewhere they no longer exist. On Windows
-the whole only grows at its end, so nothing moves there and a caller built against an earlier
-minor is refused by its size. **Off Windows something moves, before the first major version**, as
-at minor 27: the two structures shrink, and a binding lays them out per platform, as the header
-does. A caller built against an earlier minor is built again. The size check refuses only a
-structure smaller than the library's, which a structure that shrank no longer is -- the sound's
-half would be read from where the older layout kept the display's fields -- so that minor's build
-makes the check refuse such a caller rather than misread it.
+**Minor 32** (2026-10-26) is the guests' input, and the configuration laid out per platform
+([§3](#3-host)): `lowlat_host_input_config` with `virtual_input`, its member `input` appended to
+`lowlat_host_config` after the sound's, and `lowlat_host_set_input_config` and
+`lowlat_host_get_input_config`, all on Windows alone; the statuses `LOWLAT_ERR_INPUT_DRIVER_*`
+(-700 to -703). Every other field only Windows acts on -- `virtual_width`, `virtual_height` and
+`virtual_hz` in `lowlat_host_video_config`, `virtual_fallback`, `wake_display` and
+`hold_memory_clock` in `lowlat_host_config` -- is declared where the header is compiled for
+Windows alone, so elsewhere it no longer exists. **On Windows the whole only grew at its end**:
+nothing moved, and a caller built against an earlier minor is refused by its size. **Off Windows
+something moved, before the first major version**, as at minor 27: the video half is sixteen
+bytes shorter and the whole with it, and a binding lays them out per platform, as the header
+does. A caller built against minors 27 to 31 is refused at `lowlat_host_start` by its size,
+which names that layout, rather than read with its sound half sixteen bytes off; one built
+before minor 27 had the layout this minor has there, and is taken. The report pads' own minor
+gives `virtual_pads` one of the input half's reserved bytes, moving nothing.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

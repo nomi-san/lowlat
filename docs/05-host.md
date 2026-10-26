@@ -865,7 +865,13 @@ instead to a keyboard and a mouse of the host's own HID driver ([11 §2](11-driv
 input the system takes as a device's: a low-level hook sees no injected flag on it, raw input
 names the device, it reaches the input desktop with no thread attached to it, and the system's own
 keyboard driver gives the keys whose form changes their forms. The batch input call stays the
-default and the fallback where the driver cannot carry the input.
+default and the fallback where the driver cannot carry the input. *Built 2026-10-26 for the
+keyboard (W4.1):* a guest's keyboard is made as the switch goes on or the guest is admitted
+under it, in the first of the driver's slots free, and its keys wait until the system lists it --
+milliseconds, half a second where it comes back on a name just let go -- which is when what is
+written to it starts reaching the system; where that has not happened within five seconds, where
+the driver gives no keyboard, and after it refuses a report, the keys go through the batch input
+call.
 
 - **Batches are expanded and injected as a unit.** The wire delivers input batches; expansion
   to device events is a pure, unit-tested function with no device dependency, so the mapping
@@ -952,7 +958,10 @@ default and the fallback where the driver cannot carry the input.
   second-display case above.
 - **One injector per guest**, holding that guest's pressed-key state. On disconnect it
   releases everything it is holding. Without this, a guest that vanishes mid-keystroke leaves
-  a key held down on a machine nobody is sitting at.
+  a key held down on a machine nobody is sitting at. (*Corrected 2026-10-26:* on Windows nothing
+  did. A device's end releases what it held, so on Linux the guest's devices going was the
+  release; the batch input call has no device, and a key a guest held as its loop ended stayed
+  down. The release now goes out as the guest's input does, whichever way its loop ends.)
 - **A lock the peer changed is brought into step before its next key.** A peer reports its
   locks on every keystroke, and a lock it toggled while looking elsewhere reaches the host no
   other way. Below a display server the host's own state cannot be read, so the first message
@@ -1166,7 +1175,12 @@ messages would, past the policy the service honours for its own call. A Delete -
 the keypad's -- going down while Ctrl and Alt are held, on that guest's keyboard or by the
 system's own key state, goes through the batch input call instead, in that form until it comes
 up: applications see the keys as before, and the secure screen comes from the service's call
-alone.
+alone. *Built 2026-10-26 (W4.1):* **a Delete already held on that keyboard when Ctrl and Alt come
+together over it is let go of there first**: at once where the guest's own Ctrl or Alt completes
+them, the report that goes next holding neither the Delete nor that key; at the guest's next pass
+where another keyboard's do, ahead of the keyboard's own repeat, which would type the Delete again
+under them. Its repeats then go through the batch input call. The system's key state is read on
+the desktop that takes input, and where it cannot be read both count as held.
 
 There is no general "inject these keys" call behind this. Input comes from guests; this is the
 one chord a guest is unable to send for itself.

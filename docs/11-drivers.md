@@ -9,7 +9,8 @@ built and checked live the same day; a guest's size and turn of any display put 
 (W3.10) built and checked live the same day; a program's own mode on the host's display (W3.11)
 built and checked live 2026-10-21, and a display read from its driver paced on the period it is
 handed pictures at (W3.12) built and checked live the same day; W3's gate to come. The input
-device (§2) planned 2026-10-22, at W4's interview; nothing of it built yet. Built by
+device (§2) planned 2026-10-22, at W4's interview; the driver built the same day (W4.0), and the
+host's keyboard on it with the switch 2026-10-26 (W4.1). Built by
 [impl-plan-windows.md](impl-plan-windows.md) W3 and W4,
 where the decisions and their reasons are recorded; this document is the design they add up to.
 
@@ -420,8 +421,9 @@ a release signature ([07 §10](07-platforms.md)).
 
 ## §2 Input
 
-*Planned 2026-10-22, at W4's interview. Built the same day (W4.0), not yet installed or checked
-live.* HID devices of the host's own for
+*Planned 2026-10-22, at W4's interview. Built the same day (W4.0), installed and checked on the
+development machine 2026-10-23; the host's keyboard on it built 2026-10-26 (W4.1).* HID devices of
+the host's own for
 a guest's keyboard, mouse and Sony pads, whose input the system takes as a device's rather than a
 program's: a low-level hook sees no injected flag on it, raw input names the device it came from,
 and it reaches the input desktop by itself, the secure one included. Until it is built, and
@@ -490,7 +492,9 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   value lies outside its range, so a report of zeroes would hold it up and pull both sticks into a
   corner, and the mouse's moves nothing. The host closes its handles when the system asks for the
   device, as the display's controller does (§1.8), so an update or a removal of the driver waits
-  on nothing of the host's. *Measured 2026-10-23:* a game's handle still open on a pad does not
+  on nothing of the host's. (*Built 2026-10-26, W4.1:* a request in flight on a handle finishes
+  first, and a handle whose driver's process ended is closed at the next request; every request
+  after answers that the driver is absent, and the guest's keys go through the batch input call.) *Measured 2026-10-23:* a game's handle still open on a pad does not
   hold the device back -- the host's close took 51 ms, the game's pending read answered with the
   pad at rest -- but the driver's removal then finishes at a reboot: the device and its packages
   go and an install works at once, on a new root device, while the old driver host stays until
@@ -562,7 +566,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   leaving, as on Linux.
 - **A device made is not yet a device that delivers**: input for it is held until it does, as on
   Linux ([07 §4.1](07-platforms.md)), and the time, with whatever announces it, is measured at
-  W4.0.
+  W4.0. *Built 2026-10-26 for the keyboard (W4.1):* held until raw input lists the device, which
+  W4.0 measured to predict delivery, and through the batch input call where that has not happened
+  within five seconds. A guest's keyboard takes the first slot the driver gives -- a slot another's
+  keyboard holds is refused as busy -- and is let go of off the guest's thread at a switch, its
+  end waiting while its neutral reports arrive.
 
 ## §3 Verification status
 
@@ -571,7 +579,11 @@ measurements are its first. *Built 2026-10-22* (W4.0): the driver, its setup inf
 package, signed with the test certificate, and the host's side of its interface. Run so far,
 needing no installed driver: each kind's descriptor read against the code that writes its reports
 and against its neutral report, the requests read and refused, each such check broken once. Owed:
-the install by its script, the checks on the machine and W4.0's measurements.
+the install by its script, the checks on the machine and W4.0's measurements. *Built 2026-10-26*
+(W4.1): a guest's keyboard on the driver behind the application's switch, the attention chord's
+rule, the host's handles following the driver away. Run, needing no driver: the chord's rule in
+both orders, the reports and the hold, every key's usage translating back to its key, the
+refusals' statuses, each broken once. Owed: the checks on the machine and live.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

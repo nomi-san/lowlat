@@ -32,7 +32,8 @@ its entry.
 *Amended 2026-10-25:* W3.13 -- the
 virtual displays' GPU named by its maker, or as the power-saving one -- added after W3 closed; it
 is built after W2.8. *Amended 2026-10-25:* W3.13 built, checked and closed; two findings beside it
-are named in its entry.
+are named in its entry. *Amended 2026-10-26:* W4.1, the keyboard and the switch, built; its live
+checks are next.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2279,7 +2280,11 @@ are through. The decisions are recorded once, here; the design they add up to is
   it goes off. **A switch either way first releases everything held on the old path**, as a
   permission taken away does, so a key held across it comes up rather than staying down.
   `lowlatd` takes it at start, by a flag; with no driver installed it says so once and keeps the
-  batch input call, its start not failed (*amended 2026-10-22*).
+  batch input call, its start not failed (*amended 2026-10-22*). *Built 2026-10-26 (W4.1):* in
+  minor 32. A driver that cannot be used is refused with a status of its own -- not installed,
+  another version, refusing this process, or answering an error of its own (-700 to -703) -- so an
+  application can say which; a start asking for it is not refused for it, as sound's is not for
+  its server, says why once, and reads back off. `lowlatd`'s flag is `--virtual-input`.
 - **The keyboard** is a bitmap of the keyboard page with its modifiers, so no number of keys held
   at once is too many, and a consumer collection for mute, volume and the media keys, where the
   codes peers send for them on the keyboard page and above it land. **No system control
@@ -2313,7 +2318,13 @@ are through. The decisions are recorded once, here; the design they add up to is
   kept until it comes up: applications see the keys as before, and the screen comes from the
   service's call alone. A Delete already held when Ctrl and Alt arrive is released on the HID
   keyboard first, unless the build shows that order harmless without raising the screen. Checked
-  by unit tests, each broken once, and never by raising the screen.
+  by unit tests, each broken once, and never by raising the screen. *Built 2026-10-26 (W4.1):*
+  that order released first, as no build could show it harmless without raising the screen: on
+  this guest's keyboard as Ctrl and Alt come together over a held Delete, the report that goes
+  out next holding neither the Delete nor the key that completed them; from another keyboard,
+  whose keys this one is not told of, at the guest's next pass while a Delete is held, ahead of
+  the keyboard's own repeat -- its first at least a quarter of a second after the key went down --
+  which would type it under them. Its later repeats go through the batch input call.
 - **A pad sent as its reports is presented as its product only where the owner sets it.**
   `virtual_pads`, in the input configuration and live, **off by default**: off, the reports are
   not taken and the pad is played as the Xbox pad from its whole states, as in W2.3; on, a
@@ -2389,6 +2400,20 @@ are through. The decisions are recorded once, here; the design they add up to is
   thread attached; a guest's Ctrl+Alt+Del keys reaching applications and never the secure screen;
   the power, sleep and wake keys never reaching the system; the switch moved both ways mid-session
   with a key held, the key coming up; switched on with no driver, refused.
+  *Built 2026-10-26, unticked:* the input configuration, `virtual_input` and its two calls in
+  minor 32, with the fields only Windows acts on declared there alone -- off Windows the video
+  configuration and the whole are shorter, and a caller laid out as minors 27 to 31 is refused
+  by its size rather than misread; `lowlatd --virtual-input`; a guest's keyboard on the driver
+  from its admission or the switch, in the first slot the driver gives, its keys held until the
+  system lists it, and the batch input call where the driver gives none, where it is not listed
+  within 5 s and after it refuses a report; the chord's rule, the other order released first;
+  the switch first releasing what the old way holds; the host's handles closed when the system
+  asks for the driver's device back. Beside it, **a leaving guest's keys released on the batch
+  input call**, which nothing did: a key held as a guest's loop ended stayed down (W2.3, found
+  reading for this step). Run: every check needing no driver, each new one broken once; on the
+  development machine, a key held until the keyboard was listed and released across the switch
+  both ways, and the library's calls switching it as the driver allowed. Owed: the live checks
+  above, and W4.0's driver taken up at the next switch-on.
 - [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
   multiplier, every button and wheel on the relative collection (*amended 2026-10-22*; as W4.0's
   measurement of the two collections settles it) -- and absolute positions as W4.0's measurement
@@ -2429,6 +2454,11 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W4.1 built: the input configuration in minor 32 with the Windows-only fields
+  declared on Windows alone, a guest's keyboard on the input driver with the chord's rule, the
+  switch, `--virtual-input`; the input driver's refusals given statuses of their own, and a
+  start not refused for it; the chord's other order released first. Found and fixed beside it: a
+  leaving guest's keys were never released on the batch input call.
 - 2026-10-25: W2.8's congestion leg corrected: the collapse at 120 a second was the test
   content's floor; with content that fits, the rate change under congestion passes at 120.
 - 2026-10-25: W2.8 closed: both CI jobs green.

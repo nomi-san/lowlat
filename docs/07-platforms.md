@@ -911,8 +911,9 @@ After Gate B. The differences are contained:
   own (*amended 2026-10-22*). Its control interface admits the system account and administrators
   alone, since its devices' input reaches the secure desktop and the console's session. The
   application switches a guest's keyboard and mouse onto it, the batch input call staying the
-  default; the owner sets whether a pad sent as its reports is presented as its product; the Xbox
-  360 pad stays on the virtual bus. The design is [11 §2](11-drivers.md).
+  default -- `lowlatd --virtual-input` at start (*built 2026-10-26 for the keyboard*, W4.1); the
+  owner sets whether a pad sent as its reports is presented as its product; the Xbox 360 pad stays
+  on the virtual bus. The design is [11 §2](11-drivers.md).
 - **What needs a driver needs it installed** (*added 2026-10-22*). Nothing of the host installs
   its drivers -- not the service's install, not the host, not the library: the machine's
   administrator runs each driver's script, once, again to update it, and with `-Remove` to take it

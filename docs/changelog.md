@@ -3,6 +3,70 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - W4.1 built: a guest's keyboard on the host's own input driver, and the switch
+
+### Built
+- **The guests' input has a live configuration of its own, on Windows alone** (minor 32,
+  [06 §3](06-api.md)): `lowlat_host_input_config` with `virtual_input`, nested in the whole as
+  `input` after the sound's, and `lowlat_host_set_input_config` and `_get_`. Switching it on asks
+  the host's input driver first, and a driver that cannot be used is refused with a status of its
+  own -- `LOWLAT_ERR_INPUT_DRIVER_ABSENT`, `_VERSION`, `_DENIED` or `_IO`, -700 to -703 -- changing
+  nothing; a start asking for it is not refused for it, says why once and reads back off.
+  `lowlatd --virtual-input` asks for it at start.
+- **A guest's keyboard on the driver while it is on** ([05 §7](05-host.md),
+  [11 §2](11-drivers.md)): made as the switch goes on or as a guest is admitted under it, in the
+  first slot the driver gives; its keys held until the system lists it, which is when what is
+  written to it starts arriving, and through the batch input call where that has not happened in
+  five seconds, where the driver gives no keyboard and after it refuses a report. Each key goes
+  out as the usage the system translates back to the key the batch input call would have typed;
+  mute, volume and the media keys as consumer usages. **A switch either way first releases what
+  the old way holds**; the keyboard switched off is let go of off the guest's thread, its end
+  waiting while its neutral reports arrive.
+- **The attention chord is never typed on it** ([05 §7.3](05-host.md)): a Delete going down
+  while Ctrl and Alt are held -- on that keyboard or anywhere, as the system's key state says --
+  goes through the batch input call, as it repeats and comes up; a Delete held on it when Ctrl
+  and Alt come together over it is let go of there first, at once for its own Ctrl or Alt and at
+  the next pass for another keyboard's, ahead of the keyboard's own repeat.
+- **The host's handles follow the input driver away**: closed when the system asks for the
+  driver's device back, or when its process ended, so an update or a removal waits on nothing of
+  the host's.
+- **The fields only Windows acts on are declared on Windows alone** (minor 32): `virtual_width`,
+  `virtual_height`, `virtual_hz`, `virtual_fallback`, `wake_display` and `hold_memory_clock`. Off
+  Windows the video configuration and the whole are sixteen bytes shorter, and a caller laid out
+  as minors 27 to 31 is refused at the start by its size rather than read with its sound half
+  sixteen bytes off; the C# example lays them out per platform as the header does.
+
+### Fixed
+- **A leaving guest's keys were never released on Windows** ([05 §7](05-host.md)): a key a guest
+  held through the batch input call as its loop ended -- a dropped connection, a kick -- stayed down
+  on the machine. A device's end releases what it held, which on Linux was the release; the batch
+  input call has no device. The release now goes out as the guest's input does, whichever way its
+  loop ends.
+
+### Checked
+- Offline: the chord's rule in both orders and under the system's Ctrl and Alt, the reports
+  written only as they change, the consumer usage held newest, the hold's bound, every peer key's
+  usage translating back to its key and the power keys to none, the refusals' statuses, the
+  configuration's layout on each platform and the older layout refused off Windows, the leaving
+  guest's release; each check broken once and seen to fail. The header generated with the
+  Windows-only fields guarded whole, compiled alone as C and C++ and after the platform's own
+  headers; the boundary harness setting and reading the input configuration on Windows. Both
+  bars: on Windows 1446 tests passed, none failed; on Linux 1418 passed, the licences and
+  advisories clean, and the two dual-stack checks the virtual machine's network fails as before.
+- On the development machine, with the driver installed: a key typed as the switch went on held
+  until the system listed the keyboard, 10 ms, then down on it; switched off with the key held,
+  the key up at once and the keyboard gone 53 ms later; switched on again, the keyboard listed
+  after half a second -- the wait a keyboard has when it comes back on a name just let go -- and a
+  key down and up on it. The library's calls switched it as the driver allowed, and the driver's
+  own checks passed again on the host's reworked side of its interface.
+
+### Not run
+- Live, with a guest: its keys arriving as a device's in raw input and with no injected flag in
+  a low-level hook, every key class against a USB keyboard's, the lock screen and an elevation
+  prompt, the chord's keys reaching applications and raising nothing, the switch moved
+  mid-session with a key held; switched on with no driver installed; the driver's device
+  restarted under the host's keyboard; and W4.0's driver taken up at the next switch-on.
+
 ## 2026-10-25 - W3.13 built and checked: the displays' GPU by its maker, or the power-saving one
 
 ### Changed
