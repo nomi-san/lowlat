@@ -871,7 +871,13 @@ under it, in the first of the driver's slots free, and its keys wait until the s
 milliseconds, half a second where it comes back on a name just let go -- which is when what is
 written to it starts reaching the system; where that has not happened within five seconds, where
 the driver gives no keyboard, and after it refuses a report, the keys go through the batch input
-call.
+call. *Built the same day for the pointer (W4.2):* a guest's mouse is made beside its keyboard
+and waits as it does. Every button, wheel and motion rides its relative collection, whichever
+pointer the expansion sent it to, the wheels in the units the peer counted; a position on the
+primary display rides its absolute collection, at the pixel the batch input call would have
+named, and **a position on any other display goes through the batch input call**, the absolute
+collection spanning the primary alone ([11 §2.3](11-drivers.md)). A switch either way first
+releases the keys and the buttons held on the old way.
 
 - **Batches are expanded and injected as a unit.** The wire delivers input batches; expansion
   to device events is a pure, unit-tested function with no device dependency, so the mapping

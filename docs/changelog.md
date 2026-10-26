@@ -3,6 +3,49 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - W4.2 built: a guest's mouse on the host's own input driver
+
+### Built
+- **A guest's mouse on the driver beside its keyboard** ([05 §7](05-host.md),
+  [11 §2](11-drivers.md)): under the same switch (`virtual_input`, [06 §3](06-api.md)), made as
+  it goes on or as a guest is admitted under it, in the first slot the driver gives its kind; the
+  pointer held until the system lists the mouse, and through the batch input call where that has
+  not happened within five seconds, where the driver gives no mouse and after it refuses a
+  report.
+- **Every button, wheel and motion on its relative collection**, whichever of the expansion's
+  two pointers it went to, the held buttons in every report, the wheels in the units the peer
+  counted, a move past a report's range split with nothing lost.
+- **A position on the primary display on its absolute collection**, at the pixel the batch
+  input call would have named -- the position taken back to that pixel by the system's own layout
+  -- and **a position on any other display through the batch input call**, the collection
+  spanning the primary alone.
+- **A switch either way releases the buttons as well as the keys** the old way holds.
+
+### Checked
+- Offline: a click after a position and under motion, and both wheels, on the relative
+  collection; a long move split, nothing lost; every pixel of a primary across two layouts, one
+  with the desktop's corner left of it, landing on itself, and the positions off it refused; the
+  switch letting go of a key and a button; each check broken once and seen to fail. Both bars:
+  on Windows 1454 tests passed, none failed, the licences and advisories clean; on Linux 1420
+  passed, the licences and advisories clean, and the two dual-stack checks the virtual machine's
+  network fails as before.
+- On the development machine, the driver admitting the process: the guest's mouse listed 24 ms
+  after it was made, three positions on the 2560x1440 primary each on its pixel within 2 ms of
+  the write, a relative move moving the pointer, and the mouse gone 54 ms after the switch went
+  off; W2.3's sweep through the guest's own devices with the switch on landing every position on
+  its pixel on all three displays, the primary's through the mouse and the others' through the
+  batch input call.
+- Live, a macOS client against the service with the switch on: the pointer moving in a game
+  whose anti-cheat refuses the batch input call's motion; a window dragged; a browser game holding
+  the pointer, aimed by relative motion; both wheels and a trackpad's pinch to zoom; and clicks on
+  a second display, the position there through the batch input call and the click through the
+  mouse.
+
+### Not run
+- At W4's gate: the sweep at 125 percent, relative motion in raw input naming a device, a
+  machine with no mouse showing its pointer, a drag held across the client turning its pointer
+  relative, and W4.1's checks, moved there.
+
 ## 2026-10-26 - W4.1's first sitting: the pointer placed as the desktop changes, no key held under Command
 
 ### Fixed

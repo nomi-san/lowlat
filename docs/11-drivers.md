@@ -531,7 +531,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   range spans the primary display alone**, a value v landing on its pixel floor(v x W / 32768) in
   its own pixels at 100 and 125 percent alike, so an absolute position on any other output goes
   through the batch input call, the relative motion, buttons and wheels staying on the HID mouse
-  (the maintainer's decision).
+  (the maintainer's decision). *Built 2026-10-26 (W4.2):* the host takes a position the
+  expansion spread over the whole desktop back to the pixel the batch input call would put the
+  pointer on, by the system's own layout, and gives the primary's the collection's value for
+  that pixel's centre; motion past a report's range is split over as many reports as it needs,
+  the held buttons in each.
 - **The DualShock 4 and the DualSense**: the real products' descriptors and identities, as the
   Linux host presents them ([07 §4.2](07-platforms.md)). The driver answers a feature read from
   the pad's table -- the peer's calibration and firmware, else a real pad's, and a pairing report
@@ -570,7 +574,8 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   W4.0 measured to predict delivery, and through the batch input call where that has not happened
   within five seconds. A guest's keyboard takes the first slot the driver gives -- a slot another's
   keyboard holds is refused as busy -- and is let go of off the guest's thread at a switch, its
-  end waiting while its neutral reports arrive.
+  end waiting while its neutral reports arrive. *Built the same day for the mouse (W4.2):* the
+  same, beside the keyboard, its slots its own kind's.
 
 ## §3 Verification status
 
@@ -583,7 +588,13 @@ the install by its script, the checks on the machine and W4.0's measurements. *B
 (W4.1): a guest's keyboard on the driver behind the application's switch, the attention chord's
 rule, the host's handles following the driver away. Run, needing no driver: the chord's rule in
 both orders, the reports and the hold, every key's usage translating back to its key, the
-refusals' statuses, each broken once. Owed: the checks on the machine and live.
+refusals' statuses, each broken once. Owed: the checks on the machine and live. *Built
+2026-10-26* (W4.2): a guest's mouse on the driver beside its keyboard. Run, needing no driver:
+every button and wheel on the relative collection, a long move split, a position on the
+primary on its pixel and one off it refused, the switch releasing keys and buttons, each broken
+once. On the machine: positions on the primary on their pixels through it, and every display's
+on its pixel with the switch on. Live: the pointer in a game whose anti-cheat refuses the batch
+input call's motion, relative aim, both wheels, a second display's clicks. Owed: W4's gate.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

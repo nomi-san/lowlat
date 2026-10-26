@@ -33,7 +33,8 @@ its entry.
 virtual displays' GPU named by its maker, or as the power-saving one -- added after W3 closed; it
 is built after W2.8. *Amended 2026-10-25:* W3.13 built, checked and closed; two findings beside it
 are named in its entry. *Amended 2026-10-26:* W4.1, the keyboard and the switch, built; its live
-checks are next.
+checks are next. *Amended 2026-10-26:* W4.1's live checks moved to W4's gate, which runs them for
+the keyboard and the mouse together; W4.2, the pointer, built.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2418,7 +2419,11 @@ are through. The decisions are recorded once, here; the design they add up to is
   pointer worked; two faults found, fixed and checked live again -- an absolute pointer short of
   the picture after the desktop changed around the captured output, the place now followed as the
   layout changes; and a key let go under Command left held and repeated, no key now held while a
-  peer's mask holds Command ([05 §7](05-host.md)).
+  peer's mask holds Command ([05 §7](05-host.md)). *Amended 2026-10-26 (the maintainer's
+  decision):* **the live checks still owed move to W4's gate**, which lists them for the
+  keyboard and the mouse together -- raw input and the injected flag, the lock screen and an
+  elevation prompt, the chord's keys, the switch moved mid-session, the driver removed -- so one
+  set of machine changes covers both devices; this step stays unticked until the gate runs them.
 - [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
   multiplier, every button and wheel on the relative collection (*amended 2026-10-22*; as W4.0's
   measurement of the two collections settles it) -- and absolute positions as W4.0's measurement
@@ -2429,6 +2434,21 @@ are through. The decisions are recorded once, here; the design they add up to is
   guest is seated; absolute motion turned into deltas while an application holds the pointer; a
   button held while the client turns its pointer relative and back, nothing left held, no click
   lost and the drag not ended.
+  *Built 2026-10-26, unticked:* a guest's mouse on the driver beside its keyboard, under the same
+  switch, made, held for and let go of as the keyboard is; every button, wheel and motion on the
+  relative collection, the wheels in the peer's units, a move past a report's range split; a
+  position on the primary display on the absolute collection at the pixel the batch input call
+  would have named, by the system's own layout, and a position on any other display through the
+  batch input call; a switch either way releasing the buttons as well as the keys. Run: every
+  check needing no driver, each broken once -- the buttons and wheels after a position and under
+  motion, a long move split with nothing lost, every pixel of a primary across two layouts and
+  the positions off it refused, the switch letting go of a key and a button. On the development
+  machine: the guest's mouse through the host's own devices, positions on the primary on their
+  pixels through it, and W2.3's sweep with the switch on, every position on its pixel on three
+  displays. Live, a macOS client: the pointer in a game whose anti-cheat refuses the batch input
+  call's motion, a window dragged, a browser game's relative aim, both wheels and a trackpad's
+  pinch, clicks on a second display. Owed, at W4's gate: the sweep at 125 percent, raw input
+  naming the device, a machine with no mouse, a drag held across the client turning relative.
 - [ ] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
   in its minor; the DualShock 4 and the DualSense on the driver, the feature table filled from the
   peer, what is written to a pad sent back to the peer; the answers a Linux pad gives moved to
@@ -2459,6 +2479,11 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W4.2 built: a guest's mouse on the input driver beside its keyboard, every button,
+  wheel and motion on its relative collection, the primary display's positions on its absolute
+  one and every other display's through the batch input call; the switch releasing the buttons
+  too; checked on the machine and live with a macOS client. W4.1's live checks moved to W4's
+  gate.
 - 2026-10-26: W4.1's first sitting: the place followed as the desktop changes around the captured
   output, and no key held while a peer's mask holds Command; both checked live.
 - 2026-10-26: W4.1 built: the input configuration in minor 32 with the Windows-only fields

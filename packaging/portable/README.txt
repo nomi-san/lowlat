@@ -11,8 +11,8 @@ the policy bypass shown, or Unblock-File on the scripts first.
 
      powershell -ExecutionPolicy Bypass -File install-driver.ps1
 
-   The input driver the same way, if wanted; the host types through it only
-   when started with --virtual-input:
+   The input driver the same way, if wanted; the host types and points
+   through it only when started with --virtual-input:
 
      powershell -ExecutionPolicy Bypass -File install-input-driver.ps1
 
