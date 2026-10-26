@@ -1161,7 +1161,10 @@ before the second codec.
 **Both "implies HEVC" notes are the sender's own rule and the receiver enforces it too**, so
 neither is advisory. A host that codes what these name promotes the codec with them rather than
 honouring one and not the other; a peer asking for depth on H.264 is asking for something no
-hardware produces.
+hardware produces. *Amended 2026-10-26:* an established client sends bit 4 with bit 0 clear
+when its ten-bit preference is on and its second-codec preference off, and an established host
+codes HEVC for it; this project's host does too from that day (it read bit 0 alone before,
+[05 §6.1](05-host.md)).
 
 **Both bits are read as preferences, and a host that cannot meet one degrades** (*corrected
 2026-09-19*; this paragraph said from 2026-08-30 that 4:4:4 was refused outright, which was

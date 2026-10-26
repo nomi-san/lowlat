@@ -891,7 +891,11 @@ coded at 1088 -- that its size had changed when initialised at the coded size, s
 stream decoded nothing and asked the host for a keyframe at every unit; 1.4.37 takes either.
 A cropped clip of each codec is committed beside the others, and every decoder here decodes
 them bit for bit. *Open*: ten-bit HEVC on that runtime ended the process mid-clip, once in
-the runtime and twice in an abort; not followed further.
+the runtime and twice in an abort; not followed further. *Settled the same day:* **ten-bit HEVC
+is decoded by the runtime's ten-bit component**, which its headers call superseded: 1.4.31's
+other one, given a ten-bit stream, corrupts the process's memory whether or not the
+low-latency mode is on, where the ten-bit one decodes every ten-bit clip bit for bit in that
+mode; 1.4.37 decodes them either way.
 
 **On an AMD GPU it comes first**, where its runtime has the low-latency mode. Against the
 system's interface on the same GPU, in one session per codec and kind with the decoders

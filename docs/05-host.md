@@ -657,6 +657,12 @@ on reinitialization requested by any guest:
         force one keyframe, which is what the request is owed
 ```
 
+*Amended 2026-10-26:* **ten-bit colour or full chroma names the second codec as its own bit
+does.** Both exist on it alone, and an established client asks for ten bits with its
+second-codec preference off, which an established host answers on the second codec; this host
+chose the codec from that bit alone and sent such a client eight-bit H.264. A codec refused
+takes neither with it, since both are dropped before it is.
+
 **The intersection, not the last request.** One encode serves every seat, so a capability only
 some of them declared is one none of them can be sent: granting it would hand the others a
 stream their decoders were not built for, and they report that as a decode failure rather than

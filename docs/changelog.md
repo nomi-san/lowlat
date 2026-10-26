@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - Ten-bit HEVC on AMD's older runtime, and ten bits naming the second codec
+
+### Fixed
+- **Ten-bit HEVC ended the client on AMD's runtime 1.4.31** ([10 §5.2](10-client.md)): the
+  HEVC decoder given a ten-bit stream corrupted the process's memory, whatever its low-latency
+  mode; ten-bit HEVC is decoded by the runtime's ten-bit component now, which 1.4.37 takes too.
+- **A ten-bit or full-chroma request without the second codec's bit got eight-bit H.264**
+  ([05 §6.1](05-host.md), [01 §11.5](01-protocol.md)): an established client asks so when its
+  ten-bit preference is on and its second-codec preference off, an established host answers on
+  the second codec, and this host chose the codec from that bit alone. Either bit names the
+  second codec now.
+
+### Checked
+- On the laptop with runtime 1.4.31, every clip AMD's decoder takes, the ten-bit ones
+  included, bit for bit by planes and through the textures, where the process had ended at the
+  first ten-bit clip; on the development machine's 1.4.37 the same. The library's demo there
+  asking for ten-bit HEVC from this project's host: 1,700 pictures in 19 seconds, no fault,
+  where it had ended within a second. Each new check broken once and seen to fail.
+- Live, an established client on that laptop with its ten-bit preference on and its
+  second-codec preference off: ten-bit HEVC from this project's host on two displays, the host
+  moving from H.264 at each ask, where it had sent eight-bit H.264.
+- Both bars: on Windows 1466 tests passed, none failed, the licences and advisories clean; on
+  Linux 1426 passed, the licences and advisories clean, and the two dual-stack checks the
+  virtual machine's network fails as before.
+
 ## 2026-10-26 - AMD's decoder at the size a stream shows
 
 ### Fixed
@@ -23,7 +48,7 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ### Open
 - Ten-bit HEVC on runtime 1.4.31 ended the process mid-clip, once in the runtime and twice in
-  an abort.
+  an abort. (*Fixed the same day*, the entry above.)
 
 ## 2026-10-26 - W4.3 built: the report pads as their products on the host's own input driver
 

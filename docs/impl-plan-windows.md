@@ -348,7 +348,10 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   the library's demo on a laptop for W4's gate): the decoder is initialised at the size the
   stream shows, since an older runtime decoded nothing of a cropped stream initialised at its
   coded size ([10 §5.2](10-client.md)); checked by a cropped clip of each codec, failing there
-  before and passing after, and by a 1920x1080 stream from this project's host live.
+  before and passing after, and by a 1920x1080 stream from this project's host live. *Amended
+  again the same day*: ten-bit HEVC on the runtime's ten-bit component, the other corrupting
+  the process's memory on that runtime; every ten-bit clip there bit for bit after, and a
+  ten-bit stream live.
 - [x] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
   runtime, loaded at run time from where the display driver installs it, and through its
   older runtime (MFX) for the Intel parts the current one does not reach; planes, then
@@ -2550,6 +2553,8 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W1.6 amended again: ten-bit HEVC on AMD's ten-bit component, the other
+  corrupting memory on an older runtime ([10 §5.2](10-client.md)).
 - 2026-10-26: W1.6 amended: AMD's decoder initialised at the size a stream shows, an older
   runtime decoding nothing of a cropped one at its coded size ([10 §5.2](10-client.md)).
 - 2026-10-26: W4.3 built: the report pads as their products on the input driver behind
