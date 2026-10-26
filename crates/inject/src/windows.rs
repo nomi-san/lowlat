@@ -17,17 +17,19 @@
 //! deltas and positions alike.
 //!
 //! **Where the application switches it on** (docs/06-api.md section 3), the
-//! guest's keys go to a keyboard of the host's own input driver instead
-//! (docs/11-drivers.md section 2), which the system takes as a device's: made
-//! as the switch goes on, the keys held until the system lists it, and the
-//! batch input call again wherever the driver gives none or its keyboard goes.
-//! **It never types the attention chord** (docs/05-host.md section 7.3): a
-//! Delete going down while Ctrl and Alt are held goes through the batch input
-//! call, which raises no secure screen.
+//! guest's keys and pointer go to a keyboard and a mouse of the host's own
+//! input driver instead (docs/11-drivers.md section 2), which the system takes
+//! as devices': made as the switch goes on, each one's input held until the
+//! system lists it, and the batch input call again wherever the driver gives
+//! none or its device goes. **The keyboard never types the attention chord**
+//! (docs/05-host.md section 7.3): a Delete going down while Ctrl and Alt are
+//! held goes through the batch input call, which raises no secure screen. **A
+//! position off the primary display goes through the batch input call** too:
+//! the mouse's absolute collection spans the primary alone.
 
 use lowlat_core::pad::Inbound;
 use lowlat_hid_proto::control::Features;
-use lowlat_hid_proto::{GUEST_SLOTS, Kind, keyboard};
+use lowlat_hid_proto::{GUEST_SLOTS, Kind, keyboard, mouse};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
     CM_Get_Device_Interface_ListW, CR_SUCCESS,
@@ -57,7 +59,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
     SendInput, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, XBUTTON1, XBUTTON2,
+};
 
 use crate::event::{self, Device, Event, Locks, SCRATCH, Sink};
 use crate::gamepad::{self, MAX_PADS};
@@ -108,8 +113,9 @@ const INPUT_SIZE: i32 = size_of::<INPUT>() as i32;
 /// a name just let go; a slot's first setup is the longest wait.
 const DELIVERS_WITHIN_MS: f64 = 5_000.0;
 
-/// Events held for the input driver's keyboard while it cannot deliver yet:
-/// a person types a few keys in the wait, and a slot costs eight bytes.
+/// Events held for one of the input driver's devices while it cannot deliver
+/// yet: a person types a few keys in the wait, or moves the pointer a few
+/// dozen times at three events a move, and a slot costs eight bytes.
 const HELD: usize = 256;
 
 /// A request body's size, as the bus is told it.
@@ -144,6 +150,10 @@ pub struct Devices {
     hid: Option<HidKeyboard>,
     /// What the keyboard was sent while that one could not deliver yet.
     held: Held,
+    /// The driver's mouse, as its keyboard is.
+    mouse: Option<HidMouse>,
+    /// What the pointer was sent while that one could not deliver yet.
+    mouse_held: Held,
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
     desktop: Option<Desktop>,
@@ -158,6 +168,7 @@ impl core::fmt::Debug for Devices {
             .field("forward", &self.forward.is_some())
             .field("virtual_input", &self.virtual_input)
             .field("hid", &self.hid)
+            .field("mouse", &self.mouse)
             .finish_non_exhaustive()
     }
 }
@@ -184,20 +195,23 @@ impl Devices {
             virtual_input: false,
             hid: None,
             held: Held::default(),
+            mouse: None,
+            mouse_held: Held::default(),
             refusing: false,
             desktop,
             _aware: aware,
         })
     }
 
-    /// Move the guest's keys to a keyboard of the host's own input driver, or
-    /// back to the batch input call (docs/06-api.md section 3). **What the old
-    /// way holds is the caller's to release first**: the expander knows what
-    /// is held, and releases it the way it went down.
+    /// Move the guest's keys and pointer to a keyboard and a mouse of the
+    /// host's own input driver, or back to the batch input call
+    /// (docs/06-api.md section 3). **What the old way holds is the caller's to
+    /// release first**: the expander knows what is held, and releases it the
+    /// way it went down.
     ///
-    /// On, the keyboard is made now and the keys held until the system lists
+    /// On, both are made now and each one's input held until the system lists
     /// it; with no driver, or none admitting this process, the batch input call
-    /// stays, said once. Off, the keyboard is let go of off this thread: its
+    /// stays, said once. Off, both are let go of off this thread: a device's
     /// end waits while its neutral reports arrive, which the guest's loop is
     /// not held up by. Asking for what is already so changes nothing.
     pub fn set_virtual_input(&mut self, on: bool) {
@@ -207,12 +221,17 @@ impl Devices {
         self.virtual_input = on;
         if on {
             self.hid = HidKeyboard::make();
+            self.mouse = HidMouse::make();
         } else {
-            // What waited for that keyboard was never typed anywhere, and
+            // What waited for those devices never reached anything, and
             // nothing of it is held.
             self.held = Held::default();
+            self.mouse_held = Held::default();
             if let Some(hid) = self.hid.take() {
                 hid.close_aside();
+            }
+            if let Some(mouse) = self.mouse.take() {
+                mouse.close_aside();
             }
         }
     }
@@ -289,6 +308,61 @@ impl Devices {
         self.send(inputs.as_slice());
     }
 
+    /// The pointer on the input driver's mouse: every button, wheel and motion
+    /// on its relative collection, a position on the primary display on its
+    /// absolute one, and a position on any other display through the batch
+    /// input call, the absolute collection spanning the primary alone. A mouse
+    /// that refuses a report is taken to be gone -- its end releases what it
+    /// held -- and that report and the rest go through the batch input call.
+    fn pointer_to_hid(&mut self, events: &[Event]) {
+        let Some(mut mouse) = self.mouse.take() else {
+            self.pointer_to_batch(events);
+            return;
+        };
+        let mut lost = None;
+        // Where the report being read began: what it holds reached nothing
+        // until its end is written.
+        let mut report = 0;
+        for (at, event) in events.iter().enumerate() {
+            mouse.pointer.take(event);
+            if event.kind != event::EV_SYN {
+                continue;
+            }
+            let device = &mut mouse.device;
+            let written = mouse.pointer.ended(primary_place, |pointed| match pointed {
+                Pointed::Relative(report) => device.write(&report),
+                Pointed::Absolute(report) => device.write(&report),
+                Pointed::Elsewhere(x, y) => {
+                    self.send(&[mouse_input(x, y, 0, ABSOLUTE)]);
+                    Ok(())
+                }
+            });
+            if let Err(error) = written {
+                lost = Some(error);
+                break;
+            }
+            report = at + 1;
+        }
+        match lost {
+            None => self.mouse = Some(mouse),
+            Some(error) => {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's mouse is gone, the pointer goes through the batch input call, slot={} error={error}",
+                    mouse.slot
+                );
+                mouse.close_aside();
+                self.pointer_to_batch(events.get(report..).unwrap_or_default());
+            }
+        }
+    }
+
+    /// The pointer through the batch input call.
+    fn pointer_to_batch(&mut self, events: &[Event]) {
+        let mut inputs = Inputs::new();
+        pointer_inputs(events, &mut inputs);
+        self.send(inputs.as_slice());
+    }
+
     /// Whether Ctrl and Alt are held anywhere on the machine, as the system's
     /// own key state says -- another guest's keyboard, the desk's, this one's.
     ///
@@ -358,6 +432,40 @@ impl Devices {
         self.hid = Some(hid);
     }
 
+    /// The input driver's mouse, each pass: what was held for it sent once the
+    /// system lists it, or through the batch input call once it is past its
+    /// time.
+    fn tick_mouse(&mut self) {
+        let Some((slot, made)) = self
+            .mouse
+            .as_ref()
+            .filter(|mouse| !mouse.ready)
+            .map(|mouse| (mouse.slot, mouse.made))
+        else {
+            return;
+        };
+        let after_ms = lowlat_common::clock::elapsed_ms(made);
+        if hid::listed(Kind::Mouse, slot) {
+            if let Some(mouse) = self.mouse.as_mut() {
+                mouse.ready = true;
+            }
+            lowlat_common::log_info!(
+                "inject: the input driver's mouse delivers, slot={slot} after_ms={after_ms:.0}"
+            );
+            let held = core::mem::take(&mut self.mouse_held);
+            self.pointer_to_hid(held.events());
+        } else if after_ms >= DELIVERS_WITHIN_MS {
+            lowlat_common::log_warn!(
+                "inject: the input driver's mouse never delivered, the pointer goes through the batch input call, slot={slot} after_ms={after_ms:.0}"
+            );
+            if let Some(mouse) = self.mouse.take() {
+                mouse.close_aside();
+            }
+            let held = core::mem::take(&mut self.mouse_held);
+            self.pointer_to_batch(held.events());
+        }
+    }
+
     /// Hand every report pad's reports to `to` instead of playing the pad
     /// from its whole states, and tell it when the pad is gone: the
     /// application's device stands in (docs/05-host.md section 7.2). Set
@@ -376,9 +484,10 @@ impl Devices {
     ///
     /// **Called from the loop that already runs**, so a pad that arrived with
     /// one message and nothing after it is still put in once it can be. The
-    /// input driver's keyboard is followed here too.
+    /// input driver's keyboard and mouse are followed here too.
     pub fn tick(&mut self) {
         self.tick_keyboard();
+        self.tick_mouse();
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
@@ -503,17 +612,19 @@ impl Devices {
 
 impl Sink for Devices {
     fn emit(&mut self, device: Device, events: &[Event]) {
-        let mut inputs = Inputs::new();
         match device {
-            Device::Keyboard => {
-                match self.hid.as_ref().map(|hid| hid.ready) {
-                    Some(true) => self.keys_to_hid(events),
-                    Some(false) => self.held.push(events),
-                    None => self.keys_to_batch(events),
+            Device::Keyboard => match self.hid.as_ref().map(|hid| hid.ready) {
+                Some(true) => self.keys_to_hid(events),
+                Some(false) => self.held.push(events),
+                None => self.keys_to_batch(events),
+            },
+            Device::Pointer | Device::PointerAbsolute => {
+                match self.mouse.as_ref().map(|mouse| mouse.ready) {
+                    Some(true) => self.pointer_to_hid(events),
+                    Some(false) => self.mouse_held.push(events),
+                    None => self.pointer_to_batch(events),
                 }
-                return;
             }
-            Device::Pointer | Device::PointerAbsolute => pointer_inputs(events, &mut inputs),
             Device::Gamepad(id) => {
                 let Some(index) = self.pad(id) else {
                     return;
@@ -528,10 +639,8 @@ impl Sink for Devices {
                         *slot = None;
                     }
                 }
-                return;
             }
         }
-        self.send(inputs.as_slice());
     }
 
     fn unplug(&mut self, pad: u32) {
@@ -893,35 +1002,14 @@ impl HidKeyboard {
     /// A keyboard in the first slot the driver gives, or the reason it gives
     /// none, said.
     fn make() -> Option<Self> {
-        let mut why = hid::Error::Absent;
-        for slot in 0..u8::try_from(GUEST_SLOTS).unwrap_or(0) {
-            match hid::Device::create(Kind::Keyboard, slot, Features::new()) {
-                Ok(device) => {
-                    lowlat_common::log_info!(
-                        "inject: the input driver's keyboard made, slot={slot}"
-                    );
-                    return Some(Self {
-                        device,
-                        slot,
-                        keys: HidKeys::default(),
-                        ready: false,
-                        made: lowlat_common::clock::Time::now(),
-                    });
-                }
-                // **The driver keeps a kind's slots across every handle**: a
-                // slot another guest's keyboard holds is refused as busy, and
-                // the next is asked for.
-                Err(error @ hid::Error::Refused(ERROR_BUSY)) => why = error,
-                Err(error) => {
-                    why = error;
-                    break;
-                }
-            }
-        }
-        lowlat_common::log_warn!(
-            "inject: no keyboard from the input driver, keys go through the batch input call, error={why}"
-        );
-        None
+        let (device, slot) = made(Kind::Keyboard, "keyboard", "keys go")?;
+        Some(Self {
+            device,
+            slot,
+            keys: HidKeys::default(),
+            ready: false,
+            made: lowlat_common::clock::Time::now(),
+        })
     }
 
     /// The reports that changed, in order.
@@ -942,21 +1030,249 @@ impl HidKeyboard {
         self.device.write(&report)
     }
 
-    /// Let the device go off this thread: its end waits while its neutral
-    /// reports arrive, which the guest's loop is not held up by. A thread that
-    /// cannot be started lets it go here instead.
     fn close_aside(self) {
-        let device = self.device;
-        let _ = std::thread::Builder::new()
-            .name("lowlat-hid-close".to_owned())
-            .spawn(move || drop(device));
+        close_aside(self.device);
     }
 }
 
-/// The keyboard's events while its device cannot deliver yet.
+/// A device of `kind` in the first slot the driver gives, with that slot, or
+/// the reason it gives none said: the device `named`, and what `goes` through
+/// the batch input call instead.
+fn made(kind: Kind, named: &str, goes: &str) -> Option<(hid::Device, u8)> {
+    let mut why = hid::Error::Absent;
+    for slot in 0..u8::try_from(GUEST_SLOTS).unwrap_or(0) {
+        match hid::Device::create(kind, slot, Features::new()) {
+            Ok(device) => {
+                lowlat_common::log_info!("inject: the input driver's {named} made, slot={slot}");
+                return Some((device, slot));
+            }
+            // **The driver keeps a kind's slots across every handle**: a slot
+            // another guest's device holds is refused as busy, and the next is
+            // asked for.
+            Err(error @ hid::Error::Refused(ERROR_BUSY)) => why = error,
+            Err(error) => {
+                why = error;
+                break;
+            }
+        }
+    }
+    lowlat_common::log_warn!(
+        "inject: no {named} from the input driver, {goes} through the batch input call, error={why}"
+    );
+    None
+}
+
+/// Let a device go off this thread: its end waits while its neutral reports
+/// arrive, which the guest's loop is not held up by. A thread that cannot be
+/// started lets it go here instead.
+fn close_aside(device: hid::Device) {
+    let _ = std::thread::Builder::new()
+        .name("lowlat-hid-close".to_owned())
+        .spawn(move || drop(device));
+}
+
+/// What a pointer report goes out as on the input driver's mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pointed {
+    /// A report of the relative collection: the buttons, motion, the wheels.
+    Relative([u8; mouse::RELATIVE_REPORT_LEN]),
+    /// A report of the absolute collection: a position on the primary display.
+    Absolute([u8; mouse::ABSOLUTE_REPORT_LEN]),
+    /// A position on another display, over the whole desktop, as the batch
+    /// input call takes it.
+    Elsewhere(i32, i32),
+}
+
+/// The guest's pointer as the input driver's mouse carries it, apart from the
+/// device: the buttons it holds, and what the report being read says.
+///
+/// **Every button and wheel rides the relative collection**, whichever of the
+/// expander's two pointers it was sent to, and the absolute one carries
+/// positions alone (docs/11-drivers.md section 2.3): each collection is a
+/// pointer of its own to the system, with its own buttons, so one collection
+/// holding them all is what lets a release reach the press it ends.
+#[derive(Debug, Default)]
+struct HidPointer {
+    /// The relative collection's buttons, as held.
+    buttons: u8,
+    /// A button went down or up in the report being read.
+    changed: bool,
+    dx: i32,
+    dy: i32,
+    wheel: i32,
+    pan: i32,
+    position: Option<(i32, i32)>,
+}
+
+impl HidPointer {
+    /// One event of the report being read. The wheels are taken in the units
+    /// the peer counted, the mouse's multipliers making a count a hundred and
+    /// twentieth of a notch; the stepped axes are the same turns again.
+    fn take(&mut self, event: &Event) {
+        let add = |to: &mut i32| *to = to.saturating_add(event.value);
+        match (event.kind, event.code) {
+            (event::EV_REL, event::REL_X) => add(&mut self.dx),
+            (event::EV_REL, event::REL_Y) => add(&mut self.dy),
+            (event::EV_REL, event::REL_WHEEL_HI_RES) => add(&mut self.wheel),
+            (event::EV_REL, event::REL_HWHEEL_HI_RES) => add(&mut self.pan),
+            (event::EV_ABS, event::ABS_X) => self.position.get_or_insert((0, 0)).0 = event.value,
+            (event::EV_ABS, event::ABS_Y) => self.position.get_or_insert((0, 0)).1 = event.value,
+            (event::EV_KEY, code) => {
+                if let Some(bit) = button_bit(code) {
+                    if event.value == 0 {
+                        self.buttons &= !bit;
+                    } else {
+                        self.buttons |= bit;
+                    }
+                    self.changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The report read so far, as it goes out: a position first, on the
+    /// absolute collection where `primary` places it there and elsewhere
+    /// through the batch input call, then the relative collection's reports
+    /// -- as many as the motion's range needs, one where only a button changed.
+    fn ended<E>(
+        &mut self,
+        primary: impl Fn(i32, i32) -> Option<(u16, u16)>,
+        mut out: impl FnMut(Pointed) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some((x, y)) = self.position.take() {
+            out(match primary(x, y) {
+                Some((x, y)) => Pointed::Absolute(mouse::absolute(x, y)),
+                None => Pointed::Elsewhere(x, y),
+            })?;
+        }
+        let moved = |p: &Self| (p.dx, p.dy, p.wheel, p.pan) != (0, 0, 0, 0);
+        if !core::mem::take(&mut self.changed) && !moved(self) {
+            return Ok(());
+        }
+        loop {
+            let report = mouse::relative(
+                self.buttons,
+                step(&mut self.dx),
+                step(&mut self.dy),
+                step(&mut self.wheel),
+                step(&mut self.pan),
+            );
+            out(Pointed::Relative(report))?;
+            if !moved(self) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// As much of `left` as one relative field carries, taken off it.
+fn step(left: &mut i32) -> i16 {
+    let max = i32::from(mouse::RELATIVE_MAX);
+    let taken = (*left).clamp(-max, max);
+    *left -= taken;
+    i16::try_from(taken).unwrap_or(0)
+}
+
+/// The relative collection's bit for a button.
+fn button_bit(code: u16) -> Option<u8> {
+    Some(match code {
+        event::BTN_LEFT => mouse::LEFT,
+        event::BTN_RIGHT => mouse::RIGHT,
+        event::BTN_MIDDLE => mouse::MIDDLE,
+        event::BTN_SIDE => mouse::BACK,
+        event::BTN_EXTRA => mouse::FORWARD,
+        _ => return None,
+    })
+}
+
+/// A position the expander spread over the whole desktop, `x` and `y` in the
+/// batch input call's normalised range, as a value of the mouse's absolute
+/// collection, which spans the primary display alone: `None` off it. The
+/// desktop is `(left, top, width, height)` on the system's axes, the primary at
+/// their origin `primary`'s sides.
+///
+/// **The pixel the batch input call would put the pointer on, then that
+/// pixel's centre on the collection**: the system takes a value back to a
+/// pixel as `v x W / 65536` over the desktop and as `v x W / 32768` on the
+/// collection, truncated both, so a position lands where it would have either
+/// way.
+fn on_primary(
+    x: i32,
+    y: i32,
+    desktop: (i32, i32, i32, i32),
+    primary: (i32, i32),
+) -> Option<(u16, u16)> {
+    let (left, top, width, height) = desktop;
+    let pixel = |value: i32, origin: i32, extent: i32| {
+        i64::from(origin) + i64::from(value) * i64::from(extent) / 65536
+    };
+    let (px, py) = (pixel(x, left, width), pixel(y, top, height));
+    let (pw, ph) = (i64::from(primary.0), i64::from(primary.1));
+    if !(0..pw).contains(&px) || !(0..ph).contains(&py) {
+        return None;
+    }
+    let value = |pixel: i64, extent: i64| {
+        u16::try_from(((2 * pixel + 1) * 32768 / (2 * extent)).min(i64::from(mouse::ABSOLUTE_MAX)))
+            .ok()
+    };
+    Some((value(px, pw)?, value(py, ph)?))
+}
+
+/// [`on_primary`] for the desktop as the system lays it out now: the metrics
+/// of a per-monitor aware thread, in the physical pixels the batch input call
+/// spreads a position over.
+fn primary_place(x: i32, y: i32) -> Option<(u16, u16)> {
+    // SAFETY: reads of the system's metrics.
+    let metric = |index| unsafe { GetSystemMetrics(index) };
+    on_primary(
+        x,
+        y,
+        (
+            metric(SM_XVIRTUALSCREEN),
+            metric(SM_YVIRTUALSCREEN),
+            metric(SM_CXVIRTUALSCREEN),
+            metric(SM_CYVIRTUALSCREEN),
+        ),
+        (metric(SM_CXSCREEN), metric(SM_CYSCREEN)),
+    )
+}
+
+/// The guest's mouse on the host's own input driver.
+#[derive(Debug)]
+struct HidMouse {
+    device: hid::Device,
+    slot: u8,
+    pointer: HidPointer,
+    /// Whether the system lists it, from when what is written reaches the
+    /// system.
+    ready: bool,
+    made: lowlat_common::clock::Time,
+}
+
+impl HidMouse {
+    /// A mouse in the first slot the driver gives, or the reason it gives none,
+    /// said.
+    fn make() -> Option<Self> {
+        let (device, slot) = made(Kind::Mouse, "mouse", "the pointer goes")?;
+        Some(Self {
+            device,
+            slot,
+            pointer: HidPointer::default(),
+            ready: false,
+            made: lowlat_common::clock::Time::now(),
+        })
+    }
+
+    fn close_aside(self) {
+        close_aside(self.device);
+    }
+}
+
+/// A device's events while it cannot deliver yet.
 ///
 /// **Held rather than dropped**: what falls in the wait is the first thing
-/// somebody typed. Bounded, and at the bound the oldest whole report goes,
+/// somebody did. Bounded, and at the bound the oldest whole report goes,
 /// never part of one -- half a report is a state change nobody asked for, and
 /// losing a press whose release survives is the harmless direction.
 #[derive(Debug)]
@@ -1005,7 +1321,7 @@ impl Held {
         if !self.reported {
             self.reported = true;
             lowlat_common::log_warn!(
-                "inject: keys held for the input driver's keyboard overflowed, held={HELD}"
+                "inject: input held for an input driver's device overflowed, held={HELD}"
             );
         }
     }
@@ -2051,6 +2367,174 @@ mod tests {
             ]
         );
     }
+
+    /// The expander's batches as the input driver's mouse takes them, the
+    /// desktop one 1920x1080 primary unless `primary` says otherwise.
+    fn pointed(
+        controls: &[(u8, u32, u32, u32)],
+        primary: impl Fn(i32, i32) -> Option<(u16, u16)>,
+    ) -> Vec<Pointed> {
+        use crate::event::{Extents, Injector};
+        use lowlat_core::control::Control;
+        #[derive(Default)]
+        struct Batches(Vec<Vec<Event>>);
+        impl Sink for Batches {
+            fn emit(&mut self, _device: Device, events: &[Event]) {
+                self.0.push(events.to_vec());
+            }
+        }
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
+        let mut batches = Batches::default();
+        for &(opcode, a0, a1, a2) in controls {
+            let control = Control {
+                a0,
+                a1,
+                a2,
+                opcode,
+                body: &[],
+            };
+            inject.on_control(&control, &mut batches);
+        }
+        let mut pointer = HidPointer::default();
+        let mut out = Vec::new();
+        for event in batches.0.iter().flatten() {
+            pointer.take(event);
+            if event.kind == event::EV_SYN {
+                pointer
+                    .ended(&primary, |p| {
+                        out.push(p);
+                        Ok::<(), ()>(())
+                    })
+                    .unwrap();
+            }
+        }
+        out
+    }
+
+    fn alone(x: i32, y: i32) -> Option<(u16, u16)> {
+        on_primary(x, y, (0, 0, 1920, 1080), (1920, 1080))
+    }
+
+    /// **Every button and wheel rides the relative collection, whichever of
+    /// the expander's pointers it went to**: a click after a position, which
+    /// the expander sends to the absolute pointer and releases there, is the
+    /// relative collection's, carried through the motion beside it; the wheels
+    /// in the units the peer counted; a position on the absolute collection at
+    /// its pixel's centre.
+    #[test]
+    fn every_button_and_wheel_rides_the_relative_collection() {
+        use lowlat_core::control::op;
+        use mouse::{BACK, LEFT, absolute, relative};
+        let out = pointed(
+            &[
+                (op::MOUSE_MOTION, 0, 1920, 1080),
+                (op::MOUSE_BUTTON, 1, 1, 0),
+                (op::MOUSE_MOTION, 1, 5, (-7i32) as u32),
+                (op::MOUSE_WHEEL, 30, (-120i32) as u32, 0),
+                (op::MOUSE_BUTTON, 1, 0, 0),
+                (op::MOUSE_BUTTON, 4, 1, 0),
+                (op::MOUSE_BUTTON, 4, 0, 0),
+            ],
+            alone,
+        );
+        assert_eq!(
+            out,
+            vec![
+                // The last pixel's centre each way, for a system taking the
+                // collection's value back as v * extent / 32768.
+                Pointed::Absolute(absolute(32759, 32752)),
+                Pointed::Relative(relative(LEFT, 0, 0, 0, 0)),
+                Pointed::Relative(relative(LEFT, 5, -7, 0, 0)),
+                Pointed::Relative(relative(LEFT, 0, 0, -120, 30)),
+                Pointed::Relative(relative(0, 0, 0, 0, 0)),
+                Pointed::Relative(relative(BACK, 0, 0, 0, 0)),
+                Pointed::Relative(relative(0, 0, 0, 0, 0)),
+            ]
+        );
+    }
+
+    /// **Motion past a report's range is split, none of it lost**, the held
+    /// buttons in every part; a position off the primary display goes to the
+    /// batch input call as the expander spread it.
+    #[test]
+    fn a_long_move_is_split_and_a_position_elsewhere_goes_through_the_call() {
+        use lowlat_core::control::op;
+        let out = pointed(
+            &[
+                (op::MOUSE_BUTTON, 3, 1, 0),
+                (op::MOUSE_MOTION, 1, 40_000, (-70_000i32) as u32),
+                (op::MOUSE_MOTION, 0, 960, 540),
+            ],
+            |_, _| None,
+        );
+        let mut moved = (0, 0);
+        let mut parts = 0;
+        for p in &out {
+            if let Pointed::Relative(report) = p {
+                assert!(mouse::relative_allowed(report), "{report:?}");
+                if report[1] == mouse::RIGHT {
+                    let word =
+                        |at: usize| i32::from(i16::from_le_bytes([report[at], report[at + 1]]));
+                    moved = (moved.0 + word(2), moved.1 + word(4));
+                    parts += 1;
+                }
+            }
+        }
+        assert_eq!(moved, (40_000, -70_000), "motion lost in the split");
+        assert_eq!(parts, 1 + 3, "the press, then the move in three parts");
+        assert_eq!(
+            out.last(),
+            Some(&Pointed::Elsewhere(32785, 32798)),
+            "a position elsewhere not as the expander spread it"
+        );
+    }
+
+    /// **A position lands on the pixel the batch input call would have put it
+    /// on**, every pixel of the primary across, and nowhere off it: a display
+    /// beside it, one left of it -- the desktop's corner negative -- and the
+    /// rows a taller neighbour adds below its bottom edge.
+    #[test]
+    fn a_position_on_the_primary_lands_on_its_pixel_and_one_off_it_is_refused() {
+        // The expander's value for a pixel of the desktop, its centre.
+        let spread = |pixel: i32, origin: i32, extent: i32| {
+            i32::try_from((2 * i64::from(pixel - origin) + 1) * 65536 / (2 * i64::from(extent)))
+                .unwrap()
+        };
+        for desktop in [(0, 0, 4480, 1440), (-1920, 0, 4480, 2148)] {
+            let (left, top, width, height) = desktop;
+            for px in 0..2560 {
+                let x = spread(px, left, width);
+                let (hx, hy) = on_primary(x, spread(700, top, height), desktop, (2560, 1440))
+                    .expect("on the primary");
+                assert_eq!(
+                    i64::from(hx) * 2560 / 32768,
+                    i64::from(px),
+                    "{desktop:?} x {px}"
+                );
+                assert_eq!(i64::from(hy) * 1440 / 32768, 700, "{desktop:?} y");
+            }
+            for (px, py) in [(-1, 700), (2560, 700), (0, 1440), (2559, -1)] {
+                if !(left..left + width).contains(&px) || !(top..top + height).contains(&py) {
+                    continue;
+                }
+                assert_eq!(
+                    on_primary(
+                        spread(px, left, width),
+                        spread(py, top, height),
+                        desktop,
+                        (2560, 1440)
+                    ),
+                    None,
+                    "{desktop:?} {px},{py} placed on the primary"
+                );
+            }
+        }
+        assert_eq!(
+            on_primary(spread(2559, 0, 4480), 0, (0, 0, 4480, 1440), (2560, 1440)),
+            Some((32761, 11)),
+            "the primary's last column"
+        );
+    }
 }
 
 /// Tests that plug a pad into the running system's bus.
@@ -2332,6 +2816,88 @@ mod hid_tests {
         println!(
             "listed after {ready:?}, down {typed:?} later; up {up:?} after the switch, \
              unlisted {gone:?} later; listed again after {again:?}"
+        );
+    }
+
+    /// Where the system has the pointer, in this thread's physical pixels.
+    fn cursor() -> (i32, i32) {
+        let mut at = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        // SAFETY: a live local the call fills.
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&raw mut at) };
+        (at.x, at.y)
+    }
+
+    /// **A guest's pointer goes to the input driver's mouse while the switch is
+    /// on**: held until the system lists the mouse, a position on the primary
+    /// display then lands on its pixel through the absolute collection, and a
+    /// move goes through the relative one, the mouse kept throughout; switched
+    /// off, the mouse goes. No button is pressed: a click would land on the
+    /// desk.
+    #[test]
+    #[ignore = "moves the desk's pointer through the input driver"]
+    fn a_guests_pointer_goes_to_the_drivers_mouse() {
+        use crate::event::Place;
+        let mut devices = Devices::create("hid-mouse-test").unwrap();
+        // SAFETY: reads of the system's metrics.
+        let metric = |index| unsafe { GetSystemMetrics(index) };
+        let (width, height) = (metric(SM_CXSCREEN), metric(SM_CYSCREEN));
+        let (left, top) = (metric(SM_XVIRTUALSCREEN), metric(SM_YVIRTUALSCREEN));
+        let side = |value: i32| u32::try_from(value).unwrap();
+        let mut inject = Injector::new(Extents::placed(
+            side(width),
+            side(height),
+            Place {
+                x: side(-left),
+                y: side(-top),
+                width: side(width),
+                height: side(height),
+                desktop_width: side(metric(SM_CXVIRTUALSCREEN)),
+                desktop_height: side(metric(SM_CYVIRTUALSCREEN)),
+            },
+        ));
+        let motion = |relative: bool, x: i32, y: i32| Control {
+            a0: u32::from(relative),
+            a1: side(x),
+            a2: side(y),
+            opcode: op::MOUSE_MOTION,
+            body: &[],
+        };
+        devices.set_virtual_input(true);
+        let slot = devices
+            .mouse
+            .as_ref()
+            .expect("a mouse from the driver")
+            .slot;
+        let ready = until(&mut devices, Duration::from_secs(10), "listed", |d| {
+            d.mouse.as_ref().is_some_and(|mouse| mouse.ready)
+        });
+        let mut landed = Vec::new();
+        for (x, y) in [(0, 0), (width - 1, height - 1), (width / 2, height / 3)] {
+            inject.on_control(&motion(false, x, y), &mut devices);
+            landed.push(until(
+                &mut devices,
+                Duration::from_secs(2),
+                "landed",
+                |_| cursor() == (x, y),
+            ));
+        }
+        let before = cursor();
+        inject.on_control(&motion(true, 0, 40), &mut devices);
+        until(&mut devices, Duration::from_secs(2), "moved", |_| {
+            cursor().1 > before.1
+        });
+        assert!(
+            devices.mouse.as_ref().is_some_and(|mouse| mouse.ready),
+            "the mouse refused a report and went"
+        );
+        devices.set_virtual_input(false);
+        let gone = until(&mut devices, Duration::from_secs(5), "unlisted", |_| {
+            !hid::listed(Kind::Mouse, slot)
+        });
+        drop(devices);
+        println!(
+            "primary {width}x{height}: listed after {ready:?}, positions landed after \
+             {landed:?}, moved from {before:?}; unlisted {gone:?} after the switch"
         );
     }
 }

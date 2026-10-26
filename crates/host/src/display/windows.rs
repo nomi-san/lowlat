@@ -5580,6 +5580,18 @@ mod tests {
 
         let _aware = Aware::per_monitor();
         let mut devices = Devices::create("sweep").expect("devices");
+        // `LOWLAT_VIRTUAL_INPUT=1`, run elevated: through the host's own input
+        // driver's mouse, the primary display's positions on its absolute
+        // collection and every other display's through the batch input call.
+        // The mouse is listed within half a second, given a second here.
+        if std::env::var_os("LOWLAT_VIRTUAL_INPUT").is_some() {
+            devices.set_virtual_input(true);
+            let began = std::time::Instant::now();
+            while began.elapsed() < std::time::Duration::from_secs(1) {
+                devices.tick();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
         let listed = listed();
         let mut worsts = Vec::new();
         for output in listed.iter().filter(|o| o.attached) {

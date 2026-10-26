@@ -223,21 +223,24 @@ pub struct lowlat_host_audio_config {
 pub struct lowlat_host_input_config {
     /// Set by the caller to `sizeof(lowlat_host_input_config)`.
     pub size: u32,
-    /// Whether a guest's keys go to a keyboard of the host's own input driver,
-    /// which the system takes as a device's, rather than through the system's
-    /// batch input call. **Default: off**, zero included, so a caller that
-    /// never sets it keeps the batch input call.
+    /// Whether a guest's keys and pointer go to a keyboard and a mouse of the
+    /// host's own input driver, which the system takes as devices', rather
+    /// than through the system's batch input call. **Default: off**, zero
+    /// included, so a caller that never sets it keeps the batch input call.
     ///
     /// Switching it on where the driver is not installed, or does not admit
     /// this process, is refused and changes nothing; a start asking for it
     /// there is not refused for it, says why once, and reads back off. Each
     /// seated guest moves on its next pass, what it holds on the old way
-    /// released first; its keys wait the few milliseconds until the system
-    /// takes its keyboard, and go through the batch input call where it never
+    /// released first; its input waits the few milliseconds until the system
+    /// takes each device, and goes through the batch input call where one never
     /// does. A driver lost while it is on gives the guests the batch input call
     /// until it is switched on again. **The attention chord is never typed on
     /// it**: a Delete going down while Ctrl and Alt are held goes through the
-    /// batch input call, which raises no secure screen.
+    /// batch input call, which raises no secure screen. **A position on any
+    /// display but the primary goes through the batch input call too**: the
+    /// mouse's positions span the primary alone; its buttons, wheels and motion
+    /// stay on the mouse.
     pub virtual_input: bool,
     pub reserved: [u8; 3],
 }

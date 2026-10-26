@@ -1070,7 +1070,10 @@ impl Injector {
         }
     }
 
-    fn release_buttons(&mut self, out: &mut impl Sink) {
+    /// Release every pointer button this guest holds, as a withdrawn pointer
+    /// permission does: for buttons about to go another way, so none is left
+    /// down on the way they came (docs/05-host.md section 7).
+    pub fn release_buttons(&mut self, out: &mut impl Sink) {
         // **Grouped by the device each went down on**, because a release sent
         // anywhere else leaves the button held where it really is. Two passes
         // over five buttons, on a path that runs when a guest leaves.

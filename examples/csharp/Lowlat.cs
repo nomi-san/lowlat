@@ -167,7 +167,8 @@ internal struct HostInputConfig
     public byte VirtualInputByte;
     private byte reserved0, reserved1, reserved2;
 
-    /// Whether a guest's keys go to a keyboard of the host's own input driver.
+    /// Whether a guest's keys and pointer go to a keyboard and a mouse of the
+    /// host's own input driver.
     /// **Off by default**; switching it on where the driver is not installed
     /// is refused.
     public bool VirtualInput

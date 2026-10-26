@@ -815,7 +815,7 @@ pub struct Admission {
     /// is what logs correlate on and it is no use naming a device or a pointer
     /// holder, so both use this and one line at admission joins them.
     next_guest: u32,
-    /// Whether the guests' keys go to keyboards of the host's own input
+    /// Whether the guests' keys and pointers go to the host's own input
     /// driver ([`Admission::set_virtual_input`]).
     #[cfg(windows)]
     virtual_input: bool,
@@ -871,8 +871,9 @@ impl Admission {
         }
     }
 
-    /// Move every guest's keys to a keyboard of the host's own input driver,
-    /// or back to the batch input call (docs/06-api.md section 3), live.
+    /// Move every guest's keys and pointer to a keyboard and a mouse of the
+    /// host's own input driver, or back to the batch input call
+    /// (docs/06-api.md section 3), live.
     ///
     /// **Switching it on asks the driver first** and is refused, changing
     /// nothing, where it is not installed or does not admit this process: the
@@ -891,7 +892,7 @@ impl Admission {
         }
         self.virtual_input = on;
         lowlat_common::log_info!(
-            "input: the guests' keys on the input driver={}",
+            "input: the guests' keyboard and mouse on the input driver={}",
             u8::from(on)
         );
         for attempt in self.attempts.values() {
@@ -902,7 +903,7 @@ impl Admission {
         Ok(())
     }
 
-    /// Whether the guests' keys go to keyboards of the host's own input
+    /// Whether the guests' keys and pointers go to the host's own input
     /// driver: what was last switched, which a driver lost since does not
     /// change.
     #[cfg(windows)]
@@ -1673,7 +1674,7 @@ struct Driven {
     owner: bool,
     /// The live-run rumble probe.
     rumble_probe: bool,
-    /// Whether its keys start on a keyboard of the host's own input driver.
+    /// Whether its keys and pointer start on the host's own input driver.
     #[cfg(windows)]
     virtual_input: bool,
 }
@@ -2222,6 +2223,18 @@ impl<S: lowlat_inject::event::Sink> Drop for Input<S> {
     }
 }
 
+impl<S: lowlat_inject::event::Sink> Input<S> {
+    /// Let go of every key and button the guest holds, the way each went
+    /// down, ahead of its keys and pointer going another way: a switch either
+    /// way leaves nothing down on the old one (docs/06-api.md section 3). Its
+    /// pads stay as they are, on a path of their own.
+    #[cfg(windows)]
+    fn release_for_the_switch(&mut self) {
+        self.injector.release_keys(&mut self.sink);
+        self.injector.release_buttons(&mut self.sink);
+    }
+}
+
 impl Input<Devices> {
     /// Create a guest's devices, or report why not and carry on without them.
     ///
@@ -2467,9 +2480,9 @@ fn drive<M: Media>(
         input
             .injector
             .set_permissions(args.permissions, &mut input.sink);
-        // **On the input driver's keyboard from admission**, where the switch
-        // is on, so its readiness overlaps the connection's setup as the
-        // devices' own does.
+        // **On the input driver's devices from admission**, where the switch
+        // is on, so their readiness overlaps the connection's setup as the
+        // other devices' does.
         #[cfg(windows)]
         input.sink.set_virtual_input(args.virtual_input);
     }
@@ -3096,16 +3109,17 @@ fn drive<M: Media>(
                     );
                 }
                 // **What the old way holds comes up first**, as a withdrawn
-                // permission's does, so no key stays down across the switch.
+                // permission's does, so no key or button stays down across
+                // the switch.
                 #[cfg(windows)]
                 Ask::VirtualInput(on) => {
                     lowlat_common::log_info!(
-                        "guest: number={} keys on the input driver={}",
+                        "guest: number={} keyboard and mouse on the input driver={}",
                         args.guest,
                         u8::from(on)
                     );
                     if let Some(input) = input.as_mut() {
-                        input.injector.release_keys(&mut input.sink);
+                        input.release_for_the_switch();
                         input.sink.set_virtual_input(on);
                     }
                 }
@@ -4580,6 +4594,58 @@ mod geometry {
             vec![(30, 1), (30, 0)],
             "the key stayed down after its guest went"
         );
+    }
+
+    /// **A switch either way lets go of every key and button the guest
+    /// holds** before its input goes the other way, each the way it went
+    /// down; nothing is left for the guest's end to let go of.
+    #[cfg(windows)]
+    #[test]
+    fn the_switch_lets_go_of_the_keys_and_the_buttons() {
+        #[derive(Default)]
+        struct Kept(std::rc::Rc<std::cell::RefCell<Vec<(u16, i32)>>>);
+        impl lowlat_inject::event::Sink for Kept {
+            fn emit(
+                &mut self,
+                _device: lowlat_inject::event::Device,
+                events: &[lowlat_inject::event::Event],
+            ) {
+                self.0.borrow_mut().extend(
+                    events
+                        .iter()
+                        .filter(|event| event.kind == 0x01)
+                        .map(|event| (event.code, event.value)),
+                );
+            }
+        }
+        const LEFT: u16 = 0x110;
+        let kept = Kept::default();
+        let seen = std::rc::Rc::clone(&kept.0);
+        let mut input = Input {
+            injector: Injector::new(Extents::alone(1920, 1080)),
+            sink: kept,
+        };
+        let control = |opcode, a0, a1, a2| Control {
+            a0,
+            a1,
+            a2,
+            opcode,
+            body: &[],
+        };
+        input
+            .injector
+            .on_control(&control(op::KEYBOARD, 4, 0, 1), &mut input.sink);
+        input
+            .injector
+            .on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut input.sink);
+        input.release_for_the_switch();
+        assert_eq!(
+            *seen.borrow(),
+            vec![(30, 1), (LEFT, 1), (30, 0), (LEFT, 0)],
+            "something stayed down across the switch"
+        );
+        drop(input);
+        assert_eq!(seen.borrow().len(), 4, "the switch left something held");
     }
 
     /// Send control messages from a peer and drain them into the host.
