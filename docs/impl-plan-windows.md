@@ -2447,8 +2447,10 @@ are through. The decisions are recorded once, here; the design they add up to is
   pixels through it, and W2.3's sweep with the switch on, every position on its pixel on three
   displays. Live, a macOS client: the pointer in a game whose anti-cheat refuses the batch input
   call's motion, a window dragged, a browser game's relative aim, both wheels and a trackpad's
-  pinch, clicks on a second display. Owed, at W4's gate: the sweep at 125 percent, raw input
-  naming the device, a machine with no mouse, a drag held across the client turning relative.
+  pinch, clicks on a second display; the primary at 125 percent, its positions where they were
+  asked. Owed, at W4's gate: the sweep's pixel count at 125 percent, raw input naming the
+  device, a machine with no mouse, a drag held across the client turning relative. *Seen:* the
+  devices carry no name of their own -- the framework's, "HID VHF Driver" ([11 §2.3](11-drivers.md)).
 - [ ] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
   in its minor; the DualShock 4 and the DualSense on the driver, the feature table filled from the
   peer, what is written to a pad sent back to the peer; the answers a Linux pad gives moved to

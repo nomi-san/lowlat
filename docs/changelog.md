@@ -39,12 +39,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   whose anti-cheat refuses the batch input call's motion; a window dragged; a browser game holding
   the pointer, aimed by relative motion; both wheels and a trackpad's pinch to zoom; and clicks on
   a second display, the position there through the batch input call and the click through the
-  mouse.
+  mouse. The primary display at 125 percent, its positions still where they were asked: the
+  layout read in physical pixels. A browser's HID listing names both devices "HID VHF Driver",
+  the framework's own name, which carries no product string of the device's
+  ([11 §2.3](11-drivers.md)).
 
 ### Not run
-- At W4's gate: the sweep at 125 percent, relative motion in raw input naming a device, a
-  machine with no mouse showing its pointer, a drag held across the client turning its pointer
-  relative, and W4.1's checks, moved there.
+- At W4's gate: the sweep's pixel count at 125 percent, relative motion in raw input naming a
+  device, a machine with no mouse showing its pointer, a drag held across the client turning its
+  pointer relative, and W4.1's checks, moved there.
 
 ## 2026-10-26 - W4.1's first sitting: the pointer placed as the desktop changes, no key held under Command
 

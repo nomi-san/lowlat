@@ -556,7 +556,16 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   character short, so two slots of one ten shared it. A kind and slot is still one device at a
   time, in a container of its own. The framework gives the first device of a kind the same name at
   every connection, so the system sets it up once; a second of the kind at the same time gets a
-  new name, and a setup, each time.
+  new name, and a setup, each time. *Seen 2026-10-26:* **no device carries a name of its own** --
+  the framework takes no product string from its driver and asks the driver for none, so the
+  system answers every device's with the framework's, "HID VHF Driver", as a browser's HID
+  listing shows the keyboard and the mouse. Read back from every collection: the product "HID VHF
+  Driver", the maker "Microsoft" and the serial "1.0", with the device's own identity in its
+  attributes and in its hardware identifiers (`HID\VID_1209&PID_0001&Col01`); **its device path
+  names the framework, never the identity** (`hid#hid_device_system_vhf&col01#...`). What
+  consumers key on is the identity and the descriptor; a name of each device's own would need a
+  HID driver of the host's own in place of the framework. For the pads, whose consumers might
+  read either, it is a check of their own (W4.3).
 
 ### §2.4 Lifetimes
 
