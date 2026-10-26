@@ -987,6 +987,13 @@ impl Display {
         self.place
     }
 
+    /// Nothing read again here: the place is the session's to tell, and what
+    /// tells it -- the daemon's session side -- tells it again as the layout
+    /// changes.
+    pub fn moved(&self) -> Option<Placement> {
+        None
+    }
+
     /// What the display is showing, before anything is built on it.
     ///
     /// **The encoder has to be configured for this and is created first**, so

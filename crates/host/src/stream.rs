@@ -3897,6 +3897,13 @@ fn encode_loop<E: Encoder + FromDevice>(
                 );
                 return Exit::Rediscover("the lit output moved");
             }
+            // **The desktop moves around an output whose picture stays**, and
+            // the place published as the display opened goes stale with it:
+            // the display reads it again, and a place that moved reaches the
+            // guests as the first one did.
+            if let Some(place) = display.as_deref_mut().and_then(|d| d.moved()) {
+                shared.publish_place(Some(place));
+            }
         }
         // **The tick splits around the collect.** The conversion is submitted
         // before the collect below, so the device works on it while the loop

@@ -136,6 +136,18 @@ fn check(hr: HRESULT) -> Result<()> {
     }
 }
 
+/// An output's name as its description carries it, without the `\\.\`
+/// prefix: one reading for every walk, which find one output by it.
+fn output_name(desc: &DXGI_OUTPUT_DESC) -> String {
+    let name = desc
+        .DeviceName
+        .iter()
+        .position(|&c| c == 0)
+        .map_or(&desc.DeviceName[..], |end| &desc.DeviceName[..end]);
+    let name = String::from_utf16_lossy(name);
+    name.strip_prefix(r"\\.\").unwrap_or(&name).to_string()
+}
+
 /// An interface pointer this side holds a reference on, released on drop.
 pub struct Com<T> {
     ptr: NonNull<T>,
@@ -308,6 +320,20 @@ pub struct Output {
     pub rotation: DXGI_MODE_ROTATION,
     /// The adapter that scans it out.
     pub adapter: Adapter,
+}
+
+/// Where one output sits on the desktop, and nothing of the adapter behind
+/// it: what [`D3d11::bounds`] lists, in [`Output`]'s coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bounds {
+    /// As [`Output::name`].
+    pub name: String,
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    /// Part of the desktop, rather than connected and switched off.
+    pub attached: bool,
 }
 
 /// The libraries and the entry points resolved from them.
@@ -483,6 +509,61 @@ impl D3d11 {
         })
     }
 
+    /// Where every output sits on the desktop, in the order
+    /// [`outputs`](Self::outputs) lists them, no adapter described. **The
+    /// description is most of a walk's cost** -- each adapter's driver and the
+    /// kernel are asked -- 1.44 against 0.17 ms at the median on four
+    /// adapters (2026-10-26), so this is the walk for a caller that asks again
+    /// and again.
+    pub fn bounds(&self) -> Result<Vec<Bounds>> {
+        let factory = self.factory()?;
+        let mut out = Vec::new();
+        for index in 0.. {
+            let mut raw: *mut IDXGIAdapter1 = core::ptr::null_mut();
+            // SAFETY: a live factory; the output is a live local.
+            let hr = unsafe { vcall!(factory.as_ptr(), EnumAdapters1, index, &raw mut raw) }
+                .ok_or(Error::MissingSymbol)?;
+            if hr == DXGI_ERROR_NOT_FOUND {
+                break;
+            }
+            check(hr)?;
+            // SAFETY: an adapter whose reference the call handed over.
+            let Some(adapter) = (unsafe { Com::from_raw(raw) }) else {
+                continue;
+            };
+            for slot in 0.. {
+                let mut raw: *mut IDXGIOutput = core::ptr::null_mut();
+                // SAFETY: a live adapter; the output is a live local.
+                let hr = unsafe { vcall!(adapter.as_ptr(), EnumOutputs, slot, &raw mut raw) }
+                    .ok_or(Error::MissingSymbol)?;
+                if hr == DXGI_ERROR_NOT_FOUND {
+                    break;
+                }
+                check(hr)?;
+                // SAFETY: an output whose reference the call handed over.
+                let Some(interface) = (unsafe { Com::from_raw(raw) }) else {
+                    continue;
+                };
+                // SAFETY: plain data, filled whole by the call.
+                let mut desc: DXGI_OUTPUT_DESC = unsafe { core::mem::zeroed() };
+                // SAFETY: a live output; the output is a live local.
+                let hr = unsafe { vcall!(interface.as_ptr(), GetDesc, &raw mut desc) }
+                    .ok_or(Error::MissingSymbol)?;
+                check(hr)?;
+                let rect = desc.DesktopCoordinates;
+                out.push(Bounds {
+                    name: output_name(&desc),
+                    left: rect.left,
+                    top: rect.top,
+                    right: rect.right,
+                    bottom: rect.bottom,
+                    attached: desc.AttachedToDesktop != 0,
+                });
+            }
+        }
+        Ok(out)
+    }
+
     /// Walk every adapter's outputs in the plain enumeration, handing each
     /// to `each` until it returns `Some`.
     fn walk_outputs<R>(
@@ -529,15 +610,9 @@ impl D3d11 {
                 let hr = unsafe { vcall!(interface.as_ptr(), GetDesc, &raw mut desc) }
                     .ok_or(Error::MissingSymbol)?;
                 check(hr)?;
-                let name = desc
-                    .DeviceName
-                    .iter()
-                    .position(|&c| c == 0)
-                    .map_or(&desc.DeviceName[..], |end| &desc.DeviceName[..end]);
-                let name = String::from_utf16_lossy(name);
                 let rect = desc.DesktopCoordinates;
                 let output = Output {
-                    name: name.strip_prefix(r"\\.\").unwrap_or(&name).to_string(),
+                    name: output_name(&desc),
                     left: rect.left,
                     top: rect.top,
                     right: rect.right,
@@ -1954,5 +2029,30 @@ mod tests {
                 a.luid, a.description
             );
         }
+    }
+
+    /// **The bare walk lists what the described one does**: every output, in
+    /// the same order, by the same name, at the same rectangle, attached the
+    /// same way -- an output is found in one by the name the other gave it.
+    /// Needs a GPU with a display, so off by default.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn the_bare_walk_lists_the_described_ones_outputs() {
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let described: Vec<Bounds> = d3d11
+            .outputs()
+            .expect("the described walk")
+            .into_iter()
+            .map(|o| Bounds {
+                name: o.name,
+                left: o.left,
+                top: o.top,
+                right: o.right,
+                bottom: o.bottom,
+                attached: o.attached,
+            })
+            .collect();
+        assert!(!described.is_empty(), "no output to compare");
+        assert_eq!(d3d11.bounds().expect("the bare walk"), described);
     }
 }

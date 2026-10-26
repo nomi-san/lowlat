@@ -27,7 +27,7 @@ use lowlat_capture::duplication::{
 use lowlat_capture::{Placement, Pointer, Reported};
 use lowlat_common::clock::{self, Time};
 use lowlat_core::video::Rotation;
-use lowlat_drivers::d3d11::{Com, D3d11, Device, Event, Fence, Output, Span, Timer};
+use lowlat_drivers::d3d11::{Bounds, Com, D3d11, Device, Event, Fence, Output, Span, Timer};
 use lowlat_drivers::ffi::d3d11::{
     DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_ROTATE90,
     DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_UNSPECIFIED, ID3D11ShaderResourceView,
@@ -287,21 +287,56 @@ fn rotation_of(rotation: DXGI_MODE_ROTATION) -> Rotation {
 /// measured from that desktop's own corner: a display left of the primary
 /// has a negative left edge, which the corner absorbs.
 fn place_of(output: &Output, listed: &[Output]) -> Placement {
-    let lit = || listed.iter().filter(|o| o.attached);
-    let left = lit().map(|o| o.left).min().unwrap_or(output.left);
-    let top = lit().map(|o| o.top).min().unwrap_or(output.top);
-    let right = lit().map(|o| o.right).max().unwrap_or(output.right);
-    let bottom = lit().map(|o| o.bottom).max().unwrap_or(output.bottom);
+    let edges = |o: &Output| (o.left, o.top, o.right, o.bottom);
+    place_among(
+        edges(output),
+        listed.iter().filter(|o| o.attached).map(edges),
+        rotation_of(output.rotation),
+    )
+}
+
+/// [`place_of`] from the edges alone, each `(left, top, right, bottom)` on
+/// the system's axes: the output's own, and every attached output's.
+fn place_among(
+    (left_edge, top_edge, right_edge, bottom_edge): (i32, i32, i32, i32),
+    lit: impl Iterator<Item = (i32, i32, i32, i32)> + Clone,
+    rotation: Rotation,
+) -> Placement {
+    let left = lit.clone().map(|e| e.0).min().unwrap_or(left_edge);
+    let top = lit.clone().map(|e| e.1).min().unwrap_or(top_edge);
+    let right = lit.clone().map(|e| e.2).max().unwrap_or(right_edge);
+    let bottom = lit.map(|e| e.3).max().unwrap_or(bottom_edge);
     let span = |from: i32, to: i32| u32::try_from(to.saturating_sub(from)).unwrap_or(0);
     Placement {
-        x: span(left, output.left),
-        y: span(top, output.top),
-        width: span(output.left, output.right),
-        height: span(output.top, output.bottom),
+        x: span(left, left_edge),
+        y: span(top, top_edge),
+        width: span(left_edge, right_edge),
+        height: span(top_edge, bottom_edge),
         desktop_width: span(left, right),
         desktop_height: span(top, bottom),
-        rotation: rotation_of(output.rotation),
+        rotation,
     }
+}
+
+/// Where the output `name` sits in the desktop `laid` out now, when that is
+/// not `held` and the rectangle agrees with the `size` of the picture, the
+/// output turned by `turn` ([`Display::moved`]). `held`'s turn is kept: a
+/// turn is a rebuild, which places the picture again.
+fn moved_place(
+    held: Placement,
+    laid: &[Bounds],
+    name: &str,
+    size: (u32, u32),
+    turn: DXGI_MODE_ROTATION,
+) -> Option<Placement> {
+    let output = laid.iter().find(|b| b.name == name)?;
+    let edges = |b: &Bounds| (b.left, b.top, b.right, b.bottom);
+    let now = place_among(
+        edges(output),
+        laid.iter().filter(|b| b.attached).map(edges),
+        held.rotation,
+    );
+    (now != held && panel_sides((now.width, now.height), turn) == size).then_some(now)
 }
 
 /// The output at the desktop's corner, which on this system is the primary
@@ -1705,6 +1740,45 @@ impl Display {
         Some(self.place)
     }
 
+    /// Where the captured output sits in the desktop now, when that is not
+    /// where it sat: asked on the loop's slow cadence.
+    ///
+    /// **The desktop moves around an output whose picture stays** -- another
+    /// display resized, added or taken away, as leaving a game's exclusive
+    /// fullscreen puts every display back at its saved mode -- and nothing
+    /// rebuilds for that, so the place read as the display opened would go
+    /// on spreading every absolute position over a desktop that is not there
+    /// any more. **Only a rectangle the picture agrees with is taken**: one of
+    /// another size is this output's own mode moving, which the rebuild it
+    /// brings places, or a listing behind the picture, which a later look
+    /// finds caught up.
+    pub fn moved(&mut self) -> Option<Placement> {
+        let laid = self.d3d11.bounds().ok()?;
+        let now = moved_place(
+            self.place,
+            &laid,
+            &self.output.name,
+            self.size,
+            self.output.rotation,
+        )?;
+        lowlat_common::log_info!(
+            "display: {} {}x{} at {},{} of a {}x{} desktop now, was at {},{} of a {}x{}",
+            self.output.name,
+            now.width,
+            now.height,
+            now.x,
+            now.y,
+            now.desktop_width,
+            now.desktop_height,
+            self.place.x,
+            self.place.y,
+            self.place.desktop_width,
+            self.place.desktop_height
+        );
+        self.place = now;
+        Some(now)
+    }
+
     /// What is being captured, by the name [`Display::outputs`] gives.
     pub fn selected(&self) -> Option<&str> {
         Some(if self.own { VIRTUAL } else { &self.output.name })
@@ -2708,6 +2782,114 @@ mod tests {
         assert_eq!(picture_of(&turned), (1920, 1080));
         assert_eq!(rotation_of(turned.rotation), Rotation::Deg90);
         assert_eq!(rotation_of(0), Rotation::None, "unspecified is upright");
+    }
+
+    fn laid(name: &str, left: i32, top: i32, width: i32, height: i32) -> Bounds {
+        Bounds {
+            name: name.to_string(),
+            left,
+            top,
+            right: left + width,
+            bottom: top + height,
+            attached: true,
+        }
+    }
+
+    /// The place of `name` in `desktop`, upright, as a display opening reads
+    /// it.
+    fn opened_at(desktop: &[Bounds], name: &str) -> Placement {
+        let edges = |b: &Bounds| (b.left, b.top, b.right, b.bottom);
+        let output = desktop.iter().find(|b| b.name == name).expect("listed");
+        place_among(edges(output), desktop.iter().map(edges), Rotation::None)
+    }
+
+    /// **A display resized beside the captured one moves the desktop and not
+    /// the captured rectangle**, which the picture never shows: the host's own
+    /// display back from a guest's 3420x2148 at its saved 1920x1080 beside a
+    /// 2560x1440 primary leaves a 6400x1440 desktop where the place said
+    /// 7900x2148, every position short by those ratios. The look again says
+    /// so once; nothing moved says nothing.
+    #[test]
+    fn a_desktop_that_moved_around_the_output_is_placed_again() {
+        const UPRIGHT: DXGI_MODE_ROTATION = lowlat_drivers::ffi::d3d11::DXGI_MODE_ROTATION_IDENTITY;
+        let mut desktop = [
+            laid("DISPLAY55", 0, 0, 2560, 1440),
+            laid("DISPLAY50", 2560, 0, 1920, 1080),
+            laid("DISPLAY59", 4480, 0, 3420, 2148),
+        ];
+        let held = opened_at(&desktop, "DISPLAY55");
+        assert_eq!((held.desktop_width, held.desktop_height), (7900, 2148));
+        let look = |held, desktop: &[Bounds]| {
+            moved_place(held, desktop, "DISPLAY55", (2560, 1440), UPRIGHT)
+        };
+        assert_eq!(look(held, &desktop), None, "nothing moved");
+
+        desktop[2] = laid("DISPLAY59", 4480, 0, 1920, 1080);
+        let now = look(held, &desktop).expect("the desktop shrank around the output");
+        assert_eq!((now.x, now.y, now.width, now.height), (0, 0, 2560, 1440));
+        assert_eq!((now.desktop_width, now.desktop_height), (6400, 1440));
+        assert_eq!(look(now, &desktop), None, "said twice");
+
+        // The output beside the primary moved left of it instead: its own
+        // rectangle follows, its size the same.
+        let held = opened_at(&desktop, "DISPLAY50");
+        assert_eq!((held.x, held.desktop_width), (2560, 6400));
+        desktop[1] = laid("DISPLAY50", -1920, 0, 1920, 1080);
+        let now = moved_place(held, &desktop, "DISPLAY50", (1920, 1080), UPRIGHT)
+            .expect("moved left of the primary");
+        assert_eq!((now.x, now.y, now.desktop_width), (0, 0, 8320));
+    }
+
+    /// **A rectangle the picture disagrees with is not taken**: the output's
+    /// own mode moved, which its rebuild places, or the listing lags behind
+    /// the picture, which a later look finds caught up -- and then the place
+    /// read while it lagged is put right. The picture's turn is kept.
+    #[test]
+    fn only_a_rectangle_the_picture_agrees_with_is_taken() {
+        const UPRIGHT: DXGI_MODE_ROTATION = lowlat_drivers::ffi::d3d11::DXGI_MODE_ROTATION_IDENTITY;
+        let mut desktop = [
+            laid("DISPLAY55", 0, 0, 1920, 1080),
+            laid("DISPLAY50", 2560, 0, 1920, 1080),
+        ];
+        // Read while the listing still had a game's 1920x1080, the picture
+        // already the desktop's 2560x1440 again; turned, to see the turn kept.
+        let held = Placement {
+            rotation: Rotation::Deg90,
+            ..opened_at(&desktop, "DISPLAY55")
+        };
+        let look = |held, desktop: &[Bounds], turn| {
+            moved_place(held, desktop, "DISPLAY55", (2560, 1440), turn)
+        };
+        assert_eq!(
+            look(held, &desktop, UPRIGHT),
+            None,
+            "a listing behind the picture was taken"
+        );
+        desktop[0] = laid("DISPLAY55", 0, 0, 2560, 1440);
+        let now = look(held, &desktop, UPRIGHT).expect("the listing caught up");
+        assert_eq!(
+            (now.width, now.height, now.desktop_width),
+            (2560, 1440, 4480)
+        );
+        assert_eq!(now.rotation, Rotation::Deg90, "the held turn was not kept");
+
+        // Turned a quarter, the rectangle is the picture the other way round.
+        desktop[0] = laid("DISPLAY55", 0, 0, 1440, 2560);
+        let turned = lowlat_drivers::ffi::d3d11::DXGI_MODE_ROTATION_ROTATE90;
+        assert!(
+            look(now, &desktop, turned).is_some(),
+            "a turned rectangle refused"
+        );
+        assert_eq!(
+            look(now, &desktop, UPRIGHT),
+            None,
+            "a rectangle of another size was taken"
+        );
+        assert_eq!(
+            moved_place(now, &desktop, "DISPLAY9", (2560, 1440), UPRIGHT),
+            None,
+            "an output not listed was placed"
+        );
     }
 
     /// **The desktop as the loop drives it, without a network**: an output
@@ -3802,6 +3984,23 @@ mod tests {
         display.wait_present(500) == Some(true)
             && display.acquire().is_ok()
             && display.converted().is_ok_and(|got| got.is_some())
+    }
+
+    /// **A place gone stale is read again** on an open display, from the
+    /// system's own listing: made wrong by hand, as a desktop shrunk around
+    /// the output since leaves it, the look finds the place as the display
+    /// opened at, once.
+    #[test]
+    #[ignore = "requires NVIDIA's encoder and a display"]
+    fn a_place_gone_stale_is_read_again() {
+        let name = Display::preferred().expect("a lit output");
+        on_nvenc(&name, |display| {
+            let opened = display.place;
+            display.place.desktop_width += 1500;
+            assert_eq!(display.moved(), Some(opened), "the stale place stood");
+            assert_eq!(display.place().unwrap(), opened);
+            assert_eq!(display.moved(), None, "read again with nothing moved");
+        });
     }
 
     /// **Any monitor of the driver is read from it where its frames can be
