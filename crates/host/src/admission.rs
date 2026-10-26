@@ -2151,9 +2151,19 @@ const NO_INPUT: Option<&mut Input<Devices>> = None;
 /// **Generic over where the events go** so the routing above it can be tested
 /// against a recorder rather than against the running session's real devices.
 /// The guest thread only ever builds the one variant.
-struct Input<S> {
+struct Input<S: lowlat_inject::event::Sink> {
     injector: Injector,
     sink: S,
+}
+
+/// **Whatever the guest still holds comes up as it goes**, whichever way its
+/// loop ended (docs/05-host.md section 7). A device whose end releases what it
+/// held would do it anyway; the batch input call has no device, and a key it
+/// typed down stays down until something types it up.
+impl<S: lowlat_inject::event::Sink> Drop for Input<S> {
+    fn drop(&mut self) {
+        self.injector.release_all(&mut self.sink);
+    }
 }
 
 impl Input<Devices> {
@@ -4453,6 +4463,50 @@ mod geometry {
         }
     }
 
+    /// **A guest that goes holding a key lets it go as it goes**, whichever
+    /// way its loop ends (docs/05-host.md section 7): the batch input call has
+    /// no device whose end would, and a key it typed down stays down.
+    #[test]
+    fn a_guest_that_goes_holding_a_key_lets_it_go() {
+        #[derive(Default)]
+        struct Kept(std::rc::Rc<std::cell::RefCell<Vec<(u16, i32)>>>);
+        impl lowlat_inject::event::Sink for Kept {
+            fn emit(
+                &mut self,
+                _device: lowlat_inject::event::Device,
+                events: &[lowlat_inject::event::Event],
+            ) {
+                self.0.borrow_mut().extend(
+                    events
+                        .iter()
+                        .filter(|event| event.kind == 0x01)
+                        .map(|event| (event.code, event.value)),
+                );
+            }
+        }
+        let kept = Kept::default();
+        let seen = std::rc::Rc::clone(&kept.0);
+        let mut input = Input {
+            injector: Injector::new(Extents::alone(1920, 1080)),
+            sink: kept,
+        };
+        let key = Control {
+            a0: 4,
+            a1: 0,
+            a2: 1,
+            opcode: op::KEYBOARD,
+            body: &[],
+        };
+        input.injector.on_control(&key, &mut input.sink);
+        assert_eq!(*seen.borrow(), vec![(30, 1)]);
+        drop(input);
+        assert_eq!(
+            *seen.borrow(),
+            vec![(30, 1), (30, 0)],
+            "the key stayed down after its guest went"
+        );
+    }
+
     /// Send control messages from a peer and drain them into the host.
     fn drain_from_peer(
         input: Option<&mut Input<Recorder>>,
@@ -4786,7 +4840,10 @@ mod geometry {
                 &motion,
             );
         }
-        (first.sink, second.sink)
+        (
+            core::mem::take(&mut first.sink),
+            core::mem::take(&mut second.sink),
+        )
     }
 
     fn drain_one(input: &mut Input<Recorder>, pointer: Pointer<'_>, message: &Control<'_>) {
