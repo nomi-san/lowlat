@@ -156,6 +156,15 @@ impl Shape {
     }
 }
 
+/// A picture the readers staged: its decoder's shape, its stream's coded
+/// and visible sizes, and the readers' slot it goes to.
+struct Staged {
+    shape: Shape,
+    coded: (u32, u32),
+    visible: (u32, u32),
+    slot: usize,
+}
+
 /// What a unit amounted to, either codec.
 enum Read {
     Nothing,
@@ -231,8 +240,10 @@ type Views = (usize, [Option<Com<ID3D11ShaderResourceView>>; 2]);
 /// order: the surfaces and the views before the decoder.
 struct Built<'c> {
     shape: Shape,
-    /// The coded size the decoder was built at.
+    /// The coded size of the stream the decoder was built for.
     coded: (u32, u32),
+    /// The size it shows, which the decoder was built at.
+    visible: (u32, u32),
     /// Whether it decodes in the runtime's low-latency mode.
     low_latency: bool,
     /// The surfaces handed out, by the readers' slot, until their picture
@@ -413,13 +424,14 @@ impl<'a> Backend<'a> {
         }
     }
 
-    /// The decoder for `shape` at `coded`, built if none is; `false` when
-    /// the one built differs, which is the caller's format change. A
-    /// decoder the runtime will not build is a stream it takes no profile
-    /// for, which no keyframe asked for would change.
-    fn ensure(&mut self, shape: Shape, coded: (u32, u32)) -> Result<bool> {
+    /// The decoder for `shape` and a stream coded at `coded` that shows
+    /// `visible`, built if none is; `false` when the one built differs, which
+    /// is the caller's format change. A decoder the runtime will not build is
+    /// a stream it takes no profile for, which no keyframe asked for would
+    /// change.
+    fn ensure(&mut self, shape: Shape, coded: (u32, u32), visible: (u32, u32)) -> Result<bool> {
         if let Some(built) = &self.built {
-            return Ok(built.shape == shape && built.coded == coded);
+            return Ok(built.shape == shape && built.coded == coded && built.visible == visible);
         }
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
@@ -429,12 +441,17 @@ impl<'a> Backend<'a> {
             .decoder(self.context, shape.decoder())
             .map_err(|_| Error::NoProfile)?;
         let low_latency = configure(&decoder).map_err(|_| Error::NoProfile)?;
+        // **At the size the stream shows, not its coded size**: runtime
+        // 1.4.31 answers every unit of a cropped stream -- a 1080-line picture
+        // is coded at 1088 -- that its size changed when built at the coded
+        // size, and decodes nothing; 1.4.37 takes either.
         decoder
-            .init(shape.layout(), coded.0, coded.1)
+            .init(shape.layout(), visible.0, visible.1)
             .map_err(|_| Error::NoProfile)?;
         self.built = Some(Built {
             shape,
             coded,
+            visible,
             low_latency,
             held: [const { None }; SURFACES],
             pending: Pending::new(),
@@ -474,14 +491,14 @@ impl<'a> Backend<'a> {
             }
             Read::Picture => {}
         }
-        let (shape, coded, slot) = match self.staged() {
+        let staged = match self.staged() {
             Ok(staged) => staged,
             Err(e) => {
                 self.abandon();
                 return Err(e);
             }
         };
-        match self.ensure(shape, coded) {
+        match self.ensure(staged.shape, staged.coded, staged.visible) {
             Ok(true) => {}
             Ok(false) => {
                 self.abandon();
@@ -492,7 +509,7 @@ impl<'a> Backend<'a> {
                 return Err(e);
             }
         }
-        match self.submit(unit, Some(slot)) {
+        match self.submit(unit, Some(staged.slot)) {
             Ok(true) => {}
             Ok(false) => {
                 self.abandon();
@@ -510,9 +527,8 @@ impl<'a> Backend<'a> {
         Ok(self.pending_fed())
     }
 
-    /// The staged picture's shape, coded size and slot; a stream no decoder
-    /// here takes is refused.
-    fn staged(&self) -> Result<(Shape, (u32, u32), usize)> {
+    /// The staged picture; a stream no decoder here takes is refused.
+    fn staged(&self) -> Result<Staged> {
         match self.codec {
             Codec::H264 => {
                 let job = self.h264.job().ok_or(Error::Stream)?;
@@ -525,8 +541,12 @@ impl<'a> Backend<'a> {
                     codec: Codec::H264,
                     ten_bit: false,
                 };
-                let coded = (job.sps.coded_width(), job.sps.coded_height());
-                Ok((shape, coded, job.current.slot))
+                Ok(Staged {
+                    shape,
+                    coded: (job.sps.coded_width(), job.sps.coded_height()),
+                    visible: job.sps.visible(),
+                    slot: job.current.slot,
+                })
             }
             Codec::H265 => {
                 let job = self.hevc.job().ok_or(Error::Stream)?;
@@ -541,7 +561,12 @@ impl<'a> Backend<'a> {
                     codec: Codec::H265,
                     ten_bit: job.sps.bit_depth_luma_minus8 > 0,
                 };
-                Ok((shape, (job.sps.width, job.sps.height), job.current.slot))
+                Ok(Staged {
+                    shape,
+                    coded: (job.sps.width, job.sps.height),
+                    visible: job.sps.visible(),
+                    slot: job.current.slot,
+                })
             }
         }
     }

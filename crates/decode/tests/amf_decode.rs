@@ -352,6 +352,26 @@ fn every_clip_decodes_to_the_reference_pictures_in_order() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// **A cropped stream decodes at its visible size**: a picture off the coding
+/// grid, coded larger and shown cropped -- as a 1080-line picture is coded at
+/// 1088 -- comes out whole and right. An older runtime (1.4.31) answered every
+/// unit of such a stream that its size had changed, the decoder built at the
+/// coded size.
+#[test]
+#[ignore = "requires AMD's GPU and runtime"]
+fn a_cropped_stream_decodes_at_its_visible_size() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let device = amd(&d3d11);
+    let amf = Amf::load().expect("AMD's runtime");
+    for (clip, codec) in [
+        ("fixtures/h264-crop", Codec::H264),
+        ("fixtures/hevc-crop", Codec::H265),
+    ] {
+        let (bin, sums) = (format!("{clip}.bin"), format!("{clip}.sums"));
+        check(&amf, &device, &bin, &sums, codec, false).unwrap_or_else(|e| panic!("{clip}: {e}"));
+    }
+}
+
 /// **Every clip through the plane textures, in the reference's order**: the
 /// split's planes, opened by handle on a second device once the fence has
 /// passed and read back, are the reference pictures bit for bit. The

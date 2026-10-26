@@ -53,6 +53,9 @@ make_fixture h264-bframes         h264 yuv420p 128x128 -c:v libx264 -preset medi
 make_fixture h264-slices          h264 yuv420p 128x128 -c:v libx264 -preset fast -bf 2 -x264-params "slices=4:keyint=12:aud=1"
 make_fixture h264-scaling         h264 yuv420p 128x128 -c:v libx264 -preset medium -bf 2 -x264-params "cqm=jvt:8x8dct=1:keyint=12:aud=1"
 make_fixture h264-mbaff           h264 yuv420p 128x128 -c:v libx264 -preset medium -bf 2 -flags +ildct+ilme -x264-params "interlaced=1:keyint=12:aud=1"
+# Cropped: a size off the macroblock grid, coded at 144x128 and shown at
+# 136x120, as a 1080-line picture is coded at 1088.
+make_fixture h264-crop            h264 yuv420p 136x120 -c:v libx264 -preset fast -bf 0 -refs 1 -x264-params "keyint=12:aud=1"
 # The vendor encoder's shape: what an established host sends.
 make_fixture h264-nvenc-ll        h264 yuv420p 256x256 -c:v h264_nvenc -preset p1 -tune ll -rc cbr -b:v 1M -bf 0 -g 12 -aud 1
 make_fixture h264-nvenc-bframes   h264 yuv420p 256x256 -c:v h264_nvenc -preset p4 -bf 2 -b_ref_mode middle -g 12 -aud 1
@@ -67,6 +70,8 @@ make_fixture hevc-bframes         hevc yuv420p   144x144 -c:v libx265 -preset me
 make_fixture hevc-slices          hevc yuv420p   256x256 -c:v libx265 -preset fast -x265-params "slices=2:bframes=2:keyint=12:aud=1:log-level=error"
 make_fixture hevc-scaling         hevc yuv420p   144x144 -c:v libx265 -preset medium -x265-params "scaling-list=default:bframes=2:keyint=12:aud=1:log-level=error"
 make_fixture hevc-main10          hevc yuv420p10le 256x256 -c:v libx265 -preset fast -x265-params "bframes=2:keyint=12:aud=1:log-level=error"
+# Cropped by the conformance window: coded at 152x152, shown at 150x146.
+make_fixture hevc-crop            hevc yuv420p   150x146 -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
 make_fixture hevc-nvenc-ll        hevc yuv420p   256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 1M -bf 0 -g 12 -aud 1
 make_fixture hevc-nvenc-main10    hevc p010le    256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 2M -bf 0 -g 12 -profile:v main10 -aud 1
 # Full chroma: the range-extensions profile at eight and ten bits, with the
