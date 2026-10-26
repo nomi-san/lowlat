@@ -72,6 +72,16 @@ internal sealed class Host
                     // machine, which is a thing to opt into.
                     MuteLocal = false,
                 },
+#if WINDOWS
+                Input = new HostInputConfig
+                {
+                    Size = (uint)sizeof(HostInputConfig),
+                    // **The batch input call**, which needs no driver; the
+                    // host's own input driver is the machine's administrator's
+                    // to install.
+                    VirtualInput = false,
+                },
+#endif
             };
             Text.Put(((Span<byte>)cfg.Servers)[..Sizes.Server], "3.145.150.90:3478");
             // Empty: whichever output this host would pick on its own, which is

@@ -981,6 +981,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             own_display: lowlat_host::stream::OwnDisplay::default(),
         }),
     });
+    // **Off unless asked**, as in the library: the guests' keys go to
+    // keyboards of the host's own input driver only where the owner wants
+    // them there. Where the driver is not installed it is said once and the
+    // batch input call kept, and the start goes on: a host that failed for it
+    // would be started again by the service, and fail again.
+    #[cfg(windows)]
+    if flag_set("--virtual-input")
+        && let Err(error) = seam.set_virtual_input(true)
+    {
+        lowlat_common::log_warn!(
+            "lowlatd: --virtual-input refused, keys go through the batch input call, error={error}"
+        );
+    }
 
     let params = Connect {
         server,

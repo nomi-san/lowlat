@@ -7,20 +7,36 @@
 //!
 //! The handle is opened for overlapped requests: one that is not serializes
 //! them, and the read kept outstanding would hold every report behind it.
+//!
+//! **A handle follows its driver.** An open one refuses the removal an update
+//! or a removal of the driver needs, which then waits for a reboot; so it is
+//! closed when the system asks for the device back, and when a request finds
+//! the driver's process gone. Its device goes with it, and every request after
+//! answers [`Error::Absent`].
 
+use std::mem::ManuallyDrop;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lowlat_hid_proto::control::{
     Create, Features, IOCTL_CREATE, IOCTL_VERSION, IOCTL_WRITTEN, VERSION, Version, Written,
 };
-use lowlat_hid_proto::{CONTROL_INTERFACE, Kind};
+use lowlat_hid_proto::{CONTROL_INTERFACE, Guid, Kind, container_id};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
-    CM_Get_Device_Interface_ListW, CR_SUCCESS,
+    CM_DRP_BASE_CONTAINERID, CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+    CM_Get_DevNode_Registry_PropertyW, CM_Get_Device_Interface_List_SizeW,
+    CM_Get_Device_Interface_ListW, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
+    CM_MapCrToWin32Err, CM_NOTIFY_ACTION, CM_NOTIFY_ACTION_DEVICEQUERYREMOVE,
+    CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE, CM_NOTIFY_ACTION_DEVICEREMOVEPENDING,
+    CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_0, CM_NOTIFY_FILTER_0_1,
+    CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE, CM_Register_Notification, CM_Unregister_Notification,
+    CR_SUCCESS, HCMNOTIFICATION,
 };
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
-    GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+    ERROR_ACCESS_DENIED, ERROR_DRIVER_PROCESS_TERMINATED, ERROR_GEN_FAILURE,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
+    ERROR_SUCCESS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, WriteFile,
@@ -28,13 +44,18 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{
     CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED,
 };
-use windows_sys::Win32::System::Threading::CreateEventW;
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows_sys::Win32::UI::Input::{
+    GetRawInputDeviceInfoW, GetRawInputDeviceList, RAWINPUTDEVICELIST, RIDI_DEVICENAME,
+    RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+};
 use windows_sys::core::GUID;
 
 /// Why a device was not made, or a request not taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// No input driver installed, or none started.
+    /// No input driver installed, or none started; or the driver asked for
+    /// its device back, or its process ended, and the handle went with it.
     Absent,
     /// The driver's interface admits the system account and administrators
     /// alone.
@@ -46,9 +67,31 @@ pub enum Error {
     Refused(u32),
 }
 
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Absent => f.write_str("no input driver installed or started"),
+            Self::Denied => {
+                f.write_str("the input driver admits the system account and administrators alone")
+            }
+            Self::Version(version) => write!(f, "the input driver speaks version {version}"),
+            Self::Refused(code) => write!(f, "the input driver refused, error={code}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
 fn last_error() -> u32 {
     // SAFETY: no precondition.
     unsafe { GetLastError() }
+}
+
+/// Whether a request's error says the driver behind the handle has gone
+/// rather than answering: its process ended, which leaves the handle reaching
+/// nothing, and the system starts the driver again behind a new one.
+fn gone(code: u32) -> bool {
+    code == ERROR_DRIVER_PROCESS_TERMINATED
 }
 
 /// The interface's path, the first the system lists, terminated.
@@ -91,6 +134,31 @@ fn interface() -> Option<Vec<u16>> {
     (end > 0).then_some(list)
 }
 
+/// The interface, opened for overlapped requests.
+fn open() -> Result<OwnedHandle, Error> {
+    let path = interface().ok_or(Error::Absent)?;
+    // SAFETY: a terminated path; no security attributes, no template.
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            core::ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(match last_error() {
+            ERROR_ACCESS_DENIED => Error::Denied,
+            code => Error::Refused(code),
+        });
+    }
+    // SAFETY: a handle this now owns, closed once.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+}
+
 /// An event an overlapped request signals, reset by the system as each
 /// request starts.
 fn event() -> Result<OwnedHandle, Error> {
@@ -123,6 +191,109 @@ fn finish(handle: HANDLE, overlapped: &mut OVERLAPPED, wait: bool) -> Result<u32
     Ok(bytes)
 }
 
+/// One control request on `handle`, waited for: the reply's length, or the
+/// system's error.
+fn control(
+    handle: HANDLE,
+    event: &OwnedHandle,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+) -> Result<usize, u32> {
+    let mut overlapped = overlapped(event);
+    // SAFETY: live buffers of their stated lengths and a structure that lives
+    // until the request ends, waited for below.
+    let ok = unsafe {
+        DeviceIoControl(
+            handle,
+            code,
+            input.as_ptr().cast(),
+            u32::try_from(input.len()).unwrap_or(0),
+            output.as_mut_ptr().cast(),
+            u32::try_from(output.len()).unwrap_or(0),
+            core::ptr::null_mut(),
+            &raw mut overlapped,
+        )
+    };
+    if ok == 0 {
+        let code = last_error();
+        if code != ERROR_IO_PENDING {
+            return Err(code);
+        }
+    }
+    finish(handle, &mut overlapped, true).map(|bytes| usize::try_from(bytes).unwrap_or(0))
+}
+
+/// Whether the driver behind `handle` speaks this version of the requests.
+fn speaks(handle: HANDLE, event: &OwnedHandle) -> Result<(), Error> {
+    let mut answer = [0u8; Version::LEN];
+    let len = control(handle, event, IOCTL_VERSION, &[], &mut answer).map_err(Error::Refused)?;
+    let version = answer
+        .get(..len)
+        .and_then(|bytes| Version::decode(bytes).ok())
+        .ok_or(Error::Version(0))?;
+    if version.version != VERSION {
+        return Err(Error::Version(version.version));
+    }
+    Ok(())
+}
+
+/// Whether this process can make devices: the driver installed and started,
+/// this process admitted -- the system account, or an administrator elevated
+/// -- and the driver speaking these requests. Nothing is made.
+pub fn probe() -> Result<(), Error> {
+    let handle = open()?;
+    let event = event()?;
+    speaks(handle.as_raw_handle(), &event)
+}
+
+/// The handle, while the driver has not asked for its device back: shared
+/// with the system's notifications about that device, which close it from a
+/// thread of the system's.
+#[derive(Debug)]
+struct Held(Mutex<Option<OwnedHandle>>);
+
+impl Held {
+    fn lock(&self) -> MutexGuard<'_, Option<OwnedHandle>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether the system's word about the device ends the handle: asked for the
+/// device back, or telling it went.
+fn closes(action: CM_NOTIFY_ACTION) -> bool {
+    matches!(
+        action,
+        CM_NOTIFY_ACTION_DEVICEQUERYREMOVE
+            | CM_NOTIFY_ACTION_DEVICEREMOVEPENDING
+            | CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE
+    )
+}
+
+/// **Closed before this returns**, so the removal is not refused for it. A
+/// request in flight on the handle finishes first: it holds the lock.
+unsafe extern "system" fn notified(
+    _notification: HCMNOTIFICATION,
+    context: *const core::ffi::c_void,
+    action: CM_NOTIFY_ACTION,
+    _data: *const CM_NOTIFY_EVENT_DATA,
+    _size: u32,
+) -> u32 {
+    if closes(action) {
+        // SAFETY: the context registered with this notification, alive until
+        // the registration is released.
+        if let Some(held) = unsafe { context.cast::<Held>().as_ref() } {
+            held.lock().take();
+        }
+    }
+    ERROR_SUCCESS
+}
+
+/// How long a device's end waits for its read to end once cancelled. Past it
+/// the read's buffer is let go of rather than freed, so a late answer writes
+/// nothing that is someone else's.
+const READ_ENDS_MS: u32 = 5_000;
+
 /// The read of what the system wrote, kept outstanding between polls: its
 /// buffer and structure stay put while the system may write them.
 struct Read {
@@ -132,13 +303,30 @@ struct Read {
     pending: bool,
 }
 
+impl Read {
+    /// Wait for the read to end, cancelled or closed beneath it: true once
+    /// the system writes it no more.
+    fn ended(&self) -> bool {
+        // SAFETY: the read's own event, which the system signals as it ends.
+        unsafe { WaitForSingleObject(self.event.as_raw_handle(), READ_ENDS_MS) == WAIT_OBJECT_0 }
+    }
+}
+
 /// One device of the host's own input driver, removed when this goes.
 pub struct Device {
-    handle: OwnedHandle,
+    /// Boxed, so the notification's context stays where it was registered.
+    held: Box<Held>,
+    notification: HCMNOTIFICATION,
     kind: Kind,
     event: OwnedHandle,
-    read: Box<Read>,
+    /// Freed at the end only once the system writes it no more.
+    read: ManuallyDrop<Box<Read>>,
 }
+
+// SAFETY: handles any thread may use, the device's behind its lock; the
+// registration is the system's value, released once; the read's buffer is
+// this device's own and is read only by whoever holds the device.
+unsafe impl Send for Device {}
 
 impl std::fmt::Debug for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -151,39 +339,47 @@ impl Device {
     /// kind's own -- a pad's peer's calibration and firmware, the pairing the
     /// host made up for it.
     pub fn create(kind: Kind, slot: u8, features: Features) -> Result<Self, Error> {
-        let path = interface().ok_or(Error::Absent)?;
-        // SAFETY: a terminated path; no security attributes, no template.
-        let raw = unsafe {
-            CreateFileW(
-                path.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                core::ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
-                core::ptr::null_mut(),
-            )
-        };
-        if raw == INVALID_HANDLE_VALUE {
-            return Err(match last_error() {
-                ERROR_ACCESS_DENIED => Error::Denied,
-                code => Error::Refused(code),
-            });
-        }
-        // SAFETY: a handle this now owns, closed once.
-        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let handle = open()?;
+        let target = handle.as_raw_handle();
         let read_event = event()?;
         let mut device = Self {
-            handle,
+            held: Box::new(Held(Mutex::new(Some(handle)))),
+            notification: core::ptr::null_mut(),
             kind,
             event: event()?,
-            read: Box::new(Read {
+            read: ManuallyDrop::new(Box::new(Read {
                 overlapped: overlapped(&read_event),
                 event: read_event,
                 buffer: [0; Written::LEN],
                 pending: false,
-            }),
+            })),
         };
+        let filter = CM_NOTIFY_FILTER {
+            cbSize: u32::try_from(size_of::<CM_NOTIFY_FILTER>()).unwrap_or(0),
+            FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE,
+            u: CM_NOTIFY_FILTER_0 {
+                DeviceHandle: CM_NOTIFY_FILTER_0_1 { hTarget: target },
+            },
+            ..Default::default()
+        };
+        // SAFETY: a live filter; the context is the boxed state, which
+        // outlives the registration (`Drop`).
+        let cr = unsafe {
+            CM_Register_Notification(
+                &raw const filter,
+                (&raw const *device.held).cast(),
+                Some(notified),
+                &raw mut device.notification,
+            )
+        };
+        // **A handle that cannot follow its driver is not kept**: it would
+        // refuse the driver's next update.
+        if cr != CR_SUCCESS {
+            // SAFETY: no precondition.
+            return Err(Error::Refused(unsafe {
+                CM_MapCrToWin32Err(cr, ERROR_GEN_FAILURE)
+            }));
+        }
         let mut answer = [0u8; Version::LEN];
         let len = device.control(IOCTL_VERSION, &[], &mut answer)?;
         let version = answer
@@ -210,36 +406,28 @@ impl Device {
     }
 
     /// One control request, waited for.
+    ///
+    /// **Under the handle's lock**, so the system's word that the driver is
+    /// going waits for it rather than closing the handle beneath it.
     fn control(&mut self, code: u32, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
-        let mut overlapped = overlapped(&self.event);
-        let handle = self.handle.as_raw_handle();
-        // SAFETY: live buffers of their stated lengths and a structure that
-        // lives until the request ends, waited for below.
-        let ok = unsafe {
-            DeviceIoControl(
-                handle,
-                code,
-                input.as_ptr().cast(),
-                u32::try_from(input.len()).unwrap_or(0),
-                output.as_mut_ptr().cast(),
-                u32::try_from(output.len()).unwrap_or(0),
-                core::ptr::null_mut(),
-                &raw mut overlapped,
-            )
-        };
-        if ok == 0 && last_error() != ERROR_IO_PENDING {
-            return Err(Error::Refused(last_error()));
+        let mut held = self.held.lock();
+        let handle = held.as_ref().ok_or(Error::Absent)?.as_raw_handle();
+        match control(handle, &self.event, code, input, output) {
+            Ok(len) => Ok(len),
+            Err(code) if gone(code) => {
+                held.take();
+                Err(Error::Absent)
+            }
+            Err(code) => Err(Error::Refused(code)),
         }
-        finish(handle, &mut overlapped, true)
-            .map(|bytes| usize::try_from(bytes).unwrap_or(0))
-            .map_err(Error::Refused)
     }
 
     /// One input report, identifier byte first, as the kind declares it; a
     /// report it does not declare whole is refused.
     pub fn write(&mut self, report: &[u8]) -> Result<(), Error> {
+        let mut held = self.held.lock();
+        let handle = held.as_ref().ok_or(Error::Absent)?.as_raw_handle();
         let mut overlapped = overlapped(&self.event);
-        let handle = self.handle.as_raw_handle();
         // SAFETY: a live buffer of its stated length and a structure that
         // lives until the request ends, waited for below.
         let ok = unsafe {
@@ -251,20 +439,36 @@ impl Device {
                 &raw mut overlapped,
             )
         };
-        if ok == 0 && last_error() != ERROR_IO_PENDING {
-            return Err(Error::Refused(last_error()));
+        let mut ended = Ok(0);
+        if ok == 0 {
+            let code = last_error();
+            if code != ERROR_IO_PENDING {
+                ended = Err(code);
+            }
         }
-        finish(handle, &mut overlapped, true)
-            .map(|_| ())
-            .map_err(Error::Refused)
+        match ended.and_then(|_| finish(handle, &mut overlapped, true)) {
+            Ok(_) => Ok(()),
+            Err(code) if gone(code) => {
+                held.take();
+                Err(Error::Absent)
+            }
+            Err(code) => Err(Error::Refused(code)),
+        }
     }
 
     /// What the system wrote to the device since the last poll, without
     /// waiting: the read stays outstanding between polls, and none is the
     /// answer while nothing came.
     pub fn written(&mut self) -> Result<Option<Written>, Error> {
-        let handle = self.handle.as_raw_handle();
-        let read = &mut *self.read;
+        let held = self.held.lock();
+        let read = &mut **self.read;
+        let Some(handle) = held.as_ref().map(AsRawHandle::as_raw_handle) else {
+            // Closed beneath a read, which ended with the handle.
+            if read.pending && read.ended() {
+                read.pending = false;
+            }
+            return Err(Error::Absent);
+        };
         if !read.pending {
             read.overlapped = overlapped(&read.event);
             // SAFETY: the read's own buffer and structure, which stay put in
@@ -281,8 +485,11 @@ impl Device {
                     &raw mut read.overlapped,
                 )
             };
-            if ok == 0 && last_error() != ERROR_IO_PENDING {
-                return Err(Error::Refused(last_error()));
+            if ok == 0 {
+                let code = last_error();
+                if code != ERROR_IO_PENDING {
+                    return Err(Error::Refused(code));
+                }
             }
             read.pending = true;
         }
@@ -307,16 +514,159 @@ impl Device {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        if self.read.pending {
-            let handle = self.handle.as_raw_handle();
-            // SAFETY: the read issued on this handle; once it ends the system
-            // writes its buffer no more, which the wait below makes sure of.
-            unsafe { CancelIoEx(handle, &raw const self.read.overlapped) };
-            let _ = finish(handle, &mut self.read.overlapped, true);
+        if !self.notification.is_null() {
+            // SAFETY: this device's registration, released once and never
+            // from its own notification; the release waits for one in flight,
+            // so the context outlives every notification.
+            unsafe { CM_Unregister_Notification(self.notification) };
         }
+        if self.read.pending {
+            let overlapped: *const OVERLAPPED = &self.read.overlapped;
+            if let Some(handle) = self.held.lock().as_ref() {
+                // SAFETY: the read issued on this handle.
+                unsafe { CancelIoEx(handle.as_raw_handle(), overlapped) };
+            }
+            if !self.read.ended() {
+                // Let go of rather than freed: the system may still write it.
+                return;
+            }
+        }
+        // SAFETY: dropped once, here, with nothing writing it any more.
+        unsafe { ManuallyDrop::drop(&mut self.read) };
         // The handle closes after this: the driver submits the device's
         // neutral reports and removes it.
     }
+}
+
+/// Raw input's devices, listed at once: the machine's own and every device of
+/// this driver's.
+const LISTED_MAX: usize = 256;
+
+/// Whether the system's raw input lists `kind`'s device in `slot`: what is
+/// written to a device reaches the system from then on, and every report
+/// written before is lost (docs/11-drivers.md section 2.4).
+pub fn listed(kind: Kind, slot: u8) -> bool {
+    let wanted = match kind {
+        Kind::Keyboard => RIM_TYPEKEYBOARD,
+        Kind::Mouse => RIM_TYPEMOUSE,
+        Kind::DualShock4 | Kind::DualSense => RIM_TYPEHID,
+    };
+    let container = text(container_id(kind, slot));
+    let size = u32::try_from(size_of::<RAWINPUTDEVICELIST>()).unwrap_or(0);
+    let mut list = [RAWINPUTDEVICELIST::default(); LISTED_MAX];
+    let mut count = u32::try_from(LISTED_MAX).unwrap_or(0);
+    // SAFETY: a list of `count` entries, as the call is told.
+    let mut got = unsafe { GetRawInputDeviceList(list.as_mut_ptr(), &raw mut count, size) };
+    let mut more = Vec::new();
+    if got == u32::MAX && last_error() == ERROR_INSUFFICIENT_BUFFER {
+        // More than the list holds: `count` is how many there are now.
+        more = vec![RAWINPUTDEVICELIST::default(); usize::try_from(count).unwrap_or(0)];
+        // SAFETY: a list of `count` entries, as the call is told.
+        got = unsafe { GetRawInputDeviceList(more.as_mut_ptr(), &raw mut count, size) };
+    }
+    let Ok(got) = usize::try_from(got) else {
+        return false;
+    };
+    let listed = if more.is_empty() {
+        list.get(..got)
+    } else {
+        more.get(..got)
+    };
+    listed.unwrap_or_default().iter().any(|device| {
+        device.dwType == wanted
+            && container_of(device.hDevice).is_some_and(|c| same(&c, &container))
+    })
+}
+
+/// A GUID as the system writes one: braced, upper case,
+/// `{data1-data2-data3-data4[0..2]-data4[2..8]}`.
+fn text(id: Guid) -> [u16; 38] {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    // The thirty-two digits in the order they are written.
+    let value = (u128::from(id.data1) << 96)
+        | (u128::from(id.data2) << 80)
+        | (u128::from(id.data3) << 64)
+        | u128::from(u64::from_be_bytes(id.data4));
+    let mut digits = (0..32u32).rev().map(|digit| {
+        let nibble = usize::try_from((value >> (digit * 4)) & 0xf).unwrap_or(0);
+        HEX.get(nibble).copied().unwrap_or(b'0')
+    });
+    let mut out = [0u16; 38];
+    for (at, slot) in out.iter_mut().enumerate() {
+        *slot = u16::from(match at {
+            0 => b'{',
+            9 | 14 | 19 | 24 => b'-',
+            37 => b'}',
+            _ => digits.next().unwrap_or(b'0'),
+        });
+    }
+    out
+}
+
+/// Two GUIDs' texts the same, whichever case each was written in.
+fn same(a: &[u16], b: &[u16]) -> bool {
+    let fold = |unit: &u16| char::from_u32(u32::from(*unit)).map(|c| c.to_ascii_uppercase());
+    a.len() == b.len() && a.iter().map(fold).eq(b.iter().map(fold))
+}
+
+/// The container of the device raw input lists as `device`, as the system
+/// writes it.
+fn container_of(device: HANDLE) -> Option<[u16; 38]> {
+    let mut name = [0u16; 512];
+    let mut len = u32::try_from(name.len()).ok()?;
+    // SAFETY: a buffer of `len` characters, as the call is told.
+    let written = unsafe {
+        GetRawInputDeviceInfoW(
+            device,
+            RIDI_DEVICENAME,
+            name.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    };
+    let name = name.get(..usize::try_from(written).ok()?)?;
+    let name = name.split(|unit| *unit == 0).next()?;
+    // `\\?\HID#...&COL01#2&...&0000#{class}`: the instance between the
+    // prefix and the interface's class, a `#` for each `\`.
+    let path = name.get(4..)?;
+    let end = path.iter().rposition(|unit| *unit == u16::from(b'#'))?;
+    let mut instance = [0u16; 512];
+    if end >= instance.len() {
+        return None;
+    }
+    for (slot, unit) in instance.iter_mut().zip(path.get(..end)?) {
+        *slot = if *unit == u16::from(b'#') {
+            u16::from(b'\\')
+        } else {
+            *unit
+        };
+    }
+    let mut node = 0u32;
+    // SAFETY: a terminated identifier -- `instance` is longer than any path
+    // copied into it -- and a live output.
+    let cr =
+        unsafe { CM_Locate_DevNodeW(&raw mut node, instance.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) };
+    if cr != CR_SUCCESS {
+        return None;
+    }
+    let mut container = [0u16; 40];
+    let mut size = u32::try_from(size_of_val(&container)).ok()?;
+    // SAFETY: a buffer of `size` bytes; no type asked for.
+    let cr = unsafe {
+        CM_Get_DevNode_Registry_PropertyW(
+            node,
+            CM_DRP_BASE_CONTAINERID,
+            core::ptr::null_mut(),
+            container.as_mut_ptr().cast(),
+            &raw mut size,
+            0,
+        )
+    };
+    if cr != CR_SUCCESS {
+        return None;
+    }
+    let mut out = [0u16; 38];
+    out.copy_from_slice(container.get(..38)?);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -689,5 +1039,33 @@ mod tests {
             again.is_ok(),
             "the slot again once its device went: {again:?}"
         );
+    }
+
+    /// **A handle lets go when the system asks for the driver's device back**:
+    /// a keyboard held and written to while the driver's device is restarted
+    /// -- the run sheet restarts it once this says it holds one -- answers
+    /// absent once the system asks, and the restart is not refused for it.
+    #[test]
+    #[ignore = "run by the run sheet, which restarts the input driver's device beside it"]
+    fn a_held_keyboard_lets_go_when_the_driver_is_asked_back() {
+        let mut keys = Device::create(Kind::Keyboard, 9, Features::new()).unwrap();
+        let started = Instant::now();
+        eprintln!("holding a keyboard in slot 9");
+        loop {
+            match keys.write(&keyboard::NEUTRAL_KEYS) {
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("let go after {:?}: {error:?}", started.elapsed());
+                    assert_eq!(error, Error::Absent);
+                    assert_eq!(keys.write(&keyboard::NEUTRAL_KEYS), Err(Error::Absent));
+                    return;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "never asked to let go"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

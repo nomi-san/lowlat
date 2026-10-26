@@ -76,6 +76,70 @@ pub fn scan_code(usage: u16) -> Option<i32> {
 /// The standard's keyboard page, which the scanned code is qualified by.
 const USAGE_PAGE: i32 = 0x0007_0000;
 
+/// A key as the host's own HID keyboard carries it (docs/11-drivers.md
+/// section 2.3): a usage of the keyboard page, or a usage of the consumer page
+/// for mute, volume and the media keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HidKey {
+    Key(u8),
+    Consumer(u16),
+}
+
+/// The consumer usages the media and volume keys' codes are the system's
+/// translation of: mute, volume up and down, the next and previous track,
+/// stop, play and pause, media select.
+const CONSUMER: [(u8, u16); 8] = [
+    (0xa0, 0x00e2),
+    (0xb0, 0x00e9),
+    (0xae, 0x00ea),
+    (0x99, 0x00b5),
+    (0x90, 0x00b6),
+    (0xa4, 0x00b7),
+    (0xa2, 0x00cd),
+    (0xed, 0x0183),
+];
+
+/// Each code's usage on the keyboard page, zero for none: the lowest usage the
+/// system translates to it, so the system's keyboard driver translates the
+/// usage back to the same code. The refused usages give none.
+#[allow(
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    reason = "evaluated at compile time over two tables of 256: an index out of range fails the build"
+)]
+const fn usages() -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut usage = 256;
+    while usage > 0 {
+        usage -= 1;
+        let code = SET1[usage] as usize;
+        let mut refused = false;
+        let mut at = 0;
+        while at < REFUSED.len() {
+            refused |= REFUSED[at] as usize == usage;
+            at += 1;
+        }
+        if code != 0 && !refused {
+            table[code] = usage as u8;
+        }
+    }
+    table
+}
+
+static USAGES: [u8; 256] = usages();
+
+/// The HID key the code [`key_code`] gave a key goes out as on the host's own
+/// keyboard, or `None` for a code that names none.
+#[must_use]
+pub fn hid_key(code: u16) -> Option<HidKey> {
+    let code = u8::try_from(code).ok()?;
+    if let Some(&(_, usage)) = CONSUMER.iter().find(|&&(from, _)| from == code) {
+        return Some(HidKey::Consumer(usage));
+    }
+    let usage = *USAGES.get(usize::from(code))?;
+    (usage != 0).then_some(HidKey::Key(usage))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +253,58 @@ mod tests {
     fn a_scanned_code_is_qualified_by_the_page_it_belongs_to() {
         assert_eq!(scan_code(4), Some(0x0007_0004));
         assert_eq!(scan_code(258), None);
+    }
+
+    /// **Every code a peer's key gives goes out on the HID keyboard as a key
+    /// the system's keyboard driver translates back to that code**: a usage of
+    /// the keyboard page whose translation is the code, or one of the
+    /// consumer usages the media and volume codes are the translation of --
+    /// so a key typed through the HID keyboard reaches the system as the key
+    /// the batch input call would have typed.
+    #[test]
+    fn every_code_goes_out_as_a_hid_key_the_system_translates_back() {
+        let mut keys = 0;
+        let mut consumer = 0;
+        for usage in 0..=u16::MAX {
+            let Some(code) = key_code(usage) else {
+                continue;
+            };
+            match hid_key(code) {
+                Some(HidKey::Key(key)) => {
+                    assert_eq!(
+                        SET1.get(usize::from(key)).map(|&c| u16::from(c)),
+                        Some(code),
+                        "usage {usage} code {code:#x} goes out as usage {key:#x}"
+                    );
+                    assert!(!REFUSED.contains(&u16::from(key)), "usage {key:#x}");
+                    keys += 1;
+                }
+                Some(HidKey::Consumer(_)) => consumer += 1,
+                None => panic!("usage {usage} code {code:#x} goes out as nothing"),
+            }
+        }
+        // The 141 mapped usages: 132 on the keyboard page (both backslashes
+        // and both context-menu names landing on one key each), the nine
+        // media and volume usages -- mute twice -- on the consumer page.
+        assert_eq!((keys, consumer), (132, 9));
+        assert_eq!(hid_key(0x2b), Some(HidKey::Key(49)), "the lower backslash");
+        assert_eq!(hid_key(0xdd), Some(HidKey::Key(101)), "the menu key");
+        assert_eq!(hid_key(0xa0), Some(HidKey::Consumer(0xe2)), "mute");
+        assert_eq!(hid_key(0xb0), Some(HidKey::Consumer(0xe9)), "volume up");
+        assert_eq!(hid_key(0xed), Some(HidKey::Consumer(0x183)));
+    }
+
+    /// **The power, sleep and wake codes go out as nothing**, though the
+    /// system translates usages to them: no peer's key gives them, and none
+    /// may reach the HID keyboard by any route.
+    #[test]
+    fn the_power_codes_go_out_as_nothing() {
+        for usage in REFUSED {
+            let code = SET1[usize::from(usage)];
+            assert_ne!(code, 0, "usage {usage}");
+            assert_eq!(hid_key(u16::from(code)), None, "usage {usage}");
+        }
+        assert_eq!(hid_key(0), None);
+        assert_eq!(hid_key(0x100), None);
     }
 }

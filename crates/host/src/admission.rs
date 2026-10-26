@@ -741,6 +741,9 @@ enum Ask {
     Permissions(lowlat_inject::event::Permissions),
     /// Type the attention chord on this guest's own keyboard.
     SecureAttention,
+    /// Move its keys to a keyboard of the host's own input driver, or back.
+    #[cfg(windows)]
+    VirtualInput(bool),
 }
 
 /// One message on its way to a guest, built where the caller is.
@@ -812,6 +815,10 @@ pub struct Admission {
     /// is what logs correlate on and it is no use naming a device or a pointer
     /// holder, so both use this and one line at admission joins them.
     next_guest: u32,
+    /// Whether the guests' keys go to keyboards of the host's own input
+    /// driver ([`Admission::set_virtual_input`]).
+    #[cfg(windows)]
+    virtual_input: bool,
 }
 
 impl core::fmt::Debug for Attempt {
@@ -859,7 +866,49 @@ impl Admission {
             emit,
             floor,
             next_guest: 1,
+            #[cfg(windows)]
+            virtual_input: false,
         }
+    }
+
+    /// Move every guest's keys to a keyboard of the host's own input driver,
+    /// or back to the batch input call (docs/06-api.md section 3), live.
+    ///
+    /// **Switching it on asks the driver first** and is refused, changing
+    /// nothing, where it is not installed or does not admit this process: the
+    /// guests keep the batch input call. Each seated guest moves on its next
+    /// pass, what it holds on the old way released first; a guest admitted
+    /// later starts on the way this says. A driver lost while it is on gives
+    /// its guests the batch input call until it is next switched on. Asking
+    /// for what is already so changes nothing.
+    #[cfg(windows)]
+    pub fn set_virtual_input(&mut self, on: bool) -> Result<(), lowlat_inject::hid::Error> {
+        if on == self.virtual_input {
+            return Ok(());
+        }
+        if on {
+            lowlat_inject::hid::probe()?;
+        }
+        self.virtual_input = on;
+        lowlat_common::log_info!(
+            "input: the guests' keys on the input driver={}",
+            u8::from(on)
+        );
+        for attempt in self.attempts.values() {
+            if let Some(ask) = attempt.ask.as_ref() {
+                let _ = ask.send(Ask::VirtualInput(on));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the guests' keys go to keyboards of the host's own input
+    /// driver: what was last switched, which a driver lost since does not
+    /// change.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn virtual_input(&self) -> bool {
+        self.virtual_input
     }
 
     /// Guests currently admitted, which is what the advertisement publishes.
@@ -1075,6 +1124,8 @@ impl Admission {
         let rumble_probe = self.config.rumble_probe;
         let microphone = self.config.microphone.clone();
         let pad_sink = self.config.pad_sink.clone();
+        #[cfg(windows)]
+        let virtual_input = self.virtual_input;
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -1102,6 +1153,8 @@ impl Admission {
                         permissions,
                         owner,
                         rumble_probe,
+                        #[cfg(windows)]
+                        virtual_input,
                     },
                 },
                 wake,
@@ -1620,6 +1673,9 @@ struct Driven {
     owner: bool,
     /// The live-run rumble probe.
     rumble_probe: bool,
+    /// Whether its keys start on a keyboard of the host's own input driver.
+    #[cfg(windows)]
+    virtual_input: bool,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -2411,6 +2467,11 @@ fn drive<M: Media>(
         input
             .injector
             .set_permissions(args.permissions, &mut input.sink);
+        // **On the input driver's keyboard from admission**, where the switch
+        // is on, so its readiness overlaps the connection's setup as the
+        // devices' own does.
+        #[cfg(windows)]
+        input.sink.set_virtual_input(args.virtual_input);
     }
     // A reason the application gave for ending this guest, waiting for the one
     // path below that knows how to end one.
@@ -3033,6 +3094,20 @@ fn drive<M: Media>(
                         args.guest,
                         u8::from(typed)
                     );
+                }
+                // **What the old way holds comes up first**, as a withdrawn
+                // permission's does, so no key stays down across the switch.
+                #[cfg(windows)]
+                Ask::VirtualInput(on) => {
+                    lowlat_common::log_info!(
+                        "guest: number={} keys on the input driver={}",
+                        args.guest,
+                        u8::from(on)
+                    );
+                    if let Some(input) = input.as_mut() {
+                        input.injector.release_keys(&mut input.sink);
+                        input.sink.set_virtual_input(on);
+                    }
                 }
             }
         }

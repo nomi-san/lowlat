@@ -52,6 +52,7 @@ pub use vdd::*;
 ///   -400 to -499   transport
 ///   -500 to -599   decode
 ///   -600 to -699   the virtual displays
+///   -700 to -799   the host's input driver
 /// ```
 ///
 /// A value is assigned once and never reused, including for a condition that
@@ -166,12 +167,24 @@ pub enum lowlat_status {
     LOWLAT_ERR_VDD_FILE = -611,
     /// The display driver answered with an error of its own.
     LOWLAT_ERR_VDD_IO = -612,
+
+    /// The host's input driver is not installed, or its device is not started
+    /// (minor 32).
+    LOWLAT_ERR_INPUT_DRIVER_ABSENT = -700,
+    /// The input driver is another version than this library's; the two ship
+    /// together.
+    LOWLAT_ERR_INPUT_DRIVER_VERSION = -701,
+    /// The input driver refused this process: it admits the system account
+    /// and administrators alone, an administrator only elevated.
+    LOWLAT_ERR_INPUT_DRIVER_DENIED = -702,
+    /// The input driver answered with an error of its own.
+    LOWLAT_ERR_INPUT_DRIVER_IO = -703,
 }
 
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 31;
+pub const LOWLAT_ABI_MINOR: u32 = 32;
 
 /// Major and minor, packed.
 ///
@@ -232,7 +245,7 @@ pub extern "C" fn lowlat_features() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 38] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 42] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -337,6 +350,22 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 38] = [
         c"the display settings file could not be read or written",
     ),
     (LOWLAT_ERR_VDD_IO, c"the display driver answered an error"),
+    (
+        LOWLAT_ERR_INPUT_DRIVER_ABSENT,
+        c"the input driver is not installed or not started",
+    ),
+    (
+        LOWLAT_ERR_INPUT_DRIVER_VERSION,
+        c"the input driver is another version than this library's",
+    ),
+    (
+        LOWLAT_ERR_INPUT_DRIVER_DENIED,
+        c"the input driver refused this process",
+    ),
+    (
+        LOWLAT_ERR_INPUT_DRIVER_IO,
+        c"the input driver answered an error",
+    ),
 ];
 
 /// Describe a status.
@@ -571,6 +600,10 @@ mod tests {
             LOWLAT_ERR_UNKNOWN_GUEST,
             LOWLAT_ERR_NO_DISPLAY,
             LOWLAT_ERR_DISPLAY_UNREACHABLE,
+            LOWLAT_ERR_INPUT_DRIVER_ABSENT,
+            LOWLAT_ERR_INPUT_DRIVER_VERSION,
+            LOWLAT_ERR_INPUT_DRIVER_DENIED,
+            LOWLAT_ERR_INPUT_DRIVER_IO,
         ] {
             let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());

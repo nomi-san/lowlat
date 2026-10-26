@@ -49,7 +49,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 31
+#define LOWLAT_ABI_MINOR 32
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -398,6 +398,7 @@
 ///   -400 to -499   transport
 ///   -500 to -599   decode
 ///   -600 to -699   the virtual displays
+///   -700 to -799   the host's input driver
 /// ```
 ///
 /// A value is assigned once and never reused, including for a condition that
@@ -497,6 +498,17 @@ typedef enum lowlat_status {
     LOWLAT_ERR_VDD_FILE = -611,
     /// The display driver answered with an error of its own.
     LOWLAT_ERR_VDD_IO = -612,
+    /// The host's input driver is not installed, or its device is not started
+    /// (minor 32).
+    LOWLAT_ERR_INPUT_DRIVER_ABSENT = -700,
+    /// The input driver is another version than this library's; the two ship
+    /// together.
+    LOWLAT_ERR_INPUT_DRIVER_VERSION = -701,
+    /// The input driver refused this process: it admits the system account
+    /// and administrators alone, an administrator only elevated.
+    LOWLAT_ERR_INPUT_DRIVER_DENIED = -702,
+    /// The input driver answered with an error of its own.
+    LOWLAT_ERR_INPUT_DRIVER_IO = -703,
 } lowlat_status;
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
@@ -956,21 +968,26 @@ typedef struct lowlat_host_video_config {
     /// Which output to capture, by an identity from the enumeration. **Empty
     /// means whichever this host would pick on its own**, which is the output
     /// at the desktop's corner and then whatever is lit. `virtual` is the
-    /// host's own display, plugged when it is asked for (Windows alone).
+    /// host's own display, plugged when it is asked for (Windows alone;
+    /// refused elsewhere).
     char output[LOWLAT_OUTPUT_MAX];
-    /// The host's own display's size, both or neither (minor 27). **Zero lets
-    /// the host decide**: the size an owner states as it joins an empty room,
-    /// within the largest picture that guest accepts, else the size the
-    /// display already has, 1920x1080 when first plugged. Otherwise 640x480
-    /// to 7680x4320, refused outside it rather than clamped.
+#if defined(_WIN32)
+    /// The host's own display's size, both or neither (minor 27; Windows
+    /// alone from minor 32). **Zero lets the host decide**: the size an owner
+    /// states as it joins an empty room, within the largest picture that guest
+    /// accepts, else the size the display already has, 1920x1080 when first
+    /// plugged. Otherwise 640x480 to 7680x4320, refused outside it rather than
+    /// clamped.
     uint32_t virtual_width;
     uint32_t virtual_height;
-    /// The host's own display's refresh (minor 27). **Zero means the frame
-    /// rate's ceiling, `fps`**, so the display composes no picture the stream
-    /// would not take; **with `fps` zero too, the display's own refresh**,
-    /// which a person may set in its display settings, 60 when it is first
-    /// plugged with none to restore. Otherwise 24 to 480.
+    /// The host's own display's refresh (minor 27; Windows alone from minor
+    /// 32). **Zero means the frame rate's ceiling, `fps`**, so the display
+    /// composes no picture the stream would not take; **with `fps` zero too,
+    /// the display's own refresh**, which a person may set in its display
+    /// settings, 60 when it is first plugged with none to restore. Otherwise
+    /// 24 to 480.
     uint32_t virtual_hz;
+#endif
 } lowlat_host_video_config;
 
 /// How sound is configured.
@@ -1023,7 +1040,44 @@ typedef struct lowlat_host_audio_config {
     /// means the default output's monitor**, followed as the default changes.
     char device[LOWLAT_OUTPUT_MAX];
 } lowlat_host_audio_config;
+#endif
 
+#if (defined(LOWLAT_HOST) && defined(_WIN32))
+/// How the guests' input reaches the system, on Windows alone (minor 32).
+///
+/// **Every field here is live**, set and read back through its own pair of
+/// calls as sound's are, and none is the video configuration's: the devices a
+/// guest's input lands on are not the stream's, and changing them neither
+/// carries nor resends the stream's settings.
+///
+/// **What it needs**: the host's own input driver, installed by its own script
+/// (docs/07-platforms.md section 10), and a host the driver admits -- the
+/// system account, or an administrator elevated. Nothing of this library
+/// installs it.
+typedef struct lowlat_host_input_config {
+    /// Set by the caller to `sizeof(lowlat_host_input_config)`.
+    uint32_t size;
+    /// Whether a guest's keys go to a keyboard of the host's own input driver,
+    /// which the system takes as a device's, rather than through the system's
+    /// batch input call. **Default: off**, zero included, so a caller that
+    /// never sets it keeps the batch input call.
+    ///
+    /// Switching it on where the driver is not installed, or does not admit
+    /// this process, is refused and changes nothing; a start asking for it
+    /// there is not refused for it, says why once, and reads back off. Each
+    /// seated guest moves on its next pass, what it holds on the old way
+    /// released first; its keys wait the few milliseconds until the system
+    /// takes its keyboard, and go through the batch input call where it never
+    /// does. A driver lost while it is on gives the guests the batch input call
+    /// until it is switched on again. **The attention chord is never typed on
+    /// it**: a Delete going down while Ctrl and Alt are held goes through the
+    /// batch input call, which raises no secure screen.
+    bool virtual_input;
+    uint8_t reserved[3];
+} lowlat_host_input_config;
+#endif
+
+#if defined(LOWLAT_HOST)
 /// How a host is configured.
 ///
 /// **There is no resolution here.** The display decides the picture's size, the
@@ -1036,14 +1090,15 @@ typedef struct lowlat_host_config {
     uint32_t size;
     /// The base a guest's port bind walks from. **Default: 9000.**
     uint16_t base_port;
+#if defined(_WIN32)
     /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
-    /// floor for as long as it runs (minor 31): the driver's light-load
-    /// memory states bound the encoder, 4 to 5 ms a picture at 1080p against
-    /// 1 to 2 above them (docs/05-host.md section 4.2). **Default: off**,
-    /// since it changes the machine and needs the administrator; `lowlatd`
-    /// turns it on. Windows alone acts on it; elsewhere it is accepted and
-    /// does nothing. Settled when hosting starts.
+    /// floor for as long as it runs (minor 31; Windows alone from minor 32):
+    /// the driver's light-load memory states bound the encoder, 4 to 5 ms a
+    /// picture at 1080p against 1 to 2 above them (docs/05-host.md section
+    /// 4.2). **Default: off**, since it changes the machine and needs the
+    /// administrator; `lowlatd` turns it on. Settled when hosting starts.
     bool hold_memory_clock;
+#endif
     uint8_t reserved;
     /// Advertised capacity. Above `LOWLAT_GUESTS_MAX` is refused rather than
     /// quietly reduced. **Default: 4.**
@@ -1082,20 +1137,20 @@ typedef struct lowlat_host_config {
     /// of its own; set to the application, the reports come out of
     /// `lowlat_host_poll_pad_report` instead. Settled when hosting starts.
     uint8_t pad_sink;
+#if defined(_WIN32)
     /// Whether the host plugs a display of its own when nothing is lit, and
-    /// keeps it for as long as it runs (minor 27). Windows alone has one;
-    /// elsewhere this is accepted and nothing is plugged. **Default: off**,
-    /// since it changes the machine; `output` set to `virtual` plugs it
-    /// either way. Settled when hosting starts.
+    /// keeps it for as long as it runs (minor 27; Windows alone from minor
+    /// 32). **Default: off**, since it changes the machine; `output` set to
+    /// `virtual` plugs it either way. Settled when hosting starts.
     bool virtual_fallback;
     /// Whether a stream wakes the display it captures as it starts, with one
-    /// pointer move of no distance (minor 28): holding a display on does not
-    /// wake one that slept, which gives no pictures until input wakes it.
-    /// **Default: off**, so a guest's first input wakes it and a connection
-    /// lights nothing at the desk by itself. Windows alone acts on it;
-    /// elsewhere it is accepted and does nothing. Settled when hosting
-    /// starts.
+    /// pointer move of no distance (minor 28; Windows alone from minor 32):
+    /// holding a display on does not wake one that slept, which gives no
+    /// pictures until input wakes it. **Default: off**, so a guest's first
+    /// input wakes it and a connection lights nothing at the desk by itself.
+    /// Settled when hosting starts.
     bool wake_display;
+#endif
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
     uint32_t server_count;
@@ -1106,6 +1161,11 @@ typedef struct lowlat_host_config {
     lowlat_host_video_config video;
     /// Sound, every field of which can also be set while the host runs.
     lowlat_host_audio_config audio;
+#if defined(_WIN32)
+    /// The guests' input, every field of which can also be set while the host
+    /// runs (minor 32; Windows alone).
+    lowlat_host_input_config input;
+#endif
 } lowlat_host_config;
 
 /// What a handle is created with.
@@ -2719,7 +2779,48 @@ lowlat_status lowlat_host_set_audio_config(lowlat_host *hl,
 /// `lowlat_host_audio_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_get_audio_config(lowlat_host *hl,
                                            lowlat_host_audio_config *out) LOWLAT_NOEXCEPT;
+#endif
 
+#if (defined(LOWLAT_HOST) && defined(_WIN32))
+/// Change how the guests' input reaches the system, while a host runs
+/// (minor 32; Windows alone).
+///
+/// **Switching `virtual_input` on asks the host's input driver first**, and is
+/// refused where it is not installed or does not admit this process, the
+/// guests keeping the batch input call. Each seated guest moves on its next
+/// pass, what it holds on the old way released first.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[in] cfg One `lowlat_host_input_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`; `LOWLAT_ERR_INPUT_DRIVER_ABSENT`,
+/// `LOWLAT_ERR_INPUT_DRIVER_DENIED`, `LOWLAT_ERR_INPUT_DRIVER_VERSION` or
+/// `LOWLAT_ERR_INPUT_DRIVER_IO` for a driver that cannot be used, nothing changed;
+/// `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not running.
+///
+/// @attention `hl` came from `lowlat_host_create`, and `cfg` points to one
+/// `lowlat_host_input_config` whose `size` says how much of it is set.
+lowlat_status lowlat_host_set_input_config(lowlat_host *hl,
+                                           const lowlat_host_input_config *cfg) LOWLAT_NOEXCEPT;
+
+/// How the guests' input reaches the system now (minor 32; Windows alone).
+///
+/// **The settings and not the state**: `virtual_input` is what was last
+/// switched, which a driver lost since does not change.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[out] out One `lowlat_host_input_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not
+/// running.
+///
+/// @attention `hl` came from `lowlat_host_create`, and `out` points to one
+/// `lowlat_host_input_config` whose `size` says how much of it is set.
+lowlat_status lowlat_host_get_input_config(lowlat_host *hl,
+                                           lowlat_host_input_config *out) LOWLAT_NOEXCEPT;
+#endif
+
+#if defined(LOWLAT_HOST)
 /// What the host is running at now.
 ///
 /// **Read back rather than remembered.** What a stream is doing is the

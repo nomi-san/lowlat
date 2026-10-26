@@ -213,8 +213,48 @@ fn generate() -> String {
     bindings.write(&mut out);
     let header = String::from_utf8(out).expect("the generated header is text");
     to_doxygen(&realign_wrapped_arguments(&use_typedef_names(
-        &merge_feature_guards(&header),
+        &merge_feature_guards(&join_field_guards(&header)),
     )))
+}
+
+/// One guard around a run of fields only one platform has, each field whole
+/// inside it.
+///
+/// **The generator guards a field without its semicolon**, which it writes
+/// after the guard closes, so elsewhere the structure holds a lone `;` -- an
+/// empty declaration, which C does not have -- and each field of a run wears
+/// a guard of its own. This puts each semicolon back on its field and lets one
+/// guard cover a run.
+fn join_field_guards(header: &str) -> String {
+    const GUARD: &str = "#if defined(_WIN32)";
+    let lines: Vec<&str> = header.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line == "#endif" && lines.get(i + 1).is_some_and(|next| next.trim() == ";") {
+            let field = out
+                .last_mut()
+                .expect("a guard closes after the field it guards");
+            field.push(';');
+            // The next field's guard opens at once: the run goes on under this
+            // one.
+            if lines.get(i + 2) == Some(&GUARD) {
+                i += 3;
+            } else {
+                out.push(line.to_owned());
+                i += 2;
+            }
+            continue;
+        }
+        out.push(line.to_owned());
+        i += 1;
+    }
+    let mut joined = out.join("\n");
+    if header.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
 }
 
 /// One guard around a run of items, not one around each.
@@ -227,11 +267,12 @@ fn generate() -> String {
 /// reads as the two halves it is. Only the feature guards are touched; the
 /// `#pragma`, the C++ fences and the `noexcept` block go through untouched.
 fn merge_feature_guards(header: &str) -> String {
-    const GUARDS: [&str; 4] = [
+    const GUARDS: [&str; 5] = [
         "#if defined(LOWLAT_HOST)",
         "#if defined(LOWLAT_CLIENT)",
         "#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))",
         "#if (defined(LOWLAT_VDD) && defined(_WIN32))",
+        "#if (defined(LOWLAT_HOST) && defined(_WIN32))",
     ];
     let lines: Vec<&str> = header.lines().collect();
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());

@@ -15,14 +15,25 @@
 //!
 //! **The two pointers are one mouse here**: the call has one, which takes
 //! deltas and positions alike.
+//!
+//! **Where the application switches it on** (docs/06-api.md section 3), the
+//! guest's keys go to a keyboard of the host's own input driver instead
+//! (docs/11-drivers.md section 2), which the system takes as a device's: made
+//! as the switch goes on, the keys held until the system lists it, and the
+//! batch input call again wherever the driver gives none or its keyboard goes.
+//! **It never types the attention chord** (docs/05-host.md section 7.3): a
+//! Delete going down while Ctrl and Alt are held goes through the batch input
+//! call, which raises no secure screen.
 
 use lowlat_core::pad::Inbound;
+use lowlat_hid_proto::control::Features;
+use lowlat_hid_proto::{GUEST_SLOTS, Kind, keyboard};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
     CM_Get_Device_Interface_ListW, CR_SUCCESS,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE,
     ERROR_IO_PENDING, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -39,19 +50,21 @@ use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
-    MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VK_CAPITAL,
-    VK_NUMLOCK, VK_PAUSE,
+    GetAsyncKeyState, GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
+    SendInput, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
 
 use crate::event::{self, Device, Event, Locks, SCRATCH, Sink};
 use crate::gamepad::{self, MAX_PADS};
 use crate::handback::{Forward, Forwarding, PadWritten, Rumble};
+use crate::hid;
 use crate::scancode::{MAKE_ONLY, PAUSE, SET1, SYSRQ};
+use crate::usage::{self, HidKey};
 use crate::vigem;
 
 /// Why a guest's devices could not be created: never, here. The input call
@@ -89,6 +102,16 @@ const RALT: u8 = SET1[230];
 )]
 const INPUT_SIZE: i32 = size_of::<INPUT>() as i32;
 
+/// How long the input driver's keyboard may take to deliver before the keys
+/// held for it go through the batch input call instead. The system lists a
+/// device within milliseconds, and within half a second when it comes back on
+/// a name just let go; a slot's first setup is the longest wait.
+const DELIVERS_WITHIN_MS: f64 = 5_000.0;
+
+/// Events held for the input driver's keyboard while it cannot deliver yet:
+/// a person types a few keys in the wait, and a slot costs eight bytes.
+const HELD: usize = 256;
+
 /// A request body's size, as the bus is told it.
 #[allow(
     clippy::cast_possible_truncation,
@@ -114,6 +137,13 @@ pub struct Devices {
     refused: bool,
     forward: Option<Forwarding>,
     keyboard: Keyboard,
+    /// The application's switch: the keys go to the input driver's keyboard
+    /// while it is on.
+    virtual_input: bool,
+    /// That keyboard, while the switch is on and the driver gave one.
+    hid: Option<HidKeyboard>,
+    /// What the keyboard was sent while that one could not deliver yet.
+    held: Held,
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
     desktop: Option<Desktop>,
@@ -126,6 +156,8 @@ impl core::fmt::Debug for Devices {
             .field("pads", &self.pads.iter().flatten().count())
             .field("bus", &self.bus.is_some())
             .field("forward", &self.forward.is_some())
+            .field("virtual_input", &self.virtual_input)
+            .field("hid", &self.hid)
             .finish_non_exhaustive()
     }
 }
@@ -149,10 +181,181 @@ impl Devices {
             refused: false,
             forward: None,
             keyboard: Keyboard::default(),
+            virtual_input: false,
+            hid: None,
+            held: Held::default(),
             refusing: false,
             desktop,
             _aware: aware,
         })
+    }
+
+    /// Move the guest's keys to a keyboard of the host's own input driver, or
+    /// back to the batch input call (docs/06-api.md section 3). **What the old
+    /// way holds is the caller's to release first**: the expander knows what
+    /// is held, and releases it the way it went down.
+    ///
+    /// On, the keyboard is made now and the keys held until the system lists
+    /// it; with no driver, or none admitting this process, the batch input call
+    /// stays, said once. Off, the keyboard is let go of off this thread: its
+    /// end waits while its neutral reports arrive, which the guest's loop is
+    /// not held up by. Asking for what is already so changes nothing.
+    pub fn set_virtual_input(&mut self, on: bool) {
+        if on == self.virtual_input {
+            return;
+        }
+        self.virtual_input = on;
+        if on {
+            self.hid = HidKeyboard::make();
+        } else {
+            // What waited for that keyboard was never typed anywhere, and
+            // nothing of it is held.
+            self.held = Held::default();
+            if let Some(hid) = self.hid.take() {
+                hid.close_aside();
+            }
+        }
+    }
+
+    /// The keys on the input driver's keyboard: each key's report written as
+    /// its report ends, a Delete going down under Ctrl and Alt through the
+    /// batch input call instead. A keyboard that refuses a report is taken to
+    /// be gone -- its end releases what it held -- and that report and the rest
+    /// go through the batch input call.
+    fn keys_to_hid(&mut self, events: &[Event]) {
+        let Some(mut hid) = self.hid.take() else {
+            self.keys_to_batch(events);
+            return;
+        };
+        let mut lost = None;
+        // Where the report being built began: what it holds reached nothing
+        // until its end is written.
+        let mut report = 0;
+        for (at, event) in events.iter().enumerate() {
+            let written = match event.kind {
+                event::EV_KEY => {
+                    let down = event.value != 0;
+                    match usage::hid_key(event.code) {
+                        Some(HidKey::Key(key)) => {
+                            match hid.keys.key(key, down, &mut || self.system_ctrl_alt()) {
+                                Step::Hid | Step::Nothing => Ok(()),
+                                Step::Batch => {
+                                    let code = u8::try_from(event.code).unwrap_or(0);
+                                    self.send(&[key_input(Stroke::Scan(code), down)]);
+                                    Ok(())
+                                }
+                                Step::ReleasedFirst => hid.write_keys().map(|()| {
+                                    hid.keys.set(key, down);
+                                }),
+                            }
+                        }
+                        Some(HidKey::Consumer(key)) => {
+                            hid.keys.consumer(key, down);
+                            Ok(())
+                        }
+                        None => Ok(()),
+                    }
+                }
+                event::EV_SYN => hid.flush().map(|()| report = at + 1),
+                _ => Ok(()),
+            };
+            if let Err(error) = written {
+                lost = Some(error);
+                break;
+            }
+        }
+        match lost {
+            None => self.hid = Some(hid),
+            Some(error) => {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's keyboard is gone, keys go through the batch input call, slot={} error={error}",
+                    hid.slot
+                );
+                hid.close_aside();
+                self.keys_to_batch(events.get(report..).unwrap_or_default());
+            }
+        }
+    }
+
+    /// The keys through the batch input call, by scancode.
+    fn keys_to_batch(&mut self, events: &[Event]) {
+        let mut inputs = Inputs::new();
+        for event in events.iter().filter(|e| e.kind == event::EV_KEY) {
+            let down = event.value != 0;
+            if let Some(stroke) = self.keyboard.stroke(event.code, down) {
+                inputs.push(key_input(stroke, down));
+            }
+        }
+        self.send(inputs.as_slice());
+    }
+
+    /// Whether Ctrl and Alt are held anywhere on the machine, as the system's
+    /// own key state says -- another guest's keyboard, the desk's, this one's.
+    ///
+    /// **Read on the input desktop**, which alone the state answers for, so
+    /// the thread is attached to it first: on the driver's path nothing else
+    /// moves it there. Where it cannot be, both count as held, so a Delete goes
+    /// the way that raises nothing.
+    fn system_ctrl_alt(&mut self) -> (bool, bool) {
+        let Some(desktop) = Desktop::attach() else {
+            return (true, true);
+        };
+        self.desktop = Some(desktop);
+        // SAFETY: two reads of a key's state, with keys the system defines;
+        // the high bit is the key down.
+        let held = |key: u16| unsafe { GetAsyncKeyState(i32::from(key)) } < 0;
+        (held(VK_CONTROL), held(VK_MENU))
+    }
+
+    /// The input driver's keyboard, each pass: the keys held for it typed once
+    /// the system lists it, or through the batch input call once it is past
+    /// its time; and a Delete held on it let go of as Ctrl and Alt arrive on
+    /// another keyboard.
+    fn tick_keyboard(&mut self) {
+        let Some(mut hid) = self.hid.take() else {
+            return;
+        };
+        if !hid.ready {
+            let after_ms = lowlat_common::clock::elapsed_ms(hid.made);
+            if hid::listed(Kind::Keyboard, hid.slot) {
+                hid.ready = true;
+                lowlat_common::log_info!(
+                    "inject: the input driver's keyboard delivers, slot={} after_ms={after_ms:.0}",
+                    hid.slot
+                );
+                self.hid = Some(hid);
+                let held = core::mem::take(&mut self.held);
+                self.keys_to_hid(held.events());
+            } else if after_ms >= DELIVERS_WITHIN_MS {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's keyboard never delivered, keys go through the batch input call, slot={} after_ms={after_ms:.0}",
+                    hid.slot
+                );
+                hid.close_aside();
+                let held = core::mem::take(&mut self.held);
+                self.keys_to_batch(held.events());
+            } else {
+                self.hid = Some(hid);
+            }
+            return;
+        }
+        // **The other order, from another keyboard**: nothing tells this one
+        // when Ctrl and Alt arrive there, so it asks while a Delete is held,
+        // before the keyboard's own repeat types it again under them.
+        if hid.keys.holds_delete() {
+            let system = self.system_ctrl_alt();
+            if hid.keys.let_go_over(system)
+                && let Err(error) = hid.write_keys()
+            {
+                lowlat_common::log_warn!(
+                    "inject: the input driver's keyboard is gone, keys go through the batch input call, slot={} error={error}",
+                    hid.slot
+                );
+                hid.close_aside();
+                return;
+            }
+        }
+        self.hid = Some(hid);
     }
 
     /// Hand every report pad's reports to `to` instead of playing the pad
@@ -172,8 +375,10 @@ impl Devices {
     /// Put each pad the bus has made ready to use, and its held report in.
     ///
     /// **Called from the loop that already runs**, so a pad that arrived with
-    /// one message and nothing after it is still put in once it can be.
+    /// one message and nothing after it is still put in once it can be. The
+    /// input driver's keyboard is followed here too.
     pub fn tick(&mut self) {
+        self.tick_keyboard();
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
@@ -301,12 +506,12 @@ impl Sink for Devices {
         let mut inputs = Inputs::new();
         match device {
             Device::Keyboard => {
-                for event in events.iter().filter(|e| e.kind == event::EV_KEY) {
-                    let down = event.value != 0;
-                    if let Some(stroke) = self.keyboard.stroke(event.code, down) {
-                        inputs.push(key_input(stroke, down));
-                    }
+                match self.hid.as_ref().map(|hid| hid.ready) {
+                    Some(true) => self.keys_to_hid(events),
+                    Some(false) => self.held.push(events),
+                    None => self.keys_to_batch(events),
                 }
+                return;
             }
             Device::Pointer | Device::PointerAbsolute => pointer_inputs(events, &mut inputs),
             Device::Gamepad(id) => {
@@ -463,6 +668,350 @@ fn held_as(
         Some(*slot.get_or_insert_with(choose))
     } else {
         slot.take()
+    }
+}
+
+/// The keyboard page's two Deletes, the main key's and the keypad's, either of
+/// which under Ctrl and Alt is the attention chord.
+const DELETES: [u8; 2] = [0x4c, 0x63];
+/// The modifiers' bits in the keys report: left and right Ctrl, left and
+/// right Alt.
+const CTRL_BITS: u8 = 0b0001_0001;
+const ALT_BITS: u8 = 0b0100_0100;
+/// The first modifier's usage; the others follow it bit by bit.
+const FIRST_MODIFIER: u8 = 0xe0;
+/// Consumer usages held at once: the media and volume keys there are.
+const CONSUMER_HELD: usize = 8;
+
+/// Which way a Delete went down, and comes up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Way {
+    Hid,
+    Batch,
+}
+
+/// What a key asks of the two paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The HID keyboard's keys changed, or did not: its report goes as the
+    /// report ends.
+    Hid,
+    /// A Delete goes this way through the batch input call.
+    Batch,
+    /// A Delete's release whose key was let go of already.
+    Nothing,
+    /// A Delete held on the HID keyboard was let go of there as Ctrl and Alt
+    /// came together over it: the keys report goes now, without the key that
+    /// completed them, and then that key is set.
+    ReleasedFirst,
+}
+
+/// Whether Ctrl and Alt are both held: each on this keyboard, its `own`
+/// modifiers, or anywhere on the machine as the `system` says.
+fn chord(own: u8, system: (bool, bool)) -> bool {
+    (own & CTRL_BITS != 0 || system.0) && (own & ALT_BITS != 0 || system.1)
+}
+
+/// The guest's keys as the input driver's keyboard carries them, apart from
+/// the device: what each key changes, and which reports then go.
+///
+/// **The attention chord's rule is here** (docs/05-host.md section 7.3): a
+/// keyboard's Ctrl, Alt and Delete raise the secure screen, which the batch
+/// input call's never do, so a Delete going down while Ctrl and Alt are held --
+/// on this keyboard or anywhere -- goes through the batch input call and comes
+/// up the way it went down; and a Delete held here when Ctrl and Alt come
+/// together over it is let go of here first, before the keyboard's own repeat
+/// can type it under them.
+#[derive(Debug, Default)]
+struct HidKeys {
+    keys: keyboard::Keys,
+    /// The consumer usages held, the newest last; the report carries the
+    /// newest.
+    consumer: [u16; CONSUMER_HELD],
+    consumer_held: usize,
+    /// What was last written of each report, so an unchanged one is not
+    /// written again.
+    keys_written: keyboard::Keys,
+    consumer_written: u16,
+    /// The way each Delete went down while it is held.
+    deletes: [Option<Way>; 2],
+}
+
+impl HidKeys {
+    fn modifiers(&self) -> u8 {
+        self.keys.report().get(1).copied().unwrap_or(0)
+    }
+
+    /// One key of the keyboard page, `system` asked for the machine's Ctrl and
+    /// Alt only where a Delete's way depends on them.
+    fn key(&mut self, usage: u8, down: bool, system: &mut impl FnMut() -> (bool, bool)) -> Step {
+        if let Some(index) = DELETES.iter().position(|&delete| delete == usage) {
+            return self.delete(index, usage, down, system);
+        }
+        let bit = usage
+            .checked_sub(FIRST_MODIFIER)
+            .and_then(|shift| 1u8.checked_shl(u32::from(shift)))
+            .filter(|bit| bit & (CTRL_BITS | ALT_BITS) != 0)
+            .unwrap_or(0);
+        if down
+            && bit != 0
+            && self.deletes.contains(&Some(Way::Hid))
+            && chord(self.modifiers() | bit, system())
+        {
+            self.let_go_of_deletes();
+            return Step::ReleasedFirst;
+        }
+        self.keys.set(usage, down);
+        Step::Hid
+    }
+
+    fn delete(
+        &mut self,
+        index: usize,
+        usage: u8,
+        down: bool,
+        system: &mut impl FnMut() -> (bool, bool),
+    ) -> Step {
+        let modifiers = self.modifiers();
+        let Some(slot) = self.deletes.get_mut(index) else {
+            return Step::Nothing;
+        };
+        if !down {
+            return match slot.take() {
+                Some(Way::Hid) => {
+                    self.keys.set(usage, false);
+                    Step::Hid
+                }
+                Some(Way::Batch) => Step::Batch,
+                None => Step::Nothing,
+            };
+        }
+        // A repeat goes the way the key went down.
+        let way = *slot.get_or_insert_with(|| {
+            if chord(modifiers, system()) {
+                Way::Batch
+            } else {
+                Way::Hid
+            }
+        });
+        match way {
+            Way::Hid => {
+                self.keys.set(usage, true);
+                Step::Hid
+            }
+            Way::Batch => Step::Batch,
+        }
+    }
+
+    /// A key set as it stands, after a release ahead of it went.
+    fn set(&mut self, usage: u8, down: bool) {
+        self.keys.set(usage, down);
+    }
+
+    fn holds_delete(&self) -> bool {
+        self.deletes.contains(&Some(Way::Hid))
+    }
+
+    fn let_go_of_deletes(&mut self) {
+        for (slot, usage) in self.deletes.iter_mut().zip(DELETES) {
+            if *slot == Some(Way::Hid) {
+                *slot = None;
+                self.keys.set(usage, false);
+            }
+        }
+    }
+
+    /// Let go of a Delete held here while Ctrl and Alt are held, by this
+    /// keyboard or as the `system` says: answers whether one was.
+    fn let_go_over(&mut self, system: (bool, bool)) -> bool {
+        if !self.holds_delete() || !chord(self.modifiers(), system) {
+            return false;
+        }
+        self.let_go_of_deletes();
+        true
+    }
+
+    /// A consumer usage down or up.
+    fn consumer(&mut self, usage: u16, down: bool) {
+        let held = self.consumer.get(..self.consumer_held).unwrap_or_default();
+        if let Some(at) = held.iter().position(|&key| key == usage) {
+            self.consumer.copy_within(at + 1..self.consumer_held, at);
+            self.consumer_held -= 1;
+        }
+        if down && let Some(slot) = self.consumer.get_mut(self.consumer_held) {
+            *slot = usage;
+            self.consumer_held += 1;
+        }
+    }
+
+    fn consumer_now(&self) -> u16 {
+        self.consumer_held
+            .checked_sub(1)
+            .and_then(|last| self.consumer.get(last).copied())
+            .unwrap_or(0)
+    }
+
+    /// The keys report as it stands, taken as written.
+    fn keys_now(&mut self) -> [u8; keyboard::KEYS_REPORT_LEN] {
+        self.keys_written = self.keys;
+        *self.keys.report()
+    }
+
+    /// The reports changed since last written, taken as written: the keys,
+    /// then the consumer usage.
+    fn changed(
+        &mut self,
+    ) -> (
+        Option<[u8; keyboard::KEYS_REPORT_LEN]>,
+        Option<[u8; keyboard::CONSUMER_REPORT_LEN]>,
+    ) {
+        let keys = (self.keys != self.keys_written).then(|| self.keys_now());
+        let now = self.consumer_now();
+        let consumer = if now == self.consumer_written {
+            None
+        } else {
+            self.consumer_written = now;
+            keyboard::consumer_report(now)
+        };
+        (keys, consumer)
+    }
+}
+
+/// The guest's keyboard on the host's own input driver.
+#[derive(Debug)]
+struct HidKeyboard {
+    device: hid::Device,
+    slot: u8,
+    keys: HidKeys,
+    /// Whether the system lists it, from when what is written reaches the
+    /// system.
+    ready: bool,
+    made: lowlat_common::clock::Time,
+}
+
+impl HidKeyboard {
+    /// A keyboard in the first slot the driver gives, or the reason it gives
+    /// none, said.
+    fn make() -> Option<Self> {
+        let mut why = hid::Error::Absent;
+        for slot in 0..u8::try_from(GUEST_SLOTS).unwrap_or(0) {
+            match hid::Device::create(Kind::Keyboard, slot, Features::new()) {
+                Ok(device) => {
+                    lowlat_common::log_info!(
+                        "inject: the input driver's keyboard made, slot={slot}"
+                    );
+                    return Some(Self {
+                        device,
+                        slot,
+                        keys: HidKeys::default(),
+                        ready: false,
+                        made: lowlat_common::clock::Time::now(),
+                    });
+                }
+                // **The driver keeps a kind's slots across every handle**: a
+                // slot another guest's keyboard holds is refused as busy, and
+                // the next is asked for.
+                Err(error @ hid::Error::Refused(ERROR_BUSY)) => why = error,
+                Err(error) => {
+                    why = error;
+                    break;
+                }
+            }
+        }
+        lowlat_common::log_warn!(
+            "inject: no keyboard from the input driver, keys go through the batch input call, error={why}"
+        );
+        None
+    }
+
+    /// The reports that changed, in order.
+    fn flush(&mut self) -> Result<(), hid::Error> {
+        let (keys, consumer) = self.keys.changed();
+        if let Some(report) = keys {
+            self.device.write(&report)?;
+        }
+        if let Some(report) = consumer {
+            self.device.write(&report)?;
+        }
+        Ok(())
+    }
+
+    /// The keys report as it stands, now.
+    fn write_keys(&mut self) -> Result<(), hid::Error> {
+        let report = self.keys.keys_now();
+        self.device.write(&report)
+    }
+
+    /// Let the device go off this thread: its end waits while its neutral
+    /// reports arrive, which the guest's loop is not held up by. A thread that
+    /// cannot be started lets it go here instead.
+    fn close_aside(self) {
+        let device = self.device;
+        let _ = std::thread::Builder::new()
+            .name("lowlat-hid-close".to_owned())
+            .spawn(move || drop(device));
+    }
+}
+
+/// The keyboard's events while its device cannot deliver yet.
+///
+/// **Held rather than dropped**: what falls in the wait is the first thing
+/// somebody typed. Bounded, and at the bound the oldest whole report goes,
+/// never part of one -- half a report is a state change nobody asked for, and
+/// losing a press whose release survives is the harmless direction.
+#[derive(Debug)]
+struct Held {
+    events: [Event; HELD],
+    used: usize,
+    /// Set once, so an overflow is said rather than repeated.
+    reported: bool,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self {
+            events: [Event {
+                kind: 0,
+                code: 0,
+                value: 0,
+            }; HELD],
+            used: 0,
+            reported: false,
+        }
+    }
+}
+
+impl Held {
+    fn push(&mut self, events: &[Event]) {
+        for event in events {
+            if self.used >= HELD {
+                self.discard_oldest_report();
+            }
+            if let Some(slot) = self.events.get_mut(self.used) {
+                *slot = *event;
+                self.used += 1;
+            }
+        }
+    }
+
+    fn discard_oldest_report(&mut self) {
+        let end = self
+            .events
+            .get(..self.used)
+            .and_then(|held| held.iter().position(|e| e.kind == event::EV_SYN))
+            .map_or(self.used, |at| at + 1);
+        self.events.copy_within(end..self.used, 0);
+        self.used -= end;
+        if !self.reported {
+            self.reported = true;
+            lowlat_common::log_warn!(
+                "inject: keys held for the input driver's keyboard overflowed, held={HELD}"
+            );
+        }
+    }
+
+    fn events(&self) -> &[Event] {
+        self.events.get(..self.used).unwrap_or_default()
     }
 }
 
@@ -1244,6 +1793,205 @@ mod tests {
         assert_eq!((ki.wScan, ki.dwFlags), (0xf2, KEYEVENTF_SCANCODE));
     }
 
+    const CTRL_KEY: u8 = 0xe0;
+    const ALT_KEY: u8 = 0xe2;
+    const RIGHT_ALT_KEY: u8 = 0xe6;
+    const DELETE: u8 = 0x4c;
+    const KEYPAD_DELETE: u8 = 0x63;
+    const A_KEY: u8 = 0x04;
+
+    fn key(keys: &mut HidKeys, usage: u8, down: bool, system: (bool, bool)) -> Step {
+        keys.key(usage, down, &mut || system)
+    }
+
+    const NONE: (bool, bool) = (false, false);
+
+    /// **A Delete going down under this keyboard's Ctrl and Alt goes through
+    /// the batch input call, never onto the HID keyboard**, and repeats and
+    /// comes up that way whatever the modifiers do meanwhile; the keypad's
+    /// Delete the same, under either Alt.
+    #[test]
+    fn a_delete_under_this_keyboards_ctrl_and_alt_goes_through_the_batch_call() {
+        let mut keys = HidKeys::default();
+        assert_eq!(key(&mut keys, CTRL_KEY, true, NONE), Step::Hid);
+        assert_eq!(key(&mut keys, ALT_KEY, true, NONE), Step::Hid);
+        assert_eq!(key(&mut keys, DELETE, true, NONE), Step::Batch);
+        assert!(
+            !keys.keys.is_down(DELETE),
+            "the Delete reached the HID keyboard"
+        );
+        assert_eq!(key(&mut keys, CTRL_KEY, false, NONE), Step::Hid);
+        assert_eq!(key(&mut keys, DELETE, true, NONE), Step::Batch, "a repeat");
+        assert_eq!(key(&mut keys, DELETE, false, NONE), Step::Batch);
+        assert_eq!(key(&mut keys, ALT_KEY, false, NONE), Step::Hid);
+
+        let mut keys = HidKeys::default();
+        key(&mut keys, CTRL_KEY, true, NONE);
+        key(&mut keys, RIGHT_ALT_KEY, true, NONE);
+        assert_eq!(key(&mut keys, KEYPAD_DELETE, true, NONE), Step::Batch);
+        assert!(!keys.keys.is_down(KEYPAD_DELETE));
+        assert_eq!(key(&mut keys, KEYPAD_DELETE, false, NONE), Step::Batch);
+    }
+
+    /// **Ctrl and Alt held anywhere count**, each on this keyboard or as the
+    /// system's own key state says -- another guest's, the desk's.
+    #[test]
+    fn a_delete_under_the_systems_ctrl_and_alt_goes_through_the_batch_call() {
+        let mut keys = HidKeys::default();
+        assert_eq!(key(&mut keys, DELETE, true, (true, true)), Step::Batch);
+        assert_eq!(key(&mut keys, DELETE, false, NONE), Step::Batch);
+
+        let mut keys = HidKeys::default();
+        key(&mut keys, ALT_KEY, true, NONE);
+        assert_eq!(
+            key(&mut keys, DELETE, true, (true, false)),
+            Step::Batch,
+            "this keyboard's Alt, the system's Ctrl"
+        );
+
+        let mut keys = HidKeys::default();
+        assert_eq!(
+            key(&mut keys, DELETE, true, (true, false)),
+            Step::Hid,
+            "Ctrl alone"
+        );
+        assert!(keys.keys.is_down(DELETE));
+    }
+
+    /// **Without both, a Delete is the HID keyboard's** like any key, down,
+    /// repeated and up.
+    #[test]
+    fn a_delete_without_ctrl_and_alt_is_the_hid_keyboards() {
+        let mut keys = HidKeys::default();
+        key(&mut keys, CTRL_KEY, true, NONE);
+        assert_eq!(key(&mut keys, DELETE, true, NONE), Step::Hid);
+        assert!(keys.keys.is_down(DELETE));
+        assert_eq!(key(&mut keys, DELETE, true, NONE), Step::Hid);
+        assert_eq!(key(&mut keys, DELETE, false, NONE), Step::Hid);
+        assert!(!keys.keys.is_down(DELETE));
+    }
+
+    /// **The other order**: a Delete held on the HID keyboard when Ctrl and
+    /// Alt come together over it is let go of there first -- the report that
+    /// goes next holds neither the Delete nor the key that completed the
+    /// chord -- and its repeats then go through the batch input call; and
+    /// Ctrl and Alt arriving on another keyboard let it go as well.
+    #[test]
+    fn ctrl_and_alt_coming_together_over_a_held_delete_let_it_go_first() {
+        let mut keys = HidKeys::default();
+        assert_eq!(key(&mut keys, DELETE, true, NONE), Step::Hid);
+        assert_eq!(
+            key(&mut keys, CTRL_KEY, true, NONE),
+            Step::Hid,
+            "Ctrl alone"
+        );
+        assert!(keys.keys.is_down(DELETE));
+        assert_eq!(key(&mut keys, ALT_KEY, true, NONE), Step::ReleasedFirst);
+        let report = keys.keys_now();
+        assert_eq!(
+            report[1], 0b0000_0001,
+            "Ctrl alone in the report that goes first"
+        );
+        assert!(!keys.keys.is_down(DELETE), "the Delete stayed held");
+        keys.set(ALT_KEY, true);
+        assert!(keys.keys.is_down(ALT_KEY));
+        assert_eq!(
+            key(&mut keys, DELETE, true, NONE),
+            Step::Batch,
+            "its repeat"
+        );
+        assert_eq!(key(&mut keys, DELETE, false, NONE), Step::Batch);
+
+        let mut keys = HidKeys::default();
+        key(&mut keys, DELETE, true, NONE);
+        assert!(!keys.let_go_over((true, false)), "Ctrl alone elsewhere");
+        assert!(keys.keys.is_down(DELETE));
+        assert!(
+            keys.let_go_over((true, true)),
+            "Ctrl and Alt on another keyboard"
+        );
+        assert!(!keys.keys.is_down(DELETE));
+        assert_eq!(key(&mut keys, DELETE, false, NONE), Step::Nothing);
+        assert!(!keys.let_go_over((true, true)), "nothing held to let go of");
+
+        let mut keys = HidKeys::default();
+        key(&mut keys, A_KEY, true, NONE);
+        key(&mut keys, CTRL_KEY, true, NONE);
+        assert_eq!(
+            key(&mut keys, ALT_KEY, true, NONE),
+            Step::Hid,
+            "no Delete held, so nothing goes first"
+        );
+    }
+
+    /// **A report goes only when it changed**, the keys and the consumer usage
+    /// each, the consumer carrying the newest usage still held.
+    #[test]
+    fn a_report_goes_only_when_it_changed() {
+        let mut keys = HidKeys::default();
+        assert_eq!(keys.changed(), (None, None), "nothing yet");
+        key(&mut keys, A_KEY, true, NONE);
+        let (sent, consumer) = keys.changed();
+        assert_eq!(consumer, None);
+        let sent = sent.expect("the key's report");
+        assert_eq!(sent[0], keyboard::KEYS_REPORT_ID);
+        assert_eq!(sent[2], 1 << 4, "usage 0x04 is the bitmap's fifth bit");
+        assert_eq!(keys.changed(), (None, None), "unchanged");
+
+        keys.consumer(0xe9, true);
+        assert_eq!(keys.changed(), (None, Some([2, 0xe9, 0x00])));
+        keys.consumer(0xe2, true);
+        assert_eq!(keys.changed(), (None, Some([2, 0xe2, 0x00])), "the newest");
+        keys.consumer(0xe2, false);
+        assert_eq!(
+            keys.changed(),
+            (None, Some([2, 0xe9, 0x00])),
+            "the one still held"
+        );
+        keys.consumer(0xe9, false);
+        assert_eq!(keys.changed(), (None, Some(keyboard::NEUTRAL_CONSUMER)));
+        assert_eq!(keys.changed(), (None, None));
+    }
+
+    /// **The hold drops the oldest whole report at its bound**, never part of
+    /// one, and keeps the newest.
+    #[test]
+    fn the_hold_drops_the_oldest_whole_report_at_its_bound() {
+        let report = |code: u16| {
+            [
+                Event {
+                    kind: event::EV_KEY,
+                    code,
+                    value: 1,
+                },
+                Event {
+                    kind: event::EV_KEY,
+                    code,
+                    value: 0,
+                },
+                Event {
+                    kind: event::EV_SYN,
+                    code: 0,
+                    value: 0,
+                },
+            ]
+        };
+        let mut held = Held::default();
+        let mut code = 1;
+        while held.used + 3 <= HELD {
+            held.push(&report(code));
+            code += 1;
+        }
+        assert!(!held.reported);
+        held.push(&report(999));
+        assert!(held.reported, "an overflow went unsaid");
+        let events = held.events();
+        assert_eq!(events.len() % 3, 0, "a report was cut");
+        assert!(events.chunks(3).all(|r| r[2].kind == event::EV_SYN));
+        assert_eq!(events[events.len() - 3].code, 999, "the newest was lost");
+        assert_ne!(events[0].code, 1, "the oldest survived");
+    }
+
     fn flags(inputs: &Inputs) -> Vec<(i32, i32, u32, u32)> {
         inputs
             .as_slice()
@@ -1468,5 +2216,122 @@ mod bus_tests {
             assert!(started.elapsed() < Duration::from_secs(5), "the pad stayed");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+}
+
+/// Tests that type through the host's own input driver.
+///
+/// **Excluded from the default suite**, and run from an elevated shell on the
+/// console with the input driver installed (scripts/hid-install.ps1): a key
+/// goes down on the desk while one runs -- F24, which nothing here answers.
+///
+/// ```text
+/// cargo test -p lowlat-inject --lib windows::hid_tests -- --ignored --test-threads 1
+/// ```
+#[cfg(test)]
+mod hid_tests {
+    use super::*;
+    use crate::event::{Extents, Injector};
+    use lowlat_core::control::{Control, op};
+    use std::time::{Duration, Instant};
+
+    /// F24: the peer's code, its usage, the system's key.
+    const F24: u32 = 115;
+    const F24_USAGE: u8 = 0x73;
+    const VK_F24: i32 = 0x87;
+
+    fn down() -> bool {
+        // SAFETY: a read of a key's state.
+        unsafe { GetAsyncKeyState(VK_F24) < 0 }
+    }
+
+    fn f24(pressed: bool) -> Control<'static> {
+        Control {
+            a0: F24,
+            a1: 0,
+            a2: u32::from(pressed),
+            opcode: op::KEYBOARD,
+            body: &[],
+        }
+    }
+
+    /// Run the loop's own pass until `done` says so, or give up.
+    fn until(
+        devices: &mut Devices,
+        within: Duration,
+        what: &str,
+        mut done: impl FnMut(&mut Devices) -> bool,
+    ) -> Duration {
+        let started = Instant::now();
+        while !done(devices) {
+            assert!(
+                started.elapsed() < within,
+                "{what}: gave up after {within:?}"
+            );
+            devices.tick();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        started.elapsed()
+    }
+
+    /// **A guest's keys go to the input driver's keyboard while the switch is
+    /// on, and a key held across the switch comes up**: a key typed as the
+    /// switch goes on is held until the system lists the keyboard, then goes
+    /// down on it; switched off with it held, it comes up -- released the way
+    /// it went down -- and the keyboard goes; switched on again, a keyboard is
+    /// made again and a key goes down and up on it.
+    #[test]
+    #[ignore = "types on the desk through the input driver"]
+    fn a_guests_keys_go_to_the_drivers_keyboard_and_come_up_at_the_switch() {
+        assert!(!down(), "F24 down before the test");
+        let mut devices = Devices::create("hid-test").unwrap();
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
+        devices.set_virtual_input(true);
+        let slot = devices
+            .hid
+            .as_ref()
+            .expect("a keyboard from the driver")
+            .slot;
+        inject.on_control(&f24(true), &mut devices);
+        assert!(
+            !down(),
+            "the key went down before its keyboard could deliver it"
+        );
+        let ready = until(&mut devices, Duration::from_secs(10), "listed", |d| {
+            d.hid.as_ref().is_some_and(|hid| hid.ready)
+        });
+        let typed = until(&mut devices, Duration::from_secs(2), "down", |_| down());
+        assert!(
+            devices
+                .hid
+                .as_ref()
+                .is_some_and(|hid| hid.keys.keys.is_down(F24_USAGE)),
+            "the key went down another way"
+        );
+
+        inject.release_keys(&mut devices);
+        devices.set_virtual_input(false);
+        let up = until(&mut devices, Duration::from_secs(2), "up", |_| !down());
+        let gone = until(&mut devices, Duration::from_secs(5), "unlisted", |_| {
+            !hid::listed(Kind::Keyboard, slot)
+        });
+
+        devices.set_virtual_input(true);
+        inject.on_control(&f24(true), &mut devices);
+        let again = until(&mut devices, Duration::from_secs(10), "listed again", |d| {
+            d.hid.as_ref().is_some_and(|hid| hid.ready)
+        });
+        until(&mut devices, Duration::from_secs(2), "down again", |_| {
+            down()
+        });
+        inject.on_control(&f24(false), &mut devices);
+        until(&mut devices, Duration::from_secs(2), "up again", |_| {
+            !down()
+        });
+        drop(devices);
+        println!(
+            "listed after {ready:?}, down {typed:?} later; up {up:?} after the switch, \
+             unlisted {gone:?} later; listed again after {again:?}"
+        );
     }
 }

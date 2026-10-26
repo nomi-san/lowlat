@@ -30,14 +30,16 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
+    # A device of the input driver delivers from the moment raw input lists
+    # it, which is what its input is held until.
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 # The pad tests read a pad back the way a game does.
 [target.'cfg(windows)'.dev-dependencies]
-# The input driver's checks read its devices back through raw input.
-windows-sys = { version = "0.61", features = ["Win32_UI_Input", "Win32_UI_Input_XboxController"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController"] }
 
 [lints]
 workspace = true

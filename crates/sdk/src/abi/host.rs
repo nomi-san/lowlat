@@ -129,20 +129,26 @@ pub struct lowlat_host_video_config {
     /// Which output to capture, by an identity from the enumeration. **Empty
     /// means whichever this host would pick on its own**, which is the output
     /// at the desktop's corner and then whatever is lit. `virtual` is the
-    /// host's own display, plugged when it is asked for (Windows alone).
+    /// host's own display, plugged when it is asked for (Windows alone;
+    /// refused elsewhere).
     pub output: [c_char; LOWLAT_OUTPUT_MAX],
-    /// The host's own display's size, both or neither (minor 27). **Zero lets
-    /// the host decide**: the size an owner states as it joins an empty room,
-    /// within the largest picture that guest accepts, else the size the
-    /// display already has, 1920x1080 when first plugged. Otherwise 640x480
-    /// to 7680x4320, refused outside it rather than clamped.
+    /// The host's own display's size, both or neither (minor 27; Windows
+    /// alone from minor 32). **Zero lets the host decide**: the size an owner
+    /// states as it joins an empty room, within the largest picture that guest
+    /// accepts, else the size the display already has, 1920x1080 when first
+    /// plugged. Otherwise 640x480 to 7680x4320, refused outside it rather than
+    /// clamped.
+    #[cfg(windows)]
     pub virtual_width: u32,
+    #[cfg(windows)]
     pub virtual_height: u32,
-    /// The host's own display's refresh (minor 27). **Zero means the frame
-    /// rate's ceiling, `fps`**, so the display composes no picture the stream
-    /// would not take; **with `fps` zero too, the display's own refresh**,
-    /// which a person may set in its display settings, 60 when it is first
-    /// plugged with none to restore. Otherwise 24 to 480.
+    /// The host's own display's refresh (minor 27; Windows alone from minor
+    /// 32). **Zero means the frame rate's ceiling, `fps`**, so the display
+    /// composes no picture the stream would not take; **with `fps` zero too,
+    /// the display's own refresh**, which a person may set in its display
+    /// settings, 60 when it is first plugged with none to restore. Otherwise
+    /// 24 to 480.
+    #[cfg(windows)]
     pub virtual_hz: u32,
 }
 
@@ -200,6 +206,42 @@ pub struct lowlat_host_audio_config {
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
+/// How the guests' input reaches the system, on Windows alone (minor 32).
+///
+/// **Every field here is live**, set and read back through its own pair of
+/// calls as sound's are, and none is the video configuration's: the devices a
+/// guest's input lands on are not the stream's, and changing them neither
+/// carries nor resends the stream's settings.
+///
+/// **What it needs**: the host's own input driver, installed by its own script
+/// (docs/07-platforms.md section 10), and a host the driver admits -- the
+/// system account, or an administrator elevated. Nothing of this library
+/// installs it.
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_host_input_config {
+    /// Set by the caller to `sizeof(lowlat_host_input_config)`.
+    pub size: u32,
+    /// Whether a guest's keys go to a keyboard of the host's own input driver,
+    /// which the system takes as a device's, rather than through the system's
+    /// batch input call. **Default: off**, zero included, so a caller that
+    /// never sets it keeps the batch input call.
+    ///
+    /// Switching it on where the driver is not installed, or does not admit
+    /// this process, is refused and changes nothing; a start asking for it
+    /// there is not refused for it, says why once, and reads back off. Each
+    /// seated guest moves on its next pass, what it holds on the old way
+    /// released first; its keys wait the few milliseconds until the system
+    /// takes its keyboard, and go through the batch input call where it never
+    /// does. A driver lost while it is on gives the guests the batch input call
+    /// until it is switched on again. **The attention chord is never typed on
+    /// it**: a Delete going down while Ctrl and Alt are held goes through the
+    /// batch input call, which raises no secure screen.
+    pub virtual_input: bool,
+    pub reserved: [u8; 3],
+}
+
 /// Where a report pad's reports go: which side holds the virtual device for
 /// a DualShock 4 or a DualSense a guest sends as its own reports
 /// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
@@ -232,12 +274,12 @@ pub struct lowlat_host_config {
     /// The base a guest's port bind walks from. **Default: 9000.**
     pub base_port: u16,
     /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
-    /// floor for as long as it runs (minor 31): the driver's light-load
-    /// memory states bound the encoder, 4 to 5 ms a picture at 1080p against
-    /// 1 to 2 above them (docs/05-host.md section 4.2). **Default: off**,
-    /// since it changes the machine and needs the administrator; `lowlatd`
-    /// turns it on. Windows alone acts on it; elsewhere it is accepted and
-    /// does nothing. Settled when hosting starts.
+    /// floor for as long as it runs (minor 31; Windows alone from minor 32):
+    /// the driver's light-load memory states bound the encoder, 4 to 5 ms a
+    /// picture at 1080p against 1 to 2 above them (docs/05-host.md section
+    /// 4.2). **Default: off**, since it changes the machine and needs the
+    /// administrator; `lowlatd` turns it on. Settled when hosting starts.
+    #[cfg(windows)]
     pub hold_memory_clock: bool,
     pub reserved: u8,
     /// Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
@@ -278,18 +320,18 @@ pub struct lowlat_host_config {
     /// [`lowlat_host_poll_pad_report`] instead. Settled when hosting starts.
     pub pad_sink: u8,
     /// Whether the host plugs a display of its own when nothing is lit, and
-    /// keeps it for as long as it runs (minor 27). Windows alone has one;
-    /// elsewhere this is accepted and nothing is plugged. **Default: off**,
-    /// since it changes the machine; `output` set to `virtual` plugs it
-    /// either way. Settled when hosting starts.
+    /// keeps it for as long as it runs (minor 27; Windows alone from minor
+    /// 32). **Default: off**, since it changes the machine; `output` set to
+    /// `virtual` plugs it either way. Settled when hosting starts.
+    #[cfg(windows)]
     pub virtual_fallback: bool,
     /// Whether a stream wakes the display it captures as it starts, with one
-    /// pointer move of no distance (minor 28): holding a display on does not
-    /// wake one that slept, which gives no pictures until input wakes it.
-    /// **Default: off**, so a guest's first input wakes it and a connection
-    /// lights nothing at the desk by itself. Windows alone acts on it;
-    /// elsewhere it is accepted and does nothing. Settled when hosting
-    /// starts.
+    /// pointer move of no distance (minor 28; Windows alone from minor 32):
+    /// holding a display on does not wake one that slept, which gives no
+    /// pictures until input wakes it. **Default: off**, so a guest's first
+    /// input wakes it and a connection lights nothing at the desk by itself.
+    /// Settled when hosting starts.
+    #[cfg(windows)]
     pub wake_display: bool,
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
@@ -301,7 +343,18 @@ pub struct lowlat_host_config {
     pub video: lowlat_host_video_config,
     /// Sound, every field of which can also be set while the host runs.
     pub audio: lowlat_host_audio_config,
+    /// The guests' input, every field of which can also be set while the host
+    /// runs (minor 32; Windows alone).
+    #[cfg(windows)]
+    pub input: lowlat_host_input_config,
 }
+
+/// `sizeof(lowlat_host_config)` as minors 27 to 31 laid it out off Windows,
+/// with the video configuration's own display fields in it: **refused rather
+/// than misread**, as its sound half sits sixteen bytes further on than this
+/// library reads it (minor 32).
+#[cfg(not(windows))]
+const HOST_CONFIG_MINOR_31: usize = core::mem::size_of::<lowlat_host_config>() + 16;
 
 /// The most guests a host may advertise, which is what the ring memory per
 /// guest is sized against.
@@ -324,6 +377,7 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
     lowlat_host_config {
         size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
         base_port: 9000,
+        #[cfg(windows)]
         hold_memory_clock: false,
         reserved: 0,
         max_guests: 4,
@@ -337,7 +391,9 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
         exclusive_hold_ms: 500,
         exclusive_pointer: false,
         pad_sink: lowlat_pad_sink::LOWLAT_PAD_SINK_DEVICE as u8,
+        #[cfg(windows)]
         virtual_fallback: false,
+        #[cfg(windows)]
         wake_display: false,
         server_count: 0,
         servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
@@ -350,8 +406,11 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
             full_fps: false,
             reserved: [0; 3],
             output: [0; LOWLAT_OUTPUT_MAX],
+            #[cfg(windows)]
             virtual_width: 0,
+            #[cfg(windows)]
             virtual_height: 0,
+            #[cfg(windows)]
             virtual_hz: 0,
         },
         audio: lowlat_host_audio_config {
@@ -364,6 +423,13 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
             accept_microphone: false,
             reserved: [0; 1],
             device: [0; LOWLAT_OUTPUT_MAX],
+        },
+        #[cfg(windows)]
+        input: lowlat_host_input_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_input_config>())
+                .unwrap_or(u32::MAX),
+            virtual_input: false,
+            reserved: [0; 3],
         },
     }
 }
@@ -692,6 +758,17 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
     let (video, own_display) = video_configured(&cfg.video)?;
     let output = output_named(&cfg.video.output)?;
     let (sound_on, allow_raw, audio_kbps, audio_live) = audio_configured(&cfg.audio)?;
+    #[cfg(windows)]
+    input_configured(&cfg.input)?;
+    // The fields only Windows acts on, which exist nowhere else.
+    #[cfg(windows)]
+    let (virtual_fallback, wake_display, hold_memory_clock) = (
+        cfg.virtual_fallback,
+        cfg.wake_display,
+        cfg.hold_memory_clock,
+    );
+    #[cfg(not(windows))]
+    let (virtual_fallback, wake_display, hold_memory_clock) = (false, false, false);
 
     Some(::lowlat_host::admission::Config {
         microphone: None,
@@ -752,12 +829,35 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
             full_fps: video.full_fps,
             quality,
             output: (!output.is_empty()).then(|| output.to_string()),
-            virtual_fallback: cfg.virtual_fallback,
-            wake_display: cfg.wake_display,
-            hold_memory_clock: cfg.hold_memory_clock,
+            virtual_fallback,
+            wake_display,
+            hold_memory_clock,
             own_display,
         }),
     })
+}
+
+/// Check the guests' input half: whole, as its caller's `size` says. Which
+/// devices it asks for is answered by the host, which alone can ask the
+/// driver.
+#[cfg(windows)]
+fn input_configured(cfg: &lowlat_host_input_config) -> Option<bool> {
+    if (cfg.size as usize) < core::mem::size_of::<lowlat_host_input_config>() {
+        return None;
+    }
+    Some(cfg.virtual_input)
+}
+
+/// The input driver's refusal, as an application reads it.
+#[cfg(windows)]
+fn input_refused(error: lowlat_inject::hid::Error) -> lowlat_status {
+    use lowlat_inject::hid::Error;
+    match error {
+        Error::Absent => LOWLAT_ERR_INPUT_DRIVER_ABSENT,
+        Error::Denied => LOWLAT_ERR_INPUT_DRIVER_DENIED,
+        Error::Version(_) => LOWLAT_ERR_INPUT_DRIVER_VERSION,
+        Error::Refused(_) => LOWLAT_ERR_INPUT_DRIVER_IO,
+    }
 }
 
 /// The output a configuration names, read for its terminator. **`virtual` is
@@ -782,14 +882,22 @@ fn video_configured(
     if (cfg.size as usize) < core::mem::size_of::<lowlat_host_video_config>() {
         return None;
     }
+    #[cfg(windows)]
+    let own_display = ::lowlat_host::stream::OwnDisplay {
+        width: cfg.virtual_width,
+        height: cfg.virtual_height,
+        refresh_hz: cfg.virtual_hz,
+    };
+    #[cfg(not(windows))]
+    let own_display = ::lowlat_host::stream::OwnDisplay::default();
     // **Both or neither, and within what a monitor of the display may be**:
     // refused rather than clamped, so an application is never told yes and
     // given another size.
-    let sized = match (cfg.virtual_width, cfg.virtual_height) {
+    let sized = match (own_display.width, own_display.height) {
         (0, 0) => true,
         (width, height) => (640..=7680).contains(&width) && (480..=4320).contains(&height),
     };
-    if !sized || !(cfg.virtual_hz == 0 || (24..=480).contains(&cfg.virtual_hz)) {
+    if !sized || !(own_display.refresh_hz == 0 || (24..=480).contains(&own_display.refresh_hz)) {
         return None;
     }
     if cfg.fps == 0 {
@@ -811,11 +919,7 @@ fn video_configured(
             min_mbps: cfg.min_bitrate_mbps,
             full_fps: cfg.full_fps,
         },
-        ::lowlat_host::stream::OwnDisplay {
-            width: cfg.virtual_width,
-            height: cfg.virtual_height,
-            refresh_hz: cfg.virtual_hz,
-        },
+        own_display,
     ))
 }
 
@@ -883,6 +987,10 @@ pub unsafe extern "C" fn lowlat_host_start(
             if (cfg.size as usize) < core::mem::size_of::<lowlat_host_config>() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
+            #[cfg(not(windows))]
+            if cfg.size as usize == HOST_CONFIG_MINOR_31 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
             let mut held = handle.held();
             if held.seam.is_some() {
                 return LOWLAT_ERR_ALREADY_STARTED;
@@ -896,11 +1004,26 @@ pub unsafe extern "C" fn lowlat_host_start(
             }
             // **Raising into the handle's queue rather than its own**, so a
             // host starting and stopping does not take the queue with it.
-            held.seam = Some(::lowlat_host::admission::Admission::raising(
-                config,
-                handle.raise.clone(),
-                None,
-            ));
+            let seam = held
+                .seam
+                .insert(::lowlat_host::admission::Admission::raising(
+                    config,
+                    handle.raise.clone(),
+                    None,
+                ));
+            // **Not refused for the input driver**, as sound is not for its
+            // server: a host without one still serves its guests through the
+            // batch input call. Said once, and read back off.
+            #[cfg(windows)]
+            if cfg.input.virtual_input
+                && let Err(error) = seam.set_virtual_input(true)
+            {
+                lowlat_common::log_warn!(
+                    "abi: the guests' keys on the input driver refused at start, keys go through the batch input call, error={error}"
+                );
+            }
+            #[cfg(not(windows))]
+            let _ = seam;
             LOWLAT_OK
         })
     }
@@ -2106,6 +2229,97 @@ pub unsafe extern "C" fn lowlat_host_get_audio_config(
     }
 }
 
+/// Change how the guests' input reaches the system, while a host runs
+/// (minor 32; Windows alone).
+///
+/// **Switching `virtual_input` on asks the host's input driver first**, and is
+/// refused where it is not installed or does not admit this process, the
+/// guests keeping the batch input call. Each seated guest moves on its next
+/// pass, what it holds on the old way released first.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[in] cfg One [`lowlat_host_input_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`]; [`LOWLAT_ERR_INPUT_DRIVER_ABSENT`],
+/// [`LOWLAT_ERR_INPUT_DRIVER_DENIED`], [`LOWLAT_ERR_INPUT_DRIVER_VERSION`] or
+/// [`LOWLAT_ERR_INPUT_DRIVER_IO`] for a driver that cannot be used, nothing changed;
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not running.
+///
+/// # Safety
+///
+/// `hl` came from [`lowlat_host_create`], and `cfg` points to one
+/// [`lowlat_host_input_config`] whose `size` says how much of it is set.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_set_input_config(
+    hl: *mut lowlat_host,
+    cfg: *const lowlat_host_input_config,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            let Some(cfg) = cfg.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let Some(virtual_input) = input_configured(cfg) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            match seam.set_virtual_input(virtual_input) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => {
+                    lowlat_common::log_warn!(
+                        "abi: the guests' keys on the input driver refused, unchanged, error={error}"
+                    );
+                    input_refused(error)
+                }
+            }
+        })
+    }
+}
+
+/// How the guests' input reaches the system now (minor 32; Windows alone).
+///
+/// **The settings and not the state**: `virtual_input` is what was last
+/// switched, which a driver lost since does not change.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[out] out One [`lowlat_host_input_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not
+/// running.
+///
+/// # Safety
+///
+/// `hl` came from [`lowlat_host_create`], and `out` points to one
+/// [`lowlat_host_input_config`] whose `size` says how much of it is set.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_input_config(
+    hl: *mut lowlat_host,
+    out: *mut lowlat_host_input_config,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            let Some(slot) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_host_input_config>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            slot.virtual_input = seam.virtual_input();
+            slot.reserved = [0; 3];
+            LOWLAT_OK
+        })
+    }
+}
+
 /// What the host is running at now.
 ///
 /// **Read back rather than remembered.** What a stream is doing is the
@@ -2148,10 +2362,13 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
             slot.reserved = [0; 3];
             // **The request, as the sound device is**: the display's own size
             // is the picture's, on the status.
-            let own_display = seam.own_display();
-            slot.virtual_width = own_display.width;
-            slot.virtual_height = own_display.height;
-            slot.virtual_hz = own_display.refresh_hz;
+            #[cfg(windows)]
+            {
+                let own_display = seam.own_display();
+                slot.virtual_width = own_display.width;
+                slot.virtual_height = own_display.height;
+                slot.virtual_hz = own_display.refresh_hz;
+            }
             // **What is being captured, not what was asked for.** A guest can
             // switch outputs and a display can move by itself; an application
             // told the request marks the wrong screen.
@@ -2858,8 +3075,11 @@ mod start_tests {
             full_fps: true,
             reserved: [0; 3],
             output: [0; LOWLAT_OUTPUT_MAX],
+            #[cfg(windows)]
             virtual_width: 0,
+            #[cfg(windows)]
             virtual_height: 0,
+            #[cfg(windows)]
             virtual_hz: 0,
         }
     }
@@ -2868,6 +3088,7 @@ mod start_tests {
         lowlat_host_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
             base_port: 9000,
+            #[cfg(windows)]
             hold_memory_clock: false,
             reserved: 0,
             max_guests: 4,
@@ -2878,12 +3099,26 @@ mod start_tests {
             exclusive_hold_ms: 500,
             exclusive_pointer: false,
             pad_sink: 0,
+            #[cfg(windows)]
             virtual_fallback: false,
+            #[cfg(windows)]
             wake_display: false,
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
             video: video(),
             audio: audio(),
+            #[cfg(windows)]
+            input: input(),
+        }
+    }
+
+    #[cfg(windows)]
+    pub(super) fn input() -> lowlat_host_input_config {
+        lowlat_host_input_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_input_config>())
+                .unwrap_or(u32::MAX),
+            virtual_input: false,
+            reserved: [0; 3],
         }
     }
 
@@ -2965,6 +3200,7 @@ mod start_tests {
     /// **What the host's own display is asked to be is what reads back**, at
     /// start and live, zero being the host deciding. Nothing here names the
     /// display or allows it, so nothing is plugged on the machine running it.
+    #[cfg(windows)]
     #[test]
     fn the_host_display_request_is_the_one_read_back() {
         let handle = handle();
@@ -3006,6 +3242,7 @@ mod start_tests {
     /// **A size is both or neither and within what a monitor may be, a
     /// refresh within what a compositor keeps** -- refused, never clamped, so
     /// an application is not told yes and given another display.
+    #[cfg(windows)]
     #[test]
     fn a_host_display_request_no_monitor_could_be_is_refused() {
         let asked = |width, height, refresh| {
@@ -3053,6 +3290,143 @@ mod start_tests {
         assert_eq!(configured(&cfg).is_some(), cfg!(windows));
     }
 
+    /// **The layout is the platform's** (minor 32): the fields only Windows
+    /// acts on, and the input half, exist on Windows alone. Written out from
+    /// the fields rather than taken from the types, which would agree with any
+    /// layout: the video half is its own display's three words longer on
+    /// Windows, the whole that and the input half's eight bytes.
+    #[test]
+    fn the_configuration_is_laid_out_per_platform() {
+        let video = core::mem::size_of::<lowlat_host_video_config>();
+        let whole = core::mem::size_of::<lowlat_host_config>();
+        // size, fps, two doubles, full_fps and three reserved, the output:
+        // 288, already a multiple of the doubles' eight.
+        let shared = 4 + 4 + 8 + 8 + 1 + 3 + LOWLAT_OUTPUT_MAX;
+        assert_eq!(shared, 288);
+        #[cfg(windows)]
+        {
+            // The three words, and four bytes taking it to a multiple of eight.
+            assert_eq!(video, shared + 12 + 4);
+            assert_eq!(core::mem::size_of::<lowlat_host_input_config>(), 8);
+            assert_eq!(
+                core::mem::offset_of!(lowlat_host_config, input),
+                core::mem::offset_of!(lowlat_host_config, audio)
+                    + core::mem::size_of::<lowlat_host_audio_config>(),
+                "the input half follows the sound's"
+            );
+            let _ = whole;
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(video, shared);
+            assert_eq!(HOST_CONFIG_MINOR_31, whole + 16);
+        }
+    }
+
+    /// **Off Windows, a caller laid out as minors 27 to 31 were is refused,
+    /// never misread**: its sound half sits where this library reads the
+    /// video half's end. A smaller structure is refused as ever, and one of
+    /// this library's own size is taken.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_configuration_laid_out_before_minor_32_is_refused_off_windows() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.size = u32::try_from(HOST_CONFIG_MINOR_31).unwrap();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        cfg.size = u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **The input driver is asked before the keys go to it**: switching the
+    /// guests' input on is answered as the driver answers this process --
+    /// taken and read back on where it can be used, refused with the driver's
+    /// reason and read back off where it cannot -- switching it off is always
+    /// taken, and a structure shorter than the library's is refused. A start
+    /// asking for it is not refused for it.
+    #[cfg(windows)]
+    #[test]
+    fn the_input_driver_is_asked_before_the_keys_go_to_it() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.input.virtual_input = true;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK,
+            "a start is not refused for the input driver"
+        );
+        let probed = lowlat_inject::hid::probe();
+        let read = || {
+            let mut back = input();
+            back.virtual_input = !probed.is_ok();
+            assert_eq!(
+                unsafe { lowlat_host_get_input_config(handle, &raw mut back) },
+                LOWLAT_OK
+            );
+            back.virtual_input
+        };
+        assert_eq!(
+            read(),
+            probed.is_ok(),
+            "the start's ask, as the driver answered it"
+        );
+
+        let mut asked = input();
+        asked.virtual_input = false;
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            LOWLAT_OK
+        );
+        assert!(!read(), "switched off");
+        asked.virtual_input = true;
+        let expected = match probed {
+            Ok(()) => LOWLAT_OK,
+            Err(error) => input_refused(error),
+        };
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            expected
+        );
+        assert_eq!(read(), probed.is_ok(), "switched on as the driver allows");
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            expected,
+            "asked again"
+        );
+        asked.size = 4;
+        assert_eq!(
+            unsafe { lowlat_host_set_input_config(handle, &raw const asked) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **Each way the input driver cannot be used reads as a status of its
+    /// own**, so an application can say which: installed, admitted, the same
+    /// version.
+    #[cfg(windows)]
+    #[test]
+    fn the_input_drivers_refusals_read_as_their_own_statuses() {
+        use lowlat_inject::hid::Error;
+        assert_eq!(input_refused(Error::Absent), LOWLAT_ERR_INPUT_DRIVER_ABSENT);
+        assert_eq!(input_refused(Error::Denied), LOWLAT_ERR_INPUT_DRIVER_DENIED);
+        assert_eq!(
+            input_refused(Error::Version(2)),
+            LOWLAT_ERR_INPUT_DRIVER_VERSION
+        );
+        assert_eq!(
+            input_refused(Error::Refused(31)),
+            LOWLAT_ERR_INPUT_DRIVER_IO
+        );
+    }
+
     /// **A configuration nobody filled in is not a zeroed one.**
     ///
     /// Every enumerated field is validated rather than clamped, so zero is a
@@ -3083,6 +3457,14 @@ mod start_tests {
             cfg.audio.size as usize,
             core::mem::size_of::<lowlat_host_audio_config>()
         );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                cfg.input.size as usize,
+                core::mem::size_of::<lowlat_host_input_config>()
+            );
+            assert!(!cfg.input.virtual_input, "the batch input call by default");
+        }
         // **One figure, two types.** The field is whole milliseconds and the
         // arbitration's constant is not, so this is what catches a drift.
         assert!(

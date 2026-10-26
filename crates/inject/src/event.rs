@@ -996,7 +996,10 @@ impl Injector {
         self.flush(Device::PointerAbsolute, out);
     }
 
-    fn release_keys(&mut self, out: &mut impl Sink) {
+    /// Release every key this guest holds, as a withdrawn keyboard permission
+    /// does: for keys about to go another way, so none is left down on the way
+    /// they came (docs/05-host.md section 7).
+    pub fn release_keys(&mut self, out: &mut impl Sink) {
         self.used = 0;
         for key in 0..KEY_SLOTS {
             if self.keys.get(key) != Some(&true) {

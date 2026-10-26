@@ -229,6 +229,12 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
     cfg.audio.enabled = false;
     cfg.audio.allow_uncompressed = false;
     cfg.audio.mute_local = false;
+#if defined(_WIN32)
+    /* The batch input call, which needs no driver: whether the machine has the
+     * input driver is not this boundary's to test. */
+    cfg.input.size = (uint32_t) sizeof cfg.input;
+    cfg.input.virtual_input = false;
+#endif
     if (host_start(hl, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
         return 1;
@@ -321,6 +327,34 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
         fprintf(stderr, "harness: a rate past the ceiling was accepted\n");
         return 1;
     }
+
+#if defined(_WIN32)
+    /* The guests' input, live, on Windows alone: off is what a start with it
+     * off reads back, switching it off is always taken, and a structure
+     * shorter than the library's is refused. */
+    lowlat_status (*set_input)(lowlat_host *, const lowlat_host_input_config *);
+    lowlat_status (*get_input)(lowlat_host *, lowlat_host_input_config *);
+    RESOLVE(set_input, lib, "lowlat_host_set_input_config");
+    RESOLVE(get_input, lib, "lowlat_host_get_input_config");
+    lowlat_host_input_config input_back;
+    memset(&input_back, 0, sizeof input_back);
+    input_back.size = (uint32_t) sizeof input_back;
+    input_back.virtual_input = true;
+    if (get_input(hl, &input_back) != LOWLAT_OK || input_back.virtual_input != false) {
+        fprintf(stderr, "harness: the input settings did not read back off\n");
+        return 1;
+    }
+    lowlat_host_input_config input = cfg.input;
+    if (set_input(hl, &input) != LOWLAT_OK) {
+        fprintf(stderr, "harness: switching the input driver off was refused\n");
+        return 1;
+    }
+    input.size = 0;
+    if (set_input(hl, &input) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: an input structure of no size was accepted\n");
+        return 1;
+    }
+#endif
 
     /* Enumerating sound outputs, which answers before a host is started and
      * without disturbing one that is. A machine with none answers zero. */

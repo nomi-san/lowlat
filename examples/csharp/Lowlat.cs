@@ -148,12 +148,35 @@ internal struct HostVideoConfig
     }
     [InlineArray(Sizes.Output)] public struct OutputName { private byte first; }
     public OutputName Output;
+#if WINDOWS
     /// The host's own display's size and refresh, zero letting the host decide
-    /// (Windows alone; minor 27).
+    /// (minor 27). **Declared on Windows alone** from minor 32, as the header
+    /// declares them, so this struct is laid out per platform.
     public uint VirtualWidth;
     public uint VirtualHeight;
     public uint VirtualHz;
+#endif
 }
+
+#if WINDOWS
+/// How the guests' input reaches the system (minor 32; Windows alone).
+[StructLayout(LayoutKind.Sequential)]
+internal struct HostInputConfig
+{
+    public uint Size;
+    public byte VirtualInputByte;
+    private byte reserved0, reserved1, reserved2;
+
+    /// Whether a guest's keys go to a keyboard of the host's own input driver.
+    /// **Off by default**; switching it on where the driver is not installed
+    /// is refused.
+    public bool VirtualInput
+    {
+        get => VirtualInputByte != 0;
+        set => VirtualInputByte = value ? (byte)1 : (byte)0;
+    }
+}
+#endif
 
 [StructLayout(LayoutKind.Sequential)]
 internal struct HostAudioConfig
@@ -239,6 +262,9 @@ internal struct HostConfig
     public ServerList Servers;
     public HostVideoConfig Video;
     public HostAudioConfig Audio;
+#if WINDOWS
+    public HostInputConfig Input;
+#endif
 }
 
 [StructLayout(LayoutKind.Sequential)]
