@@ -2771,6 +2771,23 @@ fn not_emitted(codec: Codec) -> u32 {
     refused
 }
 
+/// The codec `asked` names: the second where its own bit is set, **or ten
+/// bits or full chroma**, which exist on it alone ([`not_emitted`]). An
+/// established client asks for ten bits with its second-codec preference off,
+/// and an established host answers on the second codec. A refused codec
+/// takes neither with it: the depth and the chroma are dropped before it is
+/// ([`degrade`]).
+fn codec_asked(asked: u32) -> Codec {
+    let second = lowlat_core::init::FLAG_HEVC
+        | lowlat_core::init::FLAG_10BIT
+        | lowlat_core::init::FLAG_COLOR444;
+    if asked & second != 0 {
+        Codec::H265
+    } else {
+        Codec::H264
+    }
+}
+
 /// The rate an encoder opens at, before the controller has said anything.
 fn start_bps(config: &Config) -> u32 {
     #[allow(
@@ -3793,11 +3810,7 @@ fn encode_loop<E: Encoder + FromDevice>(
         // stream spends itself rebuilding. Cleared when the output moves,
         // because the refusal belonged to a device rather than to the guests.
         let asked = consensus(shared, active) & !shared.refused.load(Ordering::Relaxed);
-        let wanted = if asked & lowlat_core::init::FLAG_HEVC != 0 {
-            Codec::H265
-        } else {
-            Codec::H264
-        };
+        let wanted = codec_asked(asked);
         // **Granted only where the codec can carry it.** The depth is refused
         // rather than silently dropped on H.264, because a peer builds one
         // decoder from what it declared and does not switch on what arrives.
@@ -6935,6 +6948,25 @@ mod tests {
                 0,
                 "{flag:#x} was refused by the codec rule on the codec that carries it"
             );
+        }
+    }
+
+    /// **Ten bits or full chroma ask for the second codec, with its own bit
+    /// clear or set**, as an established host answers an established client
+    /// that prefers ten bits with its second-codec preference off; the full
+    /// range alone asks for the first.
+    #[test]
+    fn ten_bits_or_full_chroma_ask_for_the_second_codec() {
+        use lowlat_core::init::{FLAG_10BIT, FLAG_COLOR444, FLAG_FULL_RANGE, FLAG_HEVC};
+        for (asked, codec) in [
+            (0, Codec::H264),
+            (FLAG_FULL_RANGE, Codec::H264),
+            (FLAG_FULL_RANGE | FLAG_HEVC, Codec::H265),
+            (FLAG_FULL_RANGE | FLAG_10BIT, Codec::H265),
+            (FLAG_COLOR444, Codec::H265),
+            (FLAG_HEVC | FLAG_10BIT | FLAG_COLOR444, Codec::H265),
+        ] {
+            assert_eq!(codec_asked(asked), codec, "{asked:#x}");
         }
     }
 

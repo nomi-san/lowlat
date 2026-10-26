@@ -132,16 +132,22 @@ fn check(status: Status) -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     H264,
-    /// Both depths: a ten-bit stream is told apart by the layout the
-    /// decoder is initialised with, and an encoder is told its depth.
+    /// Both depths: a ten-bit stream's decoder is a component of its own,
+    /// named by the layout it hands pictures out in, and an encoder is told
+    /// its depth.
     Hevc,
 }
 
 impl Codec {
-    const fn decoder_id(self) -> &'static str {
-        match self {
-            Self::H264 => "AMFVideoDecoderUVD_H264_AVC",
-            Self::Hevc => "AMFVideoDecoderHW_H265_HEVC",
+    /// The decoder for pictures in `layout`. **Ten-bit HEVC has a component
+    /// of its own**, which the headers call superseded: runtime 1.4.31's
+    /// other one, given a ten-bit stream, corrupts the process's memory, and
+    /// 1.4.37 decodes either way.
+    const fn decoder_id(self, layout: Layout) -> &'static str {
+        match (self, layout) {
+            (Self::H264, _) => "AMFVideoDecoderUVD_H264_AVC",
+            (Self::Hevc, Layout::Nv12) => "AMFVideoDecoderHW_H265_HEVC",
+            (Self::Hevc, Layout::P010) => "AMFVideoDecoderHW_H265_MAIN10",
         }
     }
 
@@ -781,10 +787,16 @@ impl Amf {
         Ok(context)
     }
 
-    /// A decoder for `codec` in `context`, not yet initialised, which the
-    /// context outlives.
-    pub fn decoder<'c>(&self, context: &'c Context<'_>, codec: Codec) -> Result<Component<'c>> {
-        let id = Name::new(codec.decoder_id())?;
+    /// A decoder for `codec` in `context`, handing pictures out in `layout`
+    /// once initialised in it, not yet initialised, which the context
+    /// outlives.
+    pub fn decoder<'c>(
+        &self,
+        context: &'c Context<'_>,
+        codec: Codec,
+        layout: Layout,
+    ) -> Result<Component<'c>> {
+        let id = Name::new(codec.decoder_id(layout))?;
         let mut raw: *mut c_void = core::ptr::null_mut();
         // SAFETY: a live factory and context; the name and the output are
         // live for the call.
@@ -1645,6 +1657,24 @@ mod tests {
         assert_eq!(Codec::Hevc.encoder_id(), "AMFVideoEncoderHW_HEVC");
     }
 
+    /// **Ten-bit HEVC decodes on a component of its own**: given a ten-bit
+    /// stream, an older runtime's other one corrupts the process's memory.
+    #[test]
+    fn ten_bit_hevc_decodes_on_a_component_of_its_own() {
+        assert_eq!(
+            Codec::H264.decoder_id(Layout::Nv12),
+            "AMFVideoDecoderUVD_H264_AVC"
+        );
+        assert_eq!(
+            Codec::Hevc.decoder_id(Layout::Nv12),
+            "AMFVideoDecoderHW_H265_HEVC"
+        );
+        assert_eq!(
+            Codec::Hevc.decoder_id(Layout::P010),
+            "AMFVideoDecoderHW_H265_MAIN10"
+        );
+    }
+
     /// The formats an encoder is initialised with go over as the runtime
     /// numbers them.
     #[test]
@@ -1812,7 +1842,7 @@ mod tests {
             (Codec::Hevc, Layout::Nv12),
             (Codec::Hevc, Layout::P010),
         ] {
-            let decoder = amf.decoder(&context, codec).unwrap();
+            let decoder = amf.decoder(&context, codec, layout).unwrap();
             assert!(decoder.has(LOW_LATENCY_DECODE), "{codec:?}");
             decoder.set_int(REORDER_MODE, REORDER_LOW_LATENCY).unwrap();
             decoder.set_bool(LOW_LATENCY_DECODE, true).unwrap();

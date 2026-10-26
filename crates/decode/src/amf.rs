@@ -316,11 +316,14 @@ pub fn caps(amf: &Amf, device: &Device) -> (Caps, bool) {
     };
     let mut low_latency = true;
     let mut builds = |codec: runtime::Codec, layout: Layout| {
-        let built = amf.decoder(&context, codec).ok().and_then(|decoder| {
-            let fast = configure(&decoder).ok()?;
-            decoder.init(layout, PROBE_SIZE.0, PROBE_SIZE.1).ok()?;
-            Some(fast)
-        });
+        let built = amf
+            .decoder(&context, codec, layout)
+            .ok()
+            .and_then(|decoder| {
+                let fast = configure(&decoder).ok()?;
+                decoder.init(layout, PROBE_SIZE.0, PROBE_SIZE.1).ok()?;
+                Some(fast)
+            });
         if let Some(fast) = built {
             low_latency &= fast;
         }
@@ -438,7 +441,7 @@ impl<'a> Backend<'a> {
         }
         let decoder = self
             .amf
-            .decoder(self.context, shape.decoder())
+            .decoder(self.context, shape.decoder(), shape.layout())
             .map_err(|_| Error::NoProfile)?;
         let low_latency = configure(&decoder).map_err(|_| Error::NoProfile)?;
         // **At the size the stream shows, not its coded size**: runtime
