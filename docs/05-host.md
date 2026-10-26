@@ -1180,6 +1180,13 @@ it then, so no pad does nothing. An established client's wireless DualSense send
 reports, which a host takes from no peer ([01 §11.1](01-protocol.md)), so it plays as the Xbox pad,
 as on an established host; on a cable it is presented as its product.
 
+*Built 2026-10-26 (W4.3):* as amended. A pad's latest report is held until the system lists its
+device -- a few milliseconds, every collection under a handle of its own
+([11 §2.4](11-drivers.md)) -- and a pad not listed within five seconds plays on as the Xbox pad.
+Checked live with an established macOS client's DualSense on a cable: every button, the
+touchpad, both motion sensors, the lightbar, the player lights and the microphone's light, the
+trigger effects and the rumble.
+
 ### §7.3 The attention chord
 
 **A guest asks for `Ctrl+Alt+Del` rather than typing it**, because the operating system the

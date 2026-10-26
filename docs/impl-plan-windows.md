@@ -37,7 +37,9 @@ checks are next. *Amended 2026-10-26:* W4.1's live checks moved to W4's gate, wh
 the keyboard and the mouse together; W4.2, the pointer, built. *Amended 2026-10-26:* W4.3 reviewed:
 what a program writes to a pad's features stays on the host, on both platforms, and `virtual_pads`
 without the driver is refused as `virtual_input` is; the pads checked against their consumers on
-the installed driver before the host's side is built, and the step amended.
+the installed driver before the host's side is built, and the step amended. *Amended
+2026-10-26:* W4.3, the report pads, built and checked on the machine and live; a device's
+readiness fixed beside it for all three kinds; its other checks owed at W4's gate.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2496,6 +2498,33 @@ are through. The decisions are recorded once, here; the design they add up to is
   the application example's live switches, which the gate's mid-session legs need. **Checked as
   well**: an established client's DualSense on a cable -- a wireless one sends its wireless
   reports, which the host takes from no peer, and plays as the Xbox pad, as on an established host.
+  *Corrected 2026-10-26, at the build:* the 50 ms wait before a device goes stays every kind's
+  ([11 §2.2](11-drivers.md)): with the keyboard's alone, a mouse let go of at once held the
+  keyboard's removal beside it for about five seconds.
+  *Built 2026-10-26, unticked:* `virtual_pads` in a reserved byte of the input configuration, in
+  minor 33, its set taking both switches or neither; a DualShock 4 or a DualSense sent as its
+  reports made on the driver at its first report while the setting is on, in the first slot the
+  driver gives its kind, its table filled from what the peer sent around a pairing the host makes
+  up, its latest report held until the system lists it, and what a game writes to it handed back
+  as an output report; the answers a Linux pad gives built where both platforms build them,
+  Linux unchanged; the review's findings and decisions as taken above; `lowlatd --virtual-pads`
+  and the application example's live switches. Found and fixed beside it, for the keyboard and
+  the mouse too: **a device counts as listed only with every collection under a raw input handle
+  of its own** ([11 §2.4](11-drivers.md)) -- raw input went on listing the previous device of a
+  slot used again soon for up to a second, and the next one, taken as listed at once, lost its
+  first reports. Run: every check needing no driver, each broken once. On the development
+  machine, the driver admitting the process: W4.0's checks; a pad's feature write answered and
+  handed to no one, its output report back by the interrupt write, a set-report of it refused by
+  the framework; a guest's DualSense through the host's own devices, made at its first report,
+  listed 12 ms after, a game's output report back 4 ms after that, gone 52 ms after its unplug;
+  the keyboard's and the mouse's checks back to back, the second's devices made while raw input
+  still listed the first's, ready after 490 ms, positions on their pixels within 2 ms; the
+  library's switches. Live, a macOS client's DualSense on a cable against the service: every
+  button, the touchpad, both motion sensors, the lightbar, the player lights and the microphone's
+  light, the trigger effects and the rumble, through eleven unplugs of a failing cable; its
+  DualShock 4 the Xbox pad, as that client sends one. Owed, at W4's gate: the library's demo's
+  DualShock 4 and DualSense, the setting changed mid-session and off, a game on the pads' maker's
+  own PC library.
 
 **Gate:** on the development machine, with established clients on macOS and Windows and the
 library's demo:
@@ -2517,6 +2546,11 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W4.3 built: the report pads as their products on the input driver behind
+  `virtual_pads` (minor 33), checked on the machine and live with a macOS client's DualSense; a
+  device's readiness fixed for all three kinds, every collection listed under a handle of its
+  own; the review's keyboard-alone wait corrected, every kind waiting
+  ([05 §7.2](05-host.md), [06 §3](06-api.md) and [11 §2](11-drivers.md) amended).
 - 2026-10-26: W4.3 reviewed: what a program writes to a pad's features stays on the host, on both
   platforms and from an application's own device; `virtual_pads` without the input driver refused
   as `virtual_input` is, and a pad whose device goes played on as the Xbox pad from its reports

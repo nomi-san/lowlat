@@ -505,7 +505,11 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   release the host wrote just before closing was lost the same way. With 20 ms before the delete
   every release arrived; the mouse's and the pads' last reports arrived either way. *Amended
   2026-10-26, at W4.3's review:* **the wait is the keyboard's alone**, since nothing else needs it
-  and a pad's end held the guest's loop for it at every unplug.
+  and a pad's end held the guest's loop for it at every unplug. *Corrected 2026-10-26, at W4.3's
+  build:* **every kind waits again.** A mouse deleted at once, before the system had finished
+  setting it up, held the next device's removal for about five seconds -- the keyboard let go of
+  beside it took that long to leave -- and the wait covers that. A pad's end goes off the guest's
+  thread instead, so no unplug holds the loop for it.
 
 ### §2.3 The devices
 
@@ -553,7 +557,10 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   whole state**: a DualSense's names, by its flags, the parts it changes, so a dropped one can lose
   a lightbar or a trigger effect for good; the driver keeps 32 for the host, and one dropped is
   counted and said. **The pads' version is 0x0100, as the real ones read on Windows**; the Linux
-  host presents its own platform's.
+  host presents its own platform's. *Measured 2026-10-26 (W4.3):* **an output report reaches the
+  driver as the interrupt write alone**: sent as a set-report, the framework refuses it as not
+  supported, so a program writing a pad's output that way gets an error and the guest nothing.
+  The controller libraries, the game launcher and a browser write it the other way.
 - **Identities**: each device's instance is stable per kind and slot, so the system sets a slot's
   device up once rather than at every connection; the keyboard and the mouse carry an identity of
   the project's own, never a real vendor's. *Built 2026-10-22:* in development the open-source
@@ -604,7 +611,15 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   within five seconds. A guest's keyboard takes the first slot the driver gives -- a slot another's
   keyboard holds is refused as busy -- and is let go of off the guest's thread at a switch, its
   end waiting while its neutral reports arrive. *Built the same day for the mouse (W4.2):* the
-  same, beside the keyboard, its slots its own kind's.
+  same, beside the keyboard, its slots its own kind's. *Built 2026-10-26 for the pads (W4.3):*
+  the same, a pad's latest report held, and a pad not listed within five seconds played on as the
+  Xbox pad. *Amended 2026-10-26, at W4.3's checks on the machine:* **a device counts as listed
+  only with every collection listed under a raw input handle of its own.** The device before it
+  in its slot had its name and container, and where the slot was used again soon raw input went
+  on listing that one after it had gone -- about half a second for a keyboard, a second for a
+  mouse -- so the next device, taken as listed at once, lost its first reports for as long; each
+  new device came under handles raw input had not given before. A mouse's absolute collection was
+  listed a few milliseconds after its relative one, and a position written between was lost.
 
 ## §3 Verification status
 
@@ -626,7 +641,18 @@ on its pixel with the switch on. Live: the pointer in a game whose anti-cheat re
 input call's motion, relative aim, both wheels, a second display's clicks. Owed: W4's gate.
 *Reviewed 2026-10-26* (W4.3): the pads checked on the installed driver before the host's side is
 built -- the maintainer's own pads relayed into the driver's, read as their products by the
-consumers named in §2.3, everything written back whole.
+consumers named in §2.3, everything written back whole. *Built 2026-10-26* (W4.3): a guest's
+DualShock 4 and DualSense on the driver behind `virtual_pads`, each made at its first report and
+answering from what its peer sent, what a game writes to it handed back, a feature write kept on
+the host. Run, needing no driver: the switch both ways and a set taking both or neither, a pad
+keeping its reports as the switch goes off, a pad whose device goes played on as the Xbox pad
+from its reports, the table the Linux host's answers, a feature write kept on the host and
+refused from an application's own device, each broken once. On the machine: a pad's feature
+write answered and handed to no one, its output report back; a guest's DualSense made at its
+first report, read as a game reads it, a game's output report back, gone at its unplug; the
+keyboard's and the mouse's checks back to back, the second's devices made while raw input still
+listed the first's. Live: an established macOS client's DualSense on a cable as its product,
+everything written back. Owed: W4's gate.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

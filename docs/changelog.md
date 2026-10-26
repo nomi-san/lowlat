@@ -3,6 +3,62 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - W4.3 built: the report pads as their products on the host's own input driver
+
+### Built
+- **A DualShock 4 or a DualSense sent as its reports is that product on the driver** while the
+  owner has `virtual_pads` on ([05 §7.2](05-host.md), [11 §2](11-drivers.md)): made at its first
+  report in the first slot the driver gives its kind, its table filled from what the peer sent
+  around a pairing the host makes up, its latest report held until the system lists it, and what
+  a game writes to it handed back as an output report; a feature write answered on the host and
+  sent nowhere. A pad whose device never comes, or goes, plays on as the Xbox pad from its
+  reports, and a pad keeps its reports as the setting goes off. The answers a Linux pad gives are
+  built where both platforms build them, Linux unchanged.
+- **`virtual_pads` in minor 33** ([06 §3](06-api.md)), in a reserved byte of the input
+  configuration: refused without the driver as `virtual_input` is, a set taking both or neither,
+  and a start asking for it not refused for it; `lowlat_host_send_pad_report` refusing a feature
+  write; `lowlatd --virtual-pads`; the application example's live switches.
+- **The driver keeps 32 of a pad's output reports for the host**, the first dropped said, and
+  gives the pads version 0x0100, as the real ones read on Windows.
+
+### Fixed
+- **A device taken as listed while raw input still listed the one before it** in its slot
+  ([11 §2.4](11-drivers.md)), on the keyboard and the mouse since W4.1: where a slot was used
+  again soon raw input went on listing the device that had gone for up to a second, under the
+  same name and container, and the next device's first reports -- held keys included -- went to
+  a device the system was not reading. A device counts as listed now only with every collection
+  under a raw input handle of its own; a mouse's absolute collection, listed a few milliseconds
+  after its relative one, is waited for too.
+
+### Corrected
+- The review's wait before a device goes, the keyboard's alone: **every kind waits again**
+  ([11 §2.2](11-drivers.md)). A mouse deleted at once held the keyboard's removal beside it for
+  about five seconds.
+
+### Checked
+- Offline: the switch both ways and a set taking both or neither, a pad keeping its reports as
+  the switch goes off, a pad whose device goes played as the Xbox pad from its reports, the table
+  the Linux host's answers, a feature write kept on the host and refused from an application's
+  own device; each check broken once and seen to fail. Both bars: on Windows 1464 tests passed,
+  none failed, the licences and advisories clean; on Linux 1425 passed, the licences and
+  advisories clean, and the two dual-stack checks the virtual machine's network fails as before.
+- On the development machine, the driver admitting the process: W4.0's checks; a pad's feature
+  write answered and its answer unchanged, nothing handed to the host; its output report back by
+  the interrupt write, the framework refusing it as a set-report; a guest's DualSense through the
+  host's own devices listed 12 ms after its first report, a game's output report back 4 ms after
+  that, the pad gone 52 ms after its unplug; the keyboard's and the mouse's checks back to back,
+  the second's devices made while raw input still listed the first's -- taken as listed at once
+  before the fix, every run, and listed after 490 to 999 ms with it, the positions then on their
+  pixels within 2 ms.
+- Live, an established macOS client's DualSense on a cable against the service: every button,
+  the touchpad, both motion sensors, the lightbar, the player lights and the microphone's light,
+  the trigger effects and the rumble, through eleven unplugs of a failing cable; its DualShock 4
+  the Xbox pad, as that client sends one.
+
+### Not run
+- At W4's gate: the library's demo's DualShock 4 and DualSense, the setting changed mid-session
+  and off, a game on the pads' maker's own PC library.
+
 ## 2026-10-26 - W4.3 reviewed: feature writes stay on the host, the pads checked against their consumers
 
 ### Decided
@@ -24,7 +80,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   a new pad's family alone; the version the real pads show on Windows; `lowlatd --virtual-pads`;
   32 of a pad's output reports kept for the host, since a DualSense's names by its flags the parts
   it changes and a dropped one can lose a lightbar for good; a pad's end off the guest's thread,
-  and the 50 ms wait before a device goes the keyboard's alone.
+  and the 50 ms wait before a device goes the keyboard's alone (*corrected at the build*: every
+  kind's).
 
 ### Checked
 - **The pads against their consumers, on the installed driver, before the host's side is
