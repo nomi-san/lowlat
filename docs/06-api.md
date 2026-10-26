@@ -208,7 +208,10 @@ the guest, the pad, the product, the kind, then the report in the pad's USB form
 reports ahead of the first input report, **and the pad's end after its last report**
 (`LOWLAT_PAD_REPORT_UNPLUG`, no report, on the guest's unplug and on its leaving), which is
 what the application destroys its device on; `lowlat_host_send_pad_report` carries back what
-that device was written. Two hundred and fifty reports a second is the microphone's rate,
+that device was written -- *from W4.3's minor (decided 2026-10-26)* its output reports alone: a
+feature write is refused with `LOWLAT_ERR_INVALID_ARGUMENT`, as on the library's own devices it
+stays on the host ([05 §7.2](05-host.md)).
+Two hundred and fifty reports a second is the microphone's rate,
 so it is the microphone's queue: bounded, the oldest input report dropped and counted when
 the application falls behind, never a feature report or a pad's end. The wait is the same
 wake the microphone's is, so the cost over the library's own device is one cross-thread wake
@@ -296,7 +299,8 @@ installs either: the machine's administrator runs each driver's script
 ([07 §10](07-platforms.md)). Without the display driver the fields are accepted and nothing is
 plugged: a stream asked for `virtual` says why once and waits as for a display that is not
 scanning out, and the host takes the driver up at its next attempt once it is installed. Without
-the input driver, switching `virtual_input` on is refused, and `virtual_pads` gives the Xbox pad.
+the input driver, switching `virtual_input` or `virtual_pads` on is refused (*amended 2026-10-26*,
+at W4.3's review: `virtual_pads` gave the Xbox pad).
 
 **The library turns no display, its own included** (*2026-10-20*, W3.10): a turn is made where a
 person makes one, in the display's own settings, or by the application -- on Windows, where the
@@ -387,7 +391,7 @@ neither carry nor re-send the stream's fields.
 | Field | Why it can change |
 |---|---|
 | `virtual_input` | Whether a guest's keyboard and mouse go through HID devices of the host's own input driver rather than the batch input call ([05 §7](05-host.md), [11 §2](11-drivers.md)). **Off by default**, zero included. Switching it on with no driver installed refuses the call and changes nothing; a driver lost while it is on gives the guests the batch input call again. The devices exist only while it is on, made for each seated guest on its next pass, and a switch either way first releases everything held on the old path. (*Built 2026-10-26, minor 32, the keyboard; the mouse the same day, W4.2*. A driver that cannot be used is refused with a status of its own, `LOWLAT_ERR_INPUT_DRIVER_ABSENT`, `_VERSION`, `_DENIED` or `_IO` ([§7](#7-status-codes)): an application can tell a driver to install from a process the driver does not admit, which is any but the system account and an administrator elevated. **A start asking for it is not refused for it**, as sound's is not for its server: the host says why once, keeps the batch input call, and reads back off; `lowlatd` asks for it with `--virtual-input`. A guest's keys wait the few milliseconds until the system takes its keyboard, and go through the batch input call where it never does; its pointer waits for its mouse the same way. **A position on any display but the primary goes through the batch input call even so**, the mouse's positions spanning the primary alone; its buttons, wheels and motion stay on the mouse.) |
-| `virtual_pads` | Whether a DualShock 4 or a DualSense a guest sends as its reports is presented as that product on the host's input driver ([05 §7.2](05-host.md)). **Off by default**: off, the pad is played as the Xbox pad from its whole states, since a HID pad never reaches a game that reads only the Xbox pad's interface. **A change applies to the pads plugged after it**: a pad keeps the family its first message fixed. The pad sink set to the application takes the reports whatever this says. On Linux a pad sent as its reports is always presented as its product ([00 §D12](00-overview.md)). (*Planned for W4.3's minor*, in one of the reserved bytes.) |
+| `virtual_pads` | Whether a DualShock 4 or a DualSense a guest sends as its reports is presented as that product on the host's input driver ([05 §7.2](05-host.md)). **Off by default**: off, the pad is played as the Xbox pad from its whole states, since a HID pad never reaches a game that reads only the Xbox pad's interface. **A change applies to the pads plugged after it**: a pad keeps the family its first message fixed. The pad sink set to the application takes the reports whatever this says. On Linux a pad sent as its reports is always presented as its product ([00 §D12](00-overview.md)). (*Planned for W4.3's minor*, in one of the reserved bytes. *Amended 2026-10-26, at W4.3's review*: switching it on where the input driver is not installed, or does not admit the process, is refused with the input driver's statuses and changes nothing, as `virtual_input` is; a start asking for it is not refused for it, says why once and reads back off; `lowlatd` asks for it with `--virtual-pads`. A pad whose device never comes, or goes, plays on as the Xbox pad from its own reports. A library of an earlier minor ignores the byte and reads it back zero, so an application reads the minor first.) |
 
 Starting a host that is already running is refused rather than quietly reconfiguring, because a
 second configuration that looks accepted and is not is a host running settings nobody can see.

@@ -3,6 +3,47 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-26 - W4.3 reviewed: feature writes stay on the host, the pads checked against their consumers
+
+### Decided
+- **What a program on the host writes to a pad's features stays on the host**, on Linux and
+  Windows alike ([05 §7.2](05-host.md), [01 §11.2](01-protocol.md), [11 §2.3](11-drivers.md)): the
+  device answers it and nothing of it travels, where it went back to the peer as opcode 33's
+  feature kind. A pad's features carry its pairing, test commands and, on a DualSense, its
+  firmware update -- none a game needs -- and the peer applying one would change the guest's own
+  controller. Output reports travel back whole as before. **An application holding its own pad
+  device gives back output reports alone** ([06 §3](06-api.md)): from W4.3's minor
+  `lowlat_host_send_pad_report` refuses a feature write with `LOWLAT_ERR_INVALID_ARGUMENT`, so no
+  host of this project puts that kind on the wire.
+- **`virtual_pads` without the input driver is refused as `virtual_input` is**
+  ([06 §3](06-api.md)), with the same statuses, where it was accepted and gave the Xbox pad; a
+  start asking for it is not refused for it. A pad already presented as its product whose device
+  never comes, or goes, plays on as the Xbox pad from its own reports.
+- **W4.3's build takes the review's findings** ([impl-plan-windows.md](impl-plan-windows.md)
+  W4.3): a pad presented as its product keeps its reports when the setting goes off, which decides
+  a new pad's family alone; the version the real pads show on Windows; `lowlatd --virtual-pads`;
+  32 of a pad's output reports kept for the host, since a DualSense's names by its flags the parts
+  it changes and a dropped one can lose a lightbar for good; a pad's end off the guest's thread,
+  and the 50 ms wait before a device goes the keyboard's alone.
+
+### Checked
+- **The pads against their consumers, on the installed driver, before the host's side is
+  built**: the maintainer's DualShock 4 and DualSense on USB, each relayed for ten minutes into a
+  pad of its product on the driver, 150,000 reports each and none refused. The controller
+  libraries' HID layer named each as its product, with a serial from the host's pairing report,
+  the firmware from its table, the touchpad and both motion sensors at 250 a second, and sent the
+  lightbar, the player lights, a rumble and the DualSense's trigger effects back whole, felt on the
+  real pad; the common game launcher listed both as their products, on USB; the system's game
+  controller panel by the products' names; a browser's gamepad interface gave both the standard
+  mapping and the DualShock 4's vibration, as for the real pads. The framework's string, "HID VHF
+  Driver", showed only in a browser's HID chooser and in the text its gamepad interface names a
+  pad by. The real pads' feature answers on Windows are byte for byte the ones the driver serves.
+- **A second pad of a kind is a new device to the system at every connection**: two DualSenses at
+  once, five times, left ten device nodes behind, the second ready in 12 to 47 ms; kept as it is.
+
+### Not run
+- A game on the pads' maker's own PC library, and a browser's rumble on the driver's DualShock 4.
+
 ## 2026-10-26 - W4.2 built: a guest's mouse on the host's own input driver
 
 ### Built

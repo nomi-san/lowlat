@@ -1126,6 +1126,12 @@ Three things the host owes such a device, all decided at the report's arrival:
   and never folded into the rumble message: the lightbar, the player lights and a DualSense's
   trigger effects are in that report and have no other road. So a report pad is never
   rumbled by opcode 20, whose answer on the peer's side would repaint the lightbar.
+  *Amended 2026-10-26 (W4.3's review, the maintainer's decisions):* **that is the output
+  report; a feature write stays on the host**, on Linux and Windows alike: the device answers
+  it and nothing of it travels, and an application holding its own device (below) gives back
+  output reports alone. A pad's features carry its pairing, test commands and, on a
+  DualSense, its firmware update -- none a game needs -- and the peer applying one would
+  change the guest's own controller.
 - **An application may take the reports itself instead.** A host built with the sink set to
   the application creates no device for report pads; the reports are handed out through a
   poll of their own, feature reports first, and the application gives back what its own
@@ -1164,6 +1170,15 @@ is not taken, as above. **On Windows the owner chooses, not the peer** ([00 §D1
 a HID pad never reaches a game that reads only the Xbox pad's interface, and an established client
 holding a DualSense always sends its reports, so with the peer deciding every such guest would
 lose every such game. The Xbox 360 pad stays the bus's either way.
+
+*Amended 2026-10-26, at W4.3's review:* **switching `virtual_pads` on with no driver is refused**,
+as `virtual_input` is ([06 §3](06-api.md)). A pad presented as its product keeps its reports when
+the setting goes off, which decides a new pad's family alone; and **a pad whose device never
+comes, or goes, plays on as the Xbox pad from its own reports** -- the sixteen-button state each
+one carries -- rumbled by opcode 20 as any pad on the bus, since nothing on opcode 33 speaks for
+it then, so no pad does nothing. An established client's wireless DualSense sends its wireless
+reports, which a host takes from no peer ([01 §11.1](01-protocol.md)), so it plays as the Xbox pad,
+as on an established host; on a cable it is presented as its product.
 
 ### §7.3 The attention chord
 

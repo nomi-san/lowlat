@@ -34,7 +34,10 @@ virtual displays' GPU named by its maker, or as the power-saving one -- added af
 is built after W2.8. *Amended 2026-10-25:* W3.13 built, checked and closed; two findings beside it
 are named in its entry. *Amended 2026-10-26:* W4.1, the keyboard and the switch, built; its live
 checks are next. *Amended 2026-10-26:* W4.1's live checks moved to W4's gate, which runs them for
-the keyboard and the mouse together; W4.2, the pointer, built.
+the keyboard and the mouse together; W4.2, the pointer, built. *Amended 2026-10-26:* W4.3 reviewed:
+what a program writes to a pad's features stays on the host, on both platforms, and `virtual_pads`
+without the driver is refused as `virtual_input` is; the pads checked against their consumers on
+the installed driver before the host's side is built, and the step amended.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2344,7 +2347,20 @@ are through. The decisions are recorded once, here; the design they add up to is
   table it is given as the pad is made -- the peer's calibration and firmware, else a real pad's,
   and a pairing report around an address the host makes up, unique per guest and pad -- and
   completes what is written to the pad at once, keeping it for the host, which sends it to the
-  peer.
+  peer. *Amended 2026-10-26, at W4.3's review (the maintainer's decisions):* **what a program
+  writes to a pad's features stays on the host**, on Linux as well: the device answers the write
+  and keeps none of it, and nothing of it travels; an application holding its own device gives
+  back output reports alone, the library refusing a feature write from it in W4.3's minor. A
+  pad's features carry its pairing, test commands and, on a DualSense, its firmware update --
+  none a game needs -- and the peer applying one would change the guest's own controller. Output
+  reports travel back whole as before.
+  **Switching `virtual_pads` on where the input driver is not installed, or does not admit the
+  process, is refused as `virtual_input` is**, with the same statuses, and changes nothing; a
+  start asking for it is not refused for it, says why once and reads back off, and `lowlatd`'s
+  `--virtual-pads` the same. A driver lost while it is on gives the pads plugged after it the Xbox
+  pad, said once, and **a pad already presented as its product whose device never comes or goes
+  plays on as the Xbox pad from its own reports** -- the sixteen-button state each report carries
+  -- so no pad does nothing.
 - **The fields only Windows acts on are declared on Windows alone.** In the C header the input
   configuration -- its structure, its member of the whole and its two calls -- and
   `virtual_width`, `virtual_height` and `virtual_hz` in the video configuration and
@@ -2461,6 +2477,25 @@ are through. The decisions are recorded once, here; the design they add up to is
   and the system's own game controller panel; the setting off, the Xbox pad as before; the setting
   changed mid-session, the next pad plugged following it and one already plugged keeping its
   family; the Linux bar.
+  *Reviewed 2026-10-26:* **the pads checked against their consumers on the installed driver,
+  before the host's side is built**: the maintainer's DualShock 4 and DualSense on USB, each relayed
+  for ten minutes into a pad of its product on the driver, 150,000 reports each and none refused,
+  read as their products by the controller libraries' HID layer, the common game launcher, the
+  game controller panel and a browser's gamepad interface, the standard mapping there, and the
+  lightbar, player lights, rumble and trigger effects written back whole and felt on the real pad;
+  the framework's string showed only in a browser's HID chooser and in the text its gamepad
+  interface names a pad by ([11 §2.3](11-drivers.md)). Not run: a game on the pads' maker's own PC
+  library. **Taken into the step**: the decisions above (feature writes kept on the host, on Linux
+  too, and refused from an application's own device by `lowlat_host_send_pad_report` in the
+  minor; the switch refused without the driver, a pad whose device goes played on as the Xbox
+  pad from its reports); a pad presented as its product keeping its reports when the setting goes
+  off -- the setting decides a new pad's family alone; the version the real pads show on Windows,
+  0x0100; `lowlatd --virtual-pads`; the driver keeping 32 of a pad's output reports for the host,
+  a DualSense's naming by its flags the parts it changes, so a dropped one is counted and said; a
+  pad's end off the guest's thread, and the 50 ms wait before a device goes the keyboard's alone;
+  the application example's live switches, which the gate's mid-session legs need. **Checked as
+  well**: an established client's DualSense on a cable -- a wireless one sends its wireless
+  reports, which the host takes from no peer, and plays as the Xbox pad, as on an established host.
 
 **Gate:** on the development machine, with established clients on macOS and Windows and the
 library's demo:
@@ -2471,8 +2506,9 @@ library's demo:
   client turning its pointer relative;
 - for both, raw input naming a device and no injected flag;
 - the switch moved both ways mid-session with keys and buttons held, nothing left held;
-- both pads as their products with everything back, the setting off giving the Xbox pad, and the
-  setting changed mid-session reaching the next pad plugged;
+- both pads as their products with everything back -- the library's demo's, and an established
+  client's DualSense on a cable -- the setting off giving the Xbox pad, and the setting changed
+  mid-session reaching the next pad plugged;
 - the driver removed and the host killed mid-session, nothing left held and no device behind;
 - recorded rather than passed: a report to its arrival in raw input against the batch input call,
   across the switch, at p50, p95 and p99, idle and under load, and a slot's first setup;
@@ -2481,6 +2517,13 @@ library's demo:
 
 ## Change log
 
+- 2026-10-26: W4.3 reviewed: what a program writes to a pad's features stays on the host, on both
+  platforms and from an application's own device; `virtual_pads` without the input driver refused
+  as `virtual_input` is, and a pad whose device goes played on as the Xbox pad from its reports
+  (the maintainer's decisions); the pads checked against their consumers on the installed driver;
+  the step's build and checks and the gate's pad leg amended. W4's pads decision amended
+  ([01 §11.2](01-protocol.md),
+  [05 §7.2](05-host.md), [06 §3](06-api.md) and [11 §2](11-drivers.md) amended).
 - 2026-10-26: W4.2 built: a guest's mouse on the input driver beside its keyboard, every button,
   wheel and motion on its relative collection, the primary display's positions on its absolute
   one and every other display's through the batch input call; the switch releasing the buttons

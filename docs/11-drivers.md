@@ -503,7 +503,9 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   the device is deleted: raw input saw a key go down and never come up, though the system's own
   key state and its hooks saw the release -- a game reading raw input kept the key held, and a
   release the host wrote just before closing was lost the same way. With 20 ms before the delete
-  every release arrived; the mouse's and the pads' last reports arrived either way.
+  every release arrived; the mouse's and the pads' last reports arrived either way. *Amended
+  2026-10-26, at W4.3's review:* **the wait is the keyboard's alone**, since nothing else needs it
+  and a pad's end held the guest's loop for it at every unplug.
 
 ### §2.3 The devices
 
@@ -543,7 +545,15 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   nobody defined. What the system writes to the pad, an output report or a feature write, is
   completed at once and kept for the host, a few deep and the oldest dropped, each being a whole
   state; a read of the input report answers the last one submitted. No audio: the pads present
-  their HID interface alone.
+  their HID interface alone. *Amended 2026-10-26, at W4.3's review (the maintainer's decision):*
+  **a feature write is answered and kept by no one**: none of it reaches the host, so none of it
+  travels -- a pad's features carry its pairing, test commands and, on a DualSense, its firmware
+  update, none a game needs, and the peer applying one would change the guest's own controller.
+  The mouse's multipliers stay kept, which the system reads back. **An output report is not a
+  whole state**: a DualSense's names, by its flags, the parts it changes, so a dropped one can lose
+  a lightbar or a trigger effect for good; the driver keeps 32 for the host, and one dropped is
+  counted and said. **The pads' version is 0x0100, as the real ones read on Windows**; the Linux
+  host presents its own platform's.
 - **Identities**: each device's instance is stable per kind and slot, so the system sets a slot's
   device up once rather than at every connection; the keyboard and the mouse carry an identity of
   the project's own, never a real vendor's. *Built 2026-10-22:* in development the open-source
@@ -556,7 +566,9 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   character short, so two slots of one ten shared it. A kind and slot is still one device at a
   time, in a container of its own. The framework gives the first device of a kind the same name at
   every connection, so the system sets it up once; a second of the kind at the same time gets a
-  new name, and a setup, each time. *Seen 2026-10-26:* **no device carries a name of its own** --
+  new name, and a setup, each time. *Measured 2026-10-26:* two DualSenses at once, five times,
+  left ten device nodes behind, and the second was ready in 12 to 47 ms; kept as it is.
+  *Seen 2026-10-26:* **no device carries a name of its own** --
   the framework takes no product string from its driver and asks the driver for none, so the
   system answers every device's with the framework's, "HID VHF Driver", as a browser's HID
   listing shows the keyboard and the mouse. Read back from every collection: the product "HID VHF
@@ -565,7 +577,13 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   names the framework, never the identity** (`hid#hid_device_system_vhf&col01#...`). What
   consumers key on is the identity and the descriptor; a name of each device's own would need a
   HID driver of the host's own in place of the framework. For the pads, whose consumers might
-  read either, it is a check of their own (W4.3).
+  read either, it is a check of their own (W4.3). *Checked 2026-10-26, at W4.3's review:* the
+  controller libraries' HID layer, the common game launcher, the system's game controller panel
+  and a browser's gamepad interface read the pads by their identity -- named as the products,
+  the standard mapping, everything written back -- and the framework's string shows only in a
+  browser's HID chooser and in the text its gamepad interface names a pad by. The panel's name is
+  what the system keeps for the identity once a real pad was installed, so a machine that never
+  had one may show the framework's.
 
 ### §2.4 Lifetimes
 
@@ -576,7 +594,9 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   everything held on the old path.
 - **A pad sent as its reports is made at its first report while the owner has `virtual_pads`
   on**, a change reaching the pads plugged after it, and removed at its unplug or its guest's
-  leaving, as on Linux.
+  leaving, as on Linux. *Amended 2026-10-26, at W4.3's review:* a pad keeps its reports when the
+  setting goes off, which decides a new pad's family alone; and **a pad whose device never comes,
+  or goes, plays on as the Xbox pad from its own reports**, so no pad does nothing.
 - **A device made is not yet a device that delivers**: input for it is held until it does, as on
   Linux ([07 §4.1](07-platforms.md)), and the time, with whatever announces it, is measured at
   W4.0. *Built 2026-10-26 for the keyboard (W4.1):* held until raw input lists the device, which
@@ -604,6 +624,9 @@ primary on its pixel and one off it refused, the switch releasing keys and butto
 once. On the machine: positions on the primary on their pixels through it, and every display's
 on its pixel with the switch on. Live: the pointer in a game whose anti-cheat refuses the batch
 input call's motion, relative aim, both wheels, a second display's clicks. Owed: W4's gate.
+*Reviewed 2026-10-26* (W4.3): the pads checked on the installed driver before the host's side is
+built -- the maintainer's own pads relayed into the driver's, read as their products by the
+consumers named in §2.3, everything written back whole.
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated

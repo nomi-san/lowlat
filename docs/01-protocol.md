@@ -732,7 +732,10 @@ created from its report is never rumbled with opcode 20**: its motors are two by
 output report, and a peer's toolkit that answers opcode 20 with a report of its own would
 paint its constant lightbar over the one the host just sent. The sixteen-button pad keeps
 opcode 20. An established peer applies kind 1 to whatever pad it holds, so a host may send it
-for either product.
+for either product. *Amended 2026-10-26:* **this host sends kind 1 alone.** A feature report
+written to its virtual pad stays on the host: a pad's features carry its pairing, test commands
+and, on a DualSense, its firmware update, none a game needs, and a peer applying one would change
+its own controller. Kind 0 stays described for a host that sends it.
 
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.
