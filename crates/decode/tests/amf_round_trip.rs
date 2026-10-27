@@ -113,6 +113,25 @@ fn amd(d3d11: &D3d11) -> Device {
     d3d11.open(adapter.luid).expect("a device")
 }
 
+/// Whether AMD's HEVC encoder here codes ten bits, asked of its caps: an
+/// engine without the ten-bit profile refuses it only when it is set.
+fn ten_bit_hevc() -> bool {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let device = amd(&d3d11);
+    let runtime = Amf::load().expect("AMD's runtime");
+    let context = runtime.context(&device).expect("a context");
+    let engine = lowlat_drivers::amf::Codec::Hevc;
+    let names = engine.names();
+    let encoder = runtime
+        .encoder(&context, engine)
+        .expect("AMD's HEVC encoder");
+    let most = encoder
+        .caps()
+        .and_then(|caps| caps.get_int(names.cap_max_profile))
+        .expect("its highest profile");
+    names.profile_10.is_some_and(|ten| most >= ten)
+}
+
 fn config(codec: Codec, ten_bit: bool, thorough: bool, source: amf::Source) -> amf::Config {
     amf::Config {
         codec: if codec == Codec::H264 {
@@ -304,6 +323,10 @@ fn hevc_comes_back_as_it_went_in() {
 #[test]
 #[ignore = "requires AMD's GPU and runtime"]
 fn ten_bit_hevc_comes_back_as_it_went_in() {
+    if !ten_bit_hevc() {
+        println!("hevc10: no ten-bit profile on this engine, skipped");
+        return;
+    }
     check("hevc10", Codec::H265, true, false);
 }
 
@@ -472,6 +495,10 @@ fn a_picture_allocates_nothing_on_the_loops_side() {
     let runtime = Amf::load().expect("AMD's runtime");
     let context = runtime.context(&device).expect("a context");
     for (codec, ten_bit) in [(Codec::H264, false), (Codec::H265, true)] {
+        if ten_bit && !ten_bit_hevc() {
+            println!("{codec:?} ten-bit: no ten-bit profile on this engine, skipped");
+            continue;
+        }
         let mut encoder = amf::Encoder::new(
             &runtime,
             &context,

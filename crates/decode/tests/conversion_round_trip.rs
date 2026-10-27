@@ -476,6 +476,31 @@ fn check(name: &str, vendor: u32, codec: Codec, layout: Layout) {
     }
 }
 
+/// Whether AMD's HEVC encoder here codes ten bits, asked of its caps: an
+/// engine without the ten-bit profile refuses it only when it is set.
+fn amd_codes_ten_bit_hevc() -> bool {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let adapter = d3d11
+        .adapters()
+        .expect("the walk")
+        .into_iter()
+        .find(|a| a.decodes_here() && a.vendor == AMD)
+        .expect("an AMD GPU");
+    let device = d3d11.open(adapter.luid).expect("a device");
+    let runtime = lowlat_drivers::amf::Amf::load().expect("AMD's runtime");
+    let context = runtime.context(&device).expect("a context");
+    let engine = lowlat_drivers::amf::Codec::Hevc;
+    let names = engine.names();
+    let encoder = runtime
+        .encoder(&context, engine)
+        .expect("AMD's HEVC encoder");
+    let most = encoder
+        .caps()
+        .and_then(|caps| caps.get_int(names.cap_max_profile))
+        .expect("its highest profile");
+    names.profile_10.is_some_and(|ten| most >= ten)
+}
+
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn h264_from_the_conversion_comes_back_as_it_went_in() {
@@ -530,6 +555,10 @@ fn hevc_from_the_conversion_comes_back_through_amds_encoder() {
 #[test]
 #[ignore = "requires AMD's GPU and runtime"]
 fn ten_bit_hevc_from_the_conversion_comes_back_through_amds_encoder() {
+    if !amd_codes_ten_bit_hevc() {
+        println!("amd hevc p010: no ten-bit profile on this engine, skipped");
+        return;
+    }
     check("amd hevc p010", AMD, Codec::H265, Layout::P010);
 }
 

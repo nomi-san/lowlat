@@ -228,6 +228,9 @@ pub struct Names {
     pub output_data_type: &'static str,
     /// A capability: whether a query can wait for a picture.
     pub cap_query_timeout: &'static str,
+    /// A capability: the highest profile the engine codes, one of the
+    /// codec's profile numbers.
+    pub cap_max_profile: &'static str,
     /// The profile for eight bits, and for ten where the codec has one.
     pub profile_8: i64,
     pub profile_10: Option<i64>,
@@ -288,6 +291,7 @@ const H264_NAMES: Names = Names {
     insert_headers: &["InsertSPS", "InsertPPS"],
     output_data_type: "OutputDataType",
     cap_query_timeout: "QueryTimeoutSupport",
+    cap_max_profile: "MaxProfile",
     profile_8: 100,
     profile_10: None,
     rate_latency_constrained: 3,
@@ -330,6 +334,7 @@ const HEVC_NAMES: Names = Names {
     insert_headers: &["HevcInsertHeader"],
     output_data_type: "HevcOutputDataType",
     cap_query_timeout: "HevcQueryTimeoutSupport",
+    cap_max_profile: "HevcMaxProfile",
     profile_8: 1,
     profile_10: Some(2),
     rate_latency_constrained: 1,
@@ -1633,6 +1638,7 @@ mod tests {
                 n.insert_aud,
                 n.output_data_type,
                 n.cap_query_timeout,
+                n.cap_max_profile,
             ];
             all.extend(n.min_qp);
             all.extend(n.keyframe_period);

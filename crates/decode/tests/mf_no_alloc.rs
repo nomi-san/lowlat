@@ -13,7 +13,7 @@ mod common;
 
 use lowlat_common::alloc_counter::{Counting, assert_no_alloc};
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::mf::Backend;
+use lowlat_decode::mf::{Backend, caps};
 use lowlat_decode::{Decoder, Fed, Planes};
 
 #[global_allocator]
@@ -23,10 +23,15 @@ static ALLOC: Counting = Counting;
 #[ignore = "requires the system's media framework and its HEVC extension"]
 fn the_per_unit_path_allocates_nothing_on_this_side() {
     let mf = lowlat_drivers::mf::load().expect("the system's media framework");
+    let (caps, _, _) = caps(mf);
     for (clip, codec) in [
         ("synthetic-720p-h264.bin", Codec::H264),
         ("synthetic-720p-hevc.bin", Codec::H265),
     ] {
+        if codec == Codec::H265 && !caps.hevc {
+            println!("  {clip}: no HEVC decoder here, skipped");
+            continue;
+        }
         let units = common::units(clip);
         let mut backend = Backend::new(mf, 1 << 22);
         backend
