@@ -513,25 +513,30 @@ typedef struct {
 	float scale;            ///< Multiplier applied to the dimensions of the image, producing an
 	                        ///<   minimized or magnified image. This can be set to 0
 	                        ///<   if unnecessary.
-	bool hardware;          ///< The graphics data is a handle to a SharedResource and should be
-	                        ///<   mapped to a texture directly for rendering.
+	bool hardware;          ///< The image is an MTY_HardwareFrame: a picture in device memory,
+	                        ///<   imported rather than uploaded.
 } MTY_RenderDesc;
 
-/// @brief A picture in device memory another interface exported, drawn on GL as a hardware
-///   frame: what MTY_WindowDrawQuad takes as the image when MTY_RenderDesc.hardware is set.
-/// @details The descriptor is imported once per `id` and the import kept while that `id`
+/// @brief A picture in device memory another interface exported, drawn on GL or Direct3D 11
+///   as a hardware frame: what MTY_WindowDrawQuad takes as the image when
+///   MTY_RenderDesc.hardware is set.
+/// @details What it names is imported once per `id` and the import kept while that `id`
 ///   keeps appearing, so a caller hands the same picture memory over on every draw at the
-///   cost of one import. The planes are laid out plainly at their offsets and pitches, in
-///   the order and sampling `MTY_RenderDesc.format` and `chroma` describe.
+///   cost of one import. On GL the descriptor's planes are laid out plainly at their offsets
+///   and pitches, in the order and sampling `MTY_RenderDesc.format` and `chroma` describe; on
+///   Direct3D 11 each plane is a texture of its own.
 typedef struct {
 	int32_t fd;         ///< An opaque descriptor the GL implementation's own vendor exports
 	                    ///<   (`GL_HANDLE_TYPE_OPAQUE_FD_EXT`). The import takes a duplicate;
 	                    ///<   the caller's stays the caller's.
-	uint32_t id;        ///< Which allocation the descriptor names. Descriptor numbers are
-	                    ///<   reused once closed, so this is what tells one from the next.
+	uint32_t id;        ///< Which allocation the descriptor or the textures name. Descriptor
+	                    ///<   numbers and handles are reused once closed, so this is what
+	                    ///<   tells one from the next.
 	uint64_t size;      ///< The whole allocation in bytes.
 	uint64_t offset[3]; ///< Each plane's first byte within the allocation.
 	uint32_t pitch[3];  ///< Each plane's bytes from one row to the next.
+	void *texture[3];   ///< On Direct3D 11, each plane's texture by its shared handle, which the
+	                    ///<   renderer's device opens; null for a plane the layout has not.
 } MTY_HardwareFrame;
 
 /// @brief A point with an `x` and `y` coordinate.
@@ -1202,7 +1207,8 @@ MTY_WindowWarpCursor(MTY_App *app, MTY_Window window, uint32_t x, uint32_t y);
 /// @brief Test if the hardware frame provided can be used on the current window.
 /// @param app The MTY_App.
 /// @param window An MTY_Window.
-/// @param shared_resource The hardware frame pointer.
+/// @param shared_resource The MTY_HardwareFrame, or NULL to ask whether the window's context
+///   imports hardware frames at all.
 /// @param desc Description of the image and how it should be rendered.
 MTY_EXPORT bool
 MTY_WindowIsValidHardwareFrame(MTY_App *app, MTY_Window window, const void *shared_resource,

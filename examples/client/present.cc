@@ -201,28 +201,22 @@ static void *present_loop(void *opaque) noexcept
 				: (deep ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
 			desc.chroma = full ? MTY_CHROMA_444 : MTY_CHROMA_420;
 			desc.filter = MTY_FILTER_LINEAR;
-			// A handle is drawn from the toolkit's import of it, at each
-			// plane's offset and pitch; planes are one image with the
-			// planes in sequence and the row length as a width, each
-			// plane's offset being the rows before it times that width,
-			// which is how the slot is laid out.
+			// A handle is drawn from the toolkit's import of it, made once
+			// per allocation and kept while that allocation keeps coming:
+			// on Windows a texture per plane, by its shared handle; elsewhere
+			// at each plane's offset and pitch, planes being one image with
+			// the planes in sequence and the row length as a width, each
+			// plane's offset the rows before it times that width, which is
+			// how the slot is laid out.
 			MTY_HardwareFrame hw;
 			memset(&hw, 0, sizeof hw);
-#if defined(_WIN32)
-			// On Windows the toolkit's hardware image is the planes' shared
-			// handles, which it opens on its device at every draw.
-			HANDLE textures[3] = {0};
-			const void *hardware = textures;
-#else
-			const void *hardware = &hw;
-#endif
 			if (f->kind == LOWLAT_FRAME_HANDLE) {
+				hw.id = f->allocation;
 #if defined(_WIN32)
 				for (uint32_t p = 0; p < 3; p++)
-					textures[p] = (HANDLE) (uintptr_t) f->textures[p];
+					hw.texture[p] = (void *) (uintptr_t) f->textures[p];
 #else
 				hw.fd = f->fd;
-				hw.id = f->allocation;
 				hw.size = f->handle_size;
 				for (uint32_t p = 0; p < 3; p++) {
 					hw.offset[p] = f->planes[p].offset;
@@ -255,7 +249,7 @@ static void *present_loop(void *opaque) noexcept
 			// crushed and its contrast raised.
 			desc.fullRangeYUV = f->full_range;
 			MTY_WindowDrawQuad(toolkit, window,
-				f->kind == LOWLAT_FRAME_HANDLE ? hardware : (const void *) f->planes[0].data,
+				f->kind == LOWLAT_FRAME_HANDLE ? (const void *) &hw : (const void *) f->planes[0].data,
 				&desc);
 		} else {
 			MTY_WindowClear(toolkit, window, 0.0f, 0.0f, 0.0f, 1.0f);

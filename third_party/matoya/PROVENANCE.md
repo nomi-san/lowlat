@@ -76,10 +76,19 @@ lightbar colour of its choosing) and polls XInput; on Linux it opens their input
 | `src/windows/appw.c` | with the flag, the main window registers for no controller's raw input, so the HID layer learns of no device and writes to none, and XInput is not polled |
 | `src/unix/linux/x11/app.c` | with the flag, the input-node layer is not made |
 
+A picture drawn by handle on Direct3D 11 is opened once per allocation, as the GL renderer
+imports its descriptor once. Upstream takes the planes' shared handles as the image and opens
+each again, with a new view, at every draw; a renderer on one GPU drawing to a monitor on
+another then grew by some 14 KB a draw -- 0.84 MB a second at sixty draws -- its processor time
+climbing with it.
+
+| file | change |
+|---|---|
+| `src/matoya.h` | `MTY_HardwareFrame.texture`: each plane's texture by its shared handle, which with the frame's `id` is what the Direct3D 11 renderer takes as the image when `MTY_RenderDesc.hardware` is set |
+| `src/windows/gfx/d3d11.c` | up to eight imports kept, each a frame's planes opened on the renderer's device with their views, found by `id`, the oldest replaced by a new one; a draw takes references on the import's views and opens nothing; `mty_d3d11_valid_hardware_frame` reads the frame, and answers yes for none, every device opening the shared textures of its own GPU |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
-the upstream commit lists exactly the files above. The Direct3D 11 renderer's own import of a
-hardware frame -- the planes' shared handles, opened again with a new view at every draw --
-is upstream's, unchanged.
+the upstream commit lists exactly the files above.
 
 ## Licensing
 

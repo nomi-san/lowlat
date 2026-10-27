@@ -19,6 +19,7 @@ static
 #include "shaders/vs.h"
 
 #define D3D11_NUM_STAGING 3
+#define D3D11_NUM_IMPORTS 8
 
 struct d3d11_res {
 	DXGI_FORMAT format;
@@ -29,9 +30,18 @@ struct d3d11_res {
 	bool was_hardware;
 };
 
+// A hardware frame's planes opened on this device, with their views, kept
+// while the allocation that names them keeps appearing.
+struct d3d11_import {
+	uint32_t id;
+	struct d3d11_res res[D3D11_NUM_STAGING];
+};
+
 struct d3d11 {
 	MTY_ColorFormat format;
 	struct d3d11_res staging[D3D11_NUM_STAGING];
+	struct d3d11_import imports[D3D11_NUM_IMPORTS];
+	uint32_t next_import;
 	struct gfx_uniforms ub;
 
 	ID3D11VertexShader *vs;
@@ -302,6 +312,99 @@ static bool d3d11_refresh_resource(struct gfx *gfx, MTY_Device *_device, MTY_Con
 	return r;
 }
 
+// Open one plane's shared texture on the device, with the view it is drawn from.
+static bool d3d11_open_plane(ID3D11Device *device, HANDLE shared_handle, struct d3d11_res *res)
+{
+	IDXGIResource *res_dxgi = NULL;
+	ID3D11Texture2D *texture = NULL;
+	D3D11_TEXTURE2D_DESC desc = {0};
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {0};
+	bool r = false;
+
+	HRESULT e = ID3D11Device_OpenSharedResource(device, shared_handle, &IID_IDXGIResource, &res_dxgi);
+	if (e != S_OK) {
+		MTY_Log("Failure for shared pointer %p", shared_handle);
+		MTY_Log("'ID3D11Device_OpenSharedResource' failed with HRESULT 0x%X", e);
+		goto except;
+	}
+
+	e = IDXGIResource_QueryInterface(res_dxgi, &IID_ID3D11Texture2D, &texture);
+	if (e != S_OK) {
+		MTY_Log("'IDXGIResource_QueryInterface' failed with HRESULT 0x%X", e);
+		goto except;
+	}
+
+	e = ID3D11Texture2D_QueryInterface(texture, &IID_ID3D11Resource, &res->resource);
+	if (e != S_OK) {
+		MTY_Log("'ID3D11Texture2D_QueryInterface' failed with HRESULT 0x%X", e);
+		goto except;
+	}
+
+	ID3D11Texture2D_GetDesc(texture, &desc);
+
+	srvd.Format = desc.Format;
+	srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvd.Texture2D.MipLevels = 1;
+
+	e = ID3D11Device_CreateShaderResourceView(device, res->resource, &srvd, &res->srv);
+	if (e != S_OK) {
+		MTY_Log("'ID3D11Device_CreateShaderResourceView' failed with HRESULT 0x%X", e);
+		goto except;
+	}
+
+	bool use_half_width = (desc.Format == DXGI_FORMAT_R16G16_UNORM || desc.Format == DXGI_FORMAT_R8G8_UNORM);
+	res->width = use_half_width ? (desc.Width / 2) : desc.Width;
+	res->height = desc.Height;
+	res->format = desc.Format;
+	res->was_hardware = true;
+	r = true;
+
+	except:
+
+	if (texture)
+		ID3D11Texture2D_Release(texture);
+
+	if (res_dxgi)
+		IDXGIResource_Release(res_dxgi);
+
+	if (!r)
+		d3d11_destroy_resource(res);
+
+	return r;
+}
+
+// A hardware frame's planes as imported: the import kept for its allocation, or a
+// new one in place of the oldest. Opened again with new views at every draw, they
+// grew the process by some 14 KB a draw while the window was on another GPU's monitor.
+static struct d3d11_import *d3d11_import(struct d3d11 *ctx, ID3D11Device *device, const MTY_HardwareFrame *frame)
+{
+	for (uint32_t x = 0; x < D3D11_NUM_IMPORTS; x++)
+		if (ctx->imports[x].res[0].srv && ctx->imports[x].id == frame->id)
+			return &ctx->imports[x];
+
+	struct d3d11_import *import = &ctx->imports[ctx->next_import];
+	ctx->next_import = (ctx->next_import + 1) % D3D11_NUM_IMPORTS;
+
+	for (uint32_t x = 0; x < D3D11_NUM_STAGING; x++)
+		d3d11_destroy_resource(&import->res[x]);
+
+	for (uint32_t x = 0; x < D3D11_NUM_STAGING; x++) {
+		if (!frame->texture[x])
+			continue;
+
+		if (!d3d11_open_plane(device, frame->texture[x], &import->res[x])) {
+			for (uint32_t y = 0; y < D3D11_NUM_STAGING; y++)
+				d3d11_destroy_resource(&import->res[y]);
+
+			return NULL;
+		}
+	}
+
+	import->id = frame->id;
+
+	return import;
+}
+
 static bool d3d11_map_shared_resource(struct gfx *gfx, MTY_Device *_device, MTY_Context *context, MTY_ColorFormat fmt,
 	uint8_t plane, const uint8_t *image, uint32_t full_w, uint32_t w, uint32_t h, uint8_t bpp)
 {
@@ -311,107 +414,42 @@ static bool d3d11_map_shared_resource(struct gfx *gfx, MTY_Device *_device, MTY_
 
 	struct d3d11 *ctx = (struct d3d11 *) gfx;
 
-	HANDLE *shared_handle = (HANDLE *) image;
-	ID3D11Resource *res_d3d = NULL;
-	ID3D11Texture2D *texture = NULL;
+	struct d3d11_import *import = d3d11_import(ctx, (ID3D11Device *) _device, (const MTY_HardwareFrame *) image);
 
-	for (uint32_t x = 0; x < 3 ; x++) {
-		if (!shared_handle[x])
-			continue;
-
-		struct d3d11_res *res = &ctx->staging[x];
-
-		ID3D11Device *device = (ID3D11Device *) _device;
-
-		if (res->srv)
-			ID3D11ShaderResourceView_Release(res->srv);
-
-		if (res->resource)
-			ID3D11Resource_Release(res->resource);
-
-		res->srv = NULL;
-		res->resource = NULL;
-
-		HRESULT e = ID3D11Device_OpenSharedResource(device, shared_handle[x], &IID_IDXGIResource, &res_d3d);
-		if (e != S_OK) {
-			MTY_Log("Failure for index %d shared pointer %p", x, shared_handle[x]);
-			MTY_Log("'ID3D11Device_OpenSharedResource' failed with HRESULT 0x%X", e);
-			goto except;
-		}
-
-		e = IDXGIResource_QueryInterface(res_d3d, &IID_ID3D11Texture2D, &texture);
-		if (e != S_OK) {
-			MTY_Log("'IDXGIResource_QueryInterface' failed with HRESULT 0x%X", e);
-			goto except;
-		}
-
-		if (res_d3d) {
-			IDXGIResource_Release(res_d3d);
-			res_d3d = NULL;
-		}
-
-		e = ID3D11Texture2D_QueryInterface(texture, &IID_ID3D11Resource, &res->resource);
-		if (e != S_OK) {
-			MTY_Log("'ID3D11Texture2D_QueryInterface' failed with HRESULT 0x%X", e);
-			goto except;
-		}
-
-		D3D11_TEXTURE2D_DESC desc = {0};
-		ID3D11Texture2D_GetDesc(texture, &desc);
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {0};
-		srvd.Format = desc.Format;
-		srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvd.Texture2D.MipLevels = 1;
-
-		e = ID3D11Device_CreateShaderResourceView(device, res->resource, &srvd, &res->srv);
-		if (e != S_OK) {
-			MTY_Log("'ID3D11Device_CreateShaderResourceView' failed for index %d with HRESULT 0x%X", x, e);
-			goto except;
-		}
-
-		bool use_half_width = (desc.Format == DXGI_FORMAT_R16G16_UNORM || desc.Format == DXGI_FORMAT_R8G8_UNORM);
-		res->width = use_half_width ? (desc.Width / 2) : desc.Width;
-		res->height = desc.Height;
-		res->format = desc.Format;
-		res->was_hardware = true;
-
-		if (texture) {
-			ID3D11Texture2D_Release(texture);
-			texture = NULL;
-		}
-	}
-
-	return true;
-
-	except:
-
-	if (texture)
-		ID3D11Texture2D_Release(texture);
-
-	if (res_d3d) {
-		IDXGIResource_Release(res_d3d);
-		res_d3d = NULL;
-	}
-
-	for (uint32_t x = 0; x < 3 ; x++) {
+	// The planes drawn from are the import's, each held by a reference of its own.
+	for (uint32_t x = 0; x < D3D11_NUM_STAGING; x++) {
 		struct d3d11_res *res = &ctx->staging[x];
 		d3d11_destroy_resource(res);
+
+		if (!import)
+			continue;
+
+		*res = import->res[x];
+
+		if (res->resource)
+			ID3D11Resource_AddRef(res->resource);
+
+		if (res->srv)
+			ID3D11ShaderResourceView_AddRef(res->srv);
 	}
 
-	return false;
+	return import != NULL;
 }
 
 bool mty_d3d11_valid_hardware_frame(MTY_Device *device, MTY_Context *context, const void *shared_resource)
 {
+	const MTY_HardwareFrame *frame = shared_resource;
+
+	// Every device opens the shared textures of its own GPU.
+	if (!frame)
+		return true;
+
 	ID3D11Device *d3d_device = (ID3D11Device *) device;
-	HANDLE shared_handle = NULL;
-	memcpy(&shared_handle, shared_resource, sizeof(HANDLE));
 
 	bool r = true;
 	IDXGIResource *resource = NULL;
 
-	HRESULT e = ID3D11Device_OpenSharedResource(d3d_device, shared_handle, &IID_IDXGIResource, &resource);
+	HRESULT e = ID3D11Device_OpenSharedResource(d3d_device, frame->texture[0], &IID_IDXGIResource, &resource);
 	if (e != S_OK)
 		r = false;
 
@@ -542,6 +580,10 @@ void mty_d3d11_destroy(struct gfx **gfx, MTY_Device *device)
 
 	for (uint8_t x = 0; x < D3D11_NUM_STAGING; x++)
 		d3d11_destroy_resource(&ctx->staging[x]);
+
+	for (uint8_t x = 0; x < D3D11_NUM_IMPORTS; x++)
+		for (uint8_t y = 0; y < D3D11_NUM_STAGING; y++)
+			d3d11_destroy_resource(&ctx->imports[x].res[y]);
 
 	if (ctx->rs)
 		ID3D11RasterizerState_Release(ctx->rs);
