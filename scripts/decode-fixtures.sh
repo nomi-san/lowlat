@@ -63,6 +63,8 @@ make_fixture h264-nvenc-bframes   h264 yuv420p 256x256 -c:v h264_nvenc -preset p
 # frame numbers up to 256 under order count type 2 and says nothing about
 # reordering. Paced at 300 a second, the 300 pictures cost one second of the rate.
 frames=300 rate=300 make_fixture h264-nvenc-wrap h264 yuv420p 256x256 -c:v h264_nvenc -preset p1 -tune ll -rc cbr -b:v 400k -bf 0 -g 600 -aud 1
+# AMD's encoder, where its runtime is: what an AMD host sends, cropped.
+make_fixture h264-amf-crop        h264 nv12    150x146 -c:v h264_amf -usage ultralowlatency -b:v 300k -g 12 -aud 1
 
 # HEVC.
 make_fixture hevc-ipp             hevc yuv420p   144x144 -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
@@ -74,6 +76,11 @@ make_fixture hevc-main10          hevc yuv420p10le 256x256 -c:v libx265 -preset 
 make_fixture hevc-crop            hevc yuv420p   150x146 -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
 make_fixture hevc-nvenc-ll        hevc yuv420p   256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 1M -bf 0 -g 12 -aud 1
 make_fixture hevc-nvenc-main10    hevc p010le    256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 2M -bf 0 -g 12 -profile:v main10 -aud 1
+# AMD's encoder pads the width to a multiple of 64 and the height to 16:
+# hevc-crop's picture coded at 192x160 rather than 152x152, as 1366 is
+# coded at 1408.
+make_fixture hevc-amf-crop        hevc nv12      150x146 -c:v hevc_amf -usage ultralowlatency -b:v 300k -g 12 -aud 1
+make_fixture hevc-amf-crop-main10 hevc p010le    150x146 -c:v hevc_amf -usage ultralowlatency -profile:v main10 -b:v 300k -g 12 -aud 1
 # Full chroma: the range-extensions profile at eight and ten bits, with the
 # transform-skip extension exercised on one so the extension syntax is read.
 make_fixture hevc-444             hevc yuv444p   144x144 -c:v libx265 -preset medium -x265-params "bframes=2:tskip=1:keyint=12:aud=1:log-level=error"
