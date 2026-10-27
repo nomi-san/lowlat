@@ -408,6 +408,19 @@ pub fn caps(device: &Device) -> Caps {
     }
 }
 
+/// Whether a device decodes `codec`, four-two-zero at the depth asked, at
+/// `width` x `height`, **asked by building a real decoder at that size and
+/// dropping it**: the answer for a runtime on the same engine whose own
+/// initialisation takes sizes the engine cannot decode.
+pub fn decodes(device: &Device, codec: Codec, ten_bit: bool, width: u32, height: u32) -> bool {
+    let shape = Shape {
+        codec,
+        ten_bit,
+        full_chroma: false,
+    };
+    create_decoder(device, shape, width, height).is_ok()
+}
+
 /// The largest picture a device builds a decoder for, per codec, from a
 /// fixed ladder of sizes; zero where none builds.
 pub fn limits(device: &Device, codec: Codec) -> (u32, u32) {

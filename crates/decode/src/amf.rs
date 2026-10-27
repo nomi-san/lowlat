@@ -79,8 +79,8 @@ pub enum Error {
     /// A unit the readers could not read, or a picture the runtime never
     /// handed out.
     Stream,
-    /// A picture larger than the caller's planes, or a unit larger than the
-    /// buffer.
+    /// A picture larger than the caller's planes or than the device
+    /// decodes, or a unit larger than the buffer.
     TooLarge,
 }
 
@@ -437,6 +437,13 @@ impl<'a> Backend<'a> {
             return Ok(built.shape == shape && built.coded == coded && built.visible == visible);
         }
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
+            return Err(Error::TooLarge);
+        }
+        // **The engine's limit is asked of the system's interface on the same
+        // device**: the runtime initialises a decoder at sizes its engine
+        // cannot decode -- H.264 wider than 4096 -- and such a stream then
+        // failed at every unit, a keyframe asked for each time.
+        if !d3d11::decodes(self.device, shape.codec, shape.ten_bit, coded.0, coded.1) {
             return Err(Error::TooLarge);
         }
         let decoder = self
@@ -1059,5 +1066,41 @@ mod tests {
             .map(|_| ()),
             Err(Error::NoProfile)
         );
+    }
+
+    /// **A stream larger than the engine decodes is refused before the
+    /// runtime takes it**: the runtime initialises a decoder at any size, and
+    /// a stream wider than its engine then failed at every unit, asking for a
+    /// keyframe each time. A size the engine decodes builds as before.
+    #[test]
+    #[ignore = "requires AMD's GPU and runtime"]
+    fn a_stream_larger_than_the_engine_is_refused_before_the_runtime_takes_it() {
+        use lowlat_drivers::d3d11::D3d11;
+
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let adapter = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|a| a.decodes_here() && a.maker() == Some("AMD"))
+            .expect("an AMD GPU");
+        let device = d3d11.open(adapter.luid).expect("a device");
+        let amf = Amf::load().expect("AMD's runtime");
+        let context = amf.context(&device).expect("a context");
+        let mut backend = Backend::new(&amf, &context, (8192, 8192), 1 << 20).expect("a backend");
+        let h264 = Shape {
+            codec: Codec::H264,
+            ten_bit: false,
+        };
+        // A macroblock wider than any AMD engine decodes H.264.
+        let wide = (4096 + 16, 64);
+        assert_eq!(backend.ensure(h264, wide, wide), Err(Error::TooLarge));
+        assert!(backend.built.is_none(), "a decoder was built for it");
+        assert_eq!(backend.ensure(h264, (1920, 1088), (1920, 1080)), Ok(true));
+        for codec in [Codec::H264, Codec::H265] {
+            let started = std::time::Instant::now();
+            assert!(d3d11::decodes(&device, codec, false, 1920, 1088));
+            println!("{codec:?} asked at 1920x1088 in {:?}", started.elapsed());
+        }
     }
 }
