@@ -343,6 +343,10 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   alternating in one session, and the device lost by restarting the GPU's driver, the session
   going on at the next keyframe ([10 §5.2](10-client.md)). *Open*: a stream larger than the
   engine decodes would fail at each keyframe, where the system's interface refuses it once.
+  *Settled 2026-10-27*: the system's interface on the same device is asked first, by a decoder
+  built at the stream's coded size, and such a stream is refused at its first picture; checked
+  by a test that builds the decoder for H.264 a macroblock wider than the engine decodes, here
+  and on the laptop, failing with the question left out.
   *Found at the gate*: the processor time noted at W1.4 is the example client's. By handle,
   drawing on a GPU other than the display's, its memory grows with every picture and its
   processor time with it, from about 3 % of a core to 30 in ten minutes, through either
@@ -446,7 +450,15 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   buttons, the touchpad, the motion sensors, rumble and the lights, 295 output reports put on
   the pad and none refused; in its DualShock mode the DualShock 4 but for the motion sensors,
   which that mode never reads, its 350 rumble messages each written as a motor-only report;
-  and both as the sixteen-button pad with rumble.)
+  and both as the sixteen-button pad with rumble.) (*2026-10-27, the leak*: the toolkit opened
+  every plane's shared handle again, with a new view, at every draw, and drawing on a GPU
+  other than the display's that grew the process by 14 KB a draw; it keeps one import per
+  allocation now, as its GL renderer does, and the demo passes the allocation on Windows too.
+  Shown without the library or a host, the toolkit's renderer on the AMD GPU drawing textures
+  another device there writes at sixty draws a second: 0.84 MB a second before, 0.03 after,
+  both flat with the window's monitor on the same GPU. The 0.5 KB a draw left comes of drawing
+  from shared textures while presenting to another GPU's monitor -- none by planes there, none
+  on one GPU -- so the placement above leaves it, and the ten minutes flat are owed by that.)
 - [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.

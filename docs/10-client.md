@@ -884,7 +884,12 @@ mid-session cost one second and twelve skipped pictures. Every committed 4:2:0 c
 bit for bit by planes and through the textures, in the order the system's interface lets the
 same clip out in; full chroma is refused, the GPU having no such profile, and the declaration
 masked by it. *Open*: a stream larger than the engine decodes fails at each keyframe here,
-where the system's interface refuses it once. *Amended 2026-10-26:* **the decoder is
+where the system's interface refuses it once. *Settled 2026-10-27:* **the engine's limit is
+asked of the system's interface on the same device**, a decoder built there at the stream's
+coded size and dropped before the runtime's is initialised, so a stream larger than the engine
+decodes is refused at its first picture as the system's interface refuses it: H.264 4112 wide on
+the integrated Radeon of the development machine and of a laptop, where 1920x1088 builds. It
+costs 1.5 to 8 ms once per decoder built. *Amended 2026-10-26:* **the decoder is
 initialised at the size the stream shows, not its coded size.** An older runtime, 1.4.31 on a
 laptop's integrated Radeon, answered every unit of a cropped stream -- a 1080-line picture is
 coded at 1088 -- that its size had changed when initialised at the coded size, so a 1920x1080

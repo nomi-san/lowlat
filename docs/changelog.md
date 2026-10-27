@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - The demo opens a picture's textures once
+
+### Fixed
+- **The demo grew by 14 KB a draw by handle, drawing on a GPU other than the display's**
+  ([impl-plan-windows.md](impl-plan-windows.md) W1.9): the application toolkit opened every
+  plane's shared handle again, with a new view, at every draw. It keeps up to eight imports
+  now, found by the allocation the library names, as its GL renderer does, and the demo passes
+  the allocation on Windows as it does elsewhere.
+
+### Checked
+- Without the library or a host -- the toolkit's renderer on the AMD GPU drawing textures that
+  another device there writes, a picture every other draw, sixty draws a second, the window on
+  the RTX's monitor -- the process grew 0.84 MB a second before, W1.6's figure, and 0.03 after;
+  with the window's monitor on the AMD both stayed flat, and so did pictures uploaded by planes
+  across the two GPUs. The demo builds on Windows and on Linux against the changed header.
+
+### Open
+- **0.5 KB a draw is left by handle across GPUs**, some 30 KB a second at sixty draws: drawing
+  from textures another device shares while presenting to another GPU's monitor, below the
+  toolkit, which opens and makes nothing per draw now; none by planes there, none on one GPU.
+  W1.9's placement, planes drawn on the display's GPU when the decoding GPU drives no display,
+  leaves that arrangement.
+
+## 2026-10-27 - AMD's decoder refuses a stream larger than its engine decodes
+
+### Fixed
+- **A stream larger than AMD's engine decodes asked for a keyframe at every unit**
+  ([10 §5.2](10-client.md)): the runtime initialises a decoder at any size, so H.264 wider than
+  4096 -- a 5120-wide host's, say -- was taken and then failed at each unit, the host sending
+  keyframes alone and the client showing nothing. The engine's limit is asked of the system's
+  interface on the same device now, by a decoder built at the stream's coded size and dropped,
+  and such a stream is refused at its first picture, as the system's interface refuses it.
+
+### Checked
+- A decoder for H.264 a macroblock wider than the engine decodes is refused before the runtime
+  takes it, and a 1920x1080 one built, on the development machine's integrated Radeon (runtime
+  1.4.37) and on a laptop's (1.4.31); the test fails with the question left out. Every clip
+  still decodes bit for bit through AMD's decoder on both. The question costs 1.5 to 8 ms once
+  per decoder built, nothing per picture.
+
 ## 2026-10-27 - AMD's encoder among the decoders' clips
 
 ### Added
