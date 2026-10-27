@@ -3,6 +3,19 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - The GPU tests ask the caps for what a machine may lack
+
+### Changed
+- **AMD's encoder tests ask its caps for ten bits** -- the highest profile the engine codes --
+  and skip their ten-bit HEVC legs where it has none: an older engine refuses the profile only
+  once it is set, which failed three tests there. **The system decoder's allocation test skips
+  HEVC** where the system has no decoder for it, as its clip test does.
+
+### Checked
+- On an older AMD laptop whose engine has no ten-bit HEVC and whose Windows has no HEVC
+  extension, the four tests that failed there pass, each naming the leg it skipped; on the
+  development machine every leg runs, ten-bit included, and passes.
+
 ## 2026-10-27 - W1.10: the client's Windows zip, and the software decoder in Windows CI
 
 ### Added
