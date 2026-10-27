@@ -491,7 +491,26 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   run, left to W1's gate: wireless Sony pads on Windows and the Linux pads through SDL.
 - [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
-  artifact, built and unpacked.
+  artifact, built and unpacked. *Built 2026-10-27; the artifact's own check waits for the
+  build workflow's first run.* Decided at its interview (the maintainer): **CI's Windows binaries
+  come from vcpkg** at the demo's baseline, kept by its binary cache -- the codec library 9.0.2
+  with its decoders alone, LGPL, and glslang's tools for the toolkit's shaders -- rather than
+  pinned downloads, since the LGPL builds published for Windows are rolling and pruned; **the zip
+  carries the static library** beside the DLL and its import library, the symbols a second
+  zip; **the unpacked zip is checked on a clean machine**, the AMD laptop, with a live run; and
+  **the client's zip alone**, the full SDK and the host's folder waiting for the host's
+  packaging. As built: one script makes the zip, here and in the workflow, and every check reads
+  the zip's own copies -- the describe program, on Windows now too, finds the DLL the client half
+  with no host entry point, and the demo started with no peer names the library linked into it
+  ([06 §3b](06-api.md)); CI's Windows job builds the pair, runs the clip tests that wait for one
+  and the library's own with it named, and builds and starts the demo against the client-only
+  static library. Checked here: each check shown failing once (a full library's bits, a probe
+  turned onto a client entry point, the demo of the full library, the pair's directory empty);
+  the clips, the software backend's allocations and a whole session through it on vcpkg's pair,
+  and the whole suite with it named; the toolkit built from a fresh checkout with vcpkg's
+  glslang 16.4; the unpacked zip linked from C both ways; and the zip as built here, unpacked on
+  the laptop, streaming from an established host by its own GPU and by the software decoder
+  with an LGPL pair beside it.
 - [x] **W1.11 the static library** (*2026-10-09*, ahead of W1.9, for an application that
   links the client library into its own): `lowlat.lib` from the release build, asked for by
   name, its system libraries named inside it ([06 §3b](06-api.md)). Checked by an ABI gate

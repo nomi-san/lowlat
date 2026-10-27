@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - W1.10: the client's Windows zip, and the software decoder in Windows CI
+
+### Added
+- **The client's Windows zip** ([impl-plan-windows.md](impl-plan-windows.md) W1.10,
+  [06 §3b](06-api.md)): the build workflow's Windows job makes
+  `lowlat-sdk-windows-x86_64-client-<commit>.zip` -- the client-only library as a DLL with its
+  import library and as a static library, the header, the demo with that static library linked
+  in, the three licences, the API and client documents, and `FEATURES` -- and its symbols as a
+  second zip, through `scripts/package-client-windows.ps1`, which makes the same zip on a
+  machine. Its checks read the zip's own copies: the DLL reports the client half and exports no
+  host entry point, and the demo started with no peer names the library linked into it.
+- **The software decoder in Windows CI**: an LGPL codec library built by vcpkg at the demo's
+  baseline, its decoders alone, kept by vcpkg's binary cache; the clip tests that wait for a pair
+  run on it, and the library's own tests with it named. The same vcpkg gives the toolkit's
+  shader compiler, so CI builds the demo from a fresh checkout and starts it.
+
+### Changed
+- **The describe program runs on Windows too**, and fails an object that reports no host half
+  but exports a host entry point.
+- **The demo's release build writes its symbols**, its code still optimised whole.
+
+### Checked
+- Here: each check shown failing once; the clips through vcpkg's pair (9.0.2) and the whole
+  Windows suite with it named; the toolkit built from a fresh checkout with its glslang; the
+  unpacked zip linked from C against each library form; and the zip unpacked on a laptop with
+  no build tools, its demo streaming from an established host on the laptop's own GPU and on the
+  software decoder with an LGPL pair beside it.
+
+### Open
+- The artifact from the build workflow's first run, unpacked and checked the same way.
+
 ## 2026-10-27 - A client build leaves the browser transport out
 
 ### Changed

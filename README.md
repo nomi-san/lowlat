@@ -7,7 +7,8 @@ Parsec clients connect to it on every platform they already run on, with no plug
 client, and no patched binary on the other end.
 
 It targets **Linux first**. Unattended operation, headless operation, and running as a system
-service are design inputs rather than afterthoughts.
+service are design inputs rather than afterthoughts. The same library carries **a client** as
+its other half, on Linux and Windows, which streams from established hosts and from its own.
 
 ## Status
 
@@ -33,19 +34,24 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
   ([examples/web-client](examples/web-client)).
 - **Packaged**: a system service that starts at boot, a helper and a tray that start with each
   login, a login tool, a Debian package, and an install script for distributions without one.
-- **A client**, the other half of the same library and header, on Linux: pictures decoded
-  through the open stack, the vendor's interface, or the machine's own codec library where
-  it is an LGPL build, and handed out as planes or as a device handle; sound, input, the
-  host's pointer, a DualShock 4 or a DualSense sent as its own reports. Measured for ten
-  minutes at a time against an established host at every phase
-  ([docs/10-client.md](docs/10-client.md)). **A relay attempt** reaches a host no punch
-  reaches, through a relay on the host's own machine behind the one port its router forwards,
+- **A client**, the other half of the same library and header, on Linux and Windows: pictures
+  decoded on Linux through the open stack, the vendor's interface, or the machine's own codec
+  library where it is an LGPL build; on Windows through the system's video decoding interface
+  on any GPU, NVIDIA's, AMD's and Intel's own decoders, the system's software decoder, or an
+  LGPL codec library the application names; handed out as planes or as a device handle -- a
+  descriptor on Linux, shared textures on Windows. Sound, input, the host's pointer, a
+  DualShock 4 or a DualSense sent as its own reports. Measured for ten minutes at a time
+  against an established host at every phase ([docs/10-client.md](docs/10-client.md),
+  [docs/impl-plan-windows.md](docs/impl-plan-windows.md) W1). **A relay attempt** reaches a
+  host no punch reaches, through a relay on the host's own machine behind the one port its
+  router forwards,
   with no part taken by the host; streamed that way for twelve minutes against an established
   host at 26 ms against 27 direct, and against this project's own host with a relay beside
   it. Where UDP is blocked the same attempt reaches its relay over TCP: ten minutes through a
   relay on the host's machine at the rate and round trip it has over UDP. The demo on the
   application toolkit, in C++20, is
-  [examples/client](examples/client).
+  [examples/client](examples/client), on both platforms; the build workflow ships it inside
+  the client library's tarball on Linux and its zip on Windows.
 
 What does not, yet:
 
@@ -100,12 +106,15 @@ tray, log out, and the stream keeps running.
 lowlat-common    clock, futex wait, SPSC rings, byteorder, sequence arithmetic, log
 lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, ICE, STUN, TURN
 lowlat-crypto    credentials, key material, and the only source of randomness
-lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport
+lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport, a
+                 feature the host turns on
 lowlat-sim       deterministic simulator and network namespace fixtures
 lowlat-drivers   the device interfaces reached at runtime, shared by encode and decode
 lowlat-capture   scanout capture, the desktop's layout, and the display's own modes
 lowlat-encode    NVENC, VA-API, Vulkan Video
-lowlat-decode    the H.264 and HEVC readers and the picture buffer; VA-API decode
+lowlat-decode    the H.264 and HEVC readers and the picture buffer; VA-API, the system's
+                 video decoding interface on Windows, NVIDIA's, AMD's and Intel's own
+                 decoders, the system's software decoder and the codec library
 lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
 lowlat-host      host orchestration
@@ -134,7 +143,7 @@ same signaling over a second pipe, a data channel on the attempt socket, and
 | Linux host | primary target |
 | Windows host | in progress: the host, its display driver and the service are built and checked; a package and the gates remain ([docs/impl-plan-windows.md](docs/impl-plan-windows.md)) |
 | Linux client | the client half of the library, and the demo; what decodes on which part is [docs/09-compatibility.md](docs/09-compatibility.md) section 7a |
-| Windows client | planned, after Linux |
+| Windows client | the client half of the library, and the demo, as a zip from the build workflow; its gate remains ([docs/impl-plan-windows.md](docs/impl-plan-windows.md) W1) |
 | Guests of a host | any platform with a stock Parsec client, or a browser; nothing to install |
 
 Capture backends and their privilege requirements are covered in
@@ -178,14 +187,15 @@ The library builds in two forms: whole, and with the client half alone
 says which one was loaded, and the header is the same for both. The client demo is
 `make -C examples/client`, which builds the application toolkit from its vendored tree
 first; that needs a C and a C++20 compiler, the shader compiler (`glslang-tools`) and the
-ALSA, PNG and JPEG headers. On Windows the library builds in both forms too, though its host
-half cannot stream there yet ([docs/impl-plan-windows.md](docs/impl-plan-windows.md) W2),
-and the demo builds with CMake from `examples/client`'s presets,
+ALSA, PNG and JPEG headers. On Windows the library builds in both forms too, and the demo
+builds with CMake from `examples/client`'s presets,
 clang-cl's with no developer environment or Visual Studio's compiler from its x64 one, the
 library linked in from its static build; the toolkit's one build needs that environment,
 with Khronos' `glslangValidator` on the path. The build workflow produces both libraries as
 tarballs, the client one with the demo inside, each with a `FEATURES` line read from its
-own copy.
+own copy; and on Windows the client library as a zip -- the DLL with its import library,
+the static library, the header and the demo -- with its symbols beside it, which
+`scripts/package-client-windows.ps1` makes on a machine as well.
 
 ## Installing
 
@@ -241,6 +251,7 @@ distributions ship it, offers VA-API no encoder at all.
 | [10-client.md](docs/10-client.md) | the client: receive path, frame queue, keyframe policy, decode, sound, input |
 | [impl-plan.md](docs/impl-plan.md) | phases and verification gates |
 | [impl-plan-client.md](docs/impl-plan-client.md) | the client's phases and gate |
+| [impl-plan-windows.md](docs/impl-plan-windows.md) | the Windows phases: the client, the host, its display and input drivers |
 | [changelog.md](docs/changelog.md) | working log, newest first |
 
 ## License
@@ -249,8 +260,9 @@ MIT. See [LICENSE](LICENSE).
 
 Third-party components retain their own licenses. No copyleft library is linked, and none is
 loaded but one: the encoders and the hardware decoders are reached through the drivers' own
-interfaces, and the client's software decoder is a libavcodec the machine already carries,
-used only when that library answers that it is an LGPL build. The check is made against the
+interfaces, and the client's software decoder is a libavcodec the machine already carries --
+on Windows one the application names or keeps beside itself -- used only when that library
+answers that it is an LGPL build. The check is made against the
 running process rather than the link graph. A library built from source with the
 `gpl-libavcodec` feature accepts a GPL libavcodec as well; that build is the builder's own
 combination, the GPL's terms apply to it, and it reports itself through `lowlat_features`.

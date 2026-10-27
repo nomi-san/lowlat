@@ -893,6 +893,16 @@ aside. Only the release build names its libraries: a debug build keeps every cra
 apart, and the one carrying the names is never one the linker takes. The decoders' runtimes are
 found at run time exactly as before, the codec library's pair included.
 
+**The client's Windows zip** (*2026-10-27*, W1.10), from the build workflow and the script it
+runs (`scripts/package-client-windows.ps1`): `lib\lowlat.dll` with `lib\lowlat.dll.lib`, and
+`lib\lowlat.lib`, all three the client half alone; `include\lowlat.h` as committed;
+`bin\client.exe`, the demo, with the static library linked into it and nothing beside it to
+load; the licences of the project, the application toolkit and SDL; this document and
+[10](10-client.md); and `FEATURES`, the version and feature bits read from the zip's own DLL.
+The DLL's and the demo's symbols are a second zip of the same run. No codec library is in it:
+the software decoder takes an LGPL pair named by `LOWLAT_FFMPEG_DIR` or kept beside the
+application.
+
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
 packet held -- 960 for a host at 20 ms, at most 8000; `count` is the room in frames going in
