@@ -30,9 +30,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   unpacked zip linked from C against each library form; and the zip unpacked on a laptop with
   no build tools, its demo streaming from an established host on the laptop's own GPU and on the
   software decoder with an LGPL pair beside it.
-
-### Open
-- The artifact from the build workflow's first run, unpacked and checked the same way.
+- The build workflow's own zip, unpacked the same way on that laptop and on an older AMD one
+  whose long-term-servicing Windows has no store: on each, the demo streamed from an established
+  host on the laptop's GPU and on the software decoder, its window naming the decoder in use.
+  Its demo and DLL import system libraries alone.
 
 ## 2026-10-27 - A client build leaves the browser transport out
 

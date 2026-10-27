@@ -43,7 +43,8 @@ readiness fixed beside it for all three kinds; its other checks owed at W4's gat
 2026-10-27:* W4's gate passed on the development machine and W4 closed; what the gate asked and
 was not run is named in its entry. *Amended 2026-10-27:* W1.9, the demo, built and closed with no
 menu, the maintainer's decision, its decoder created on the GPU it draws on; W1.10 and W1's gate
-are next.
+are next. *Amended 2026-10-27:* W1.10, the client's Windows zip, built and closed; W1's gate is
+next.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -489,10 +490,10 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   by handle on one GPU presenting to another's monitor, 0.5 KB a draw and the processor time
   climbing, to a full core in ten minutes at 120 draws a second -- open, below the toolkit. Not
   run, left to W1's gate: wireless Sony pads on Windows and the Linux pads through SDL.
-- [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
+- [x] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
-  artifact, built and unpacked. *Built 2026-10-27; the artifact's own check waits for the
-  build workflow's first run.* Decided at its interview (the maintainer): **CI's Windows binaries
+  artifact, built and unpacked. *Built 2026-10-27, and closed the same day on the build
+  workflow's own zip.* Decided at its interview (the maintainer): **CI's Windows binaries
   come from vcpkg** at the demo's baseline, kept by its binary cache -- the codec library 9.0.2
   with its decoders alone, LGPL, and glslang's tools for the toolkit's shaders -- rather than
   pinned downloads, since the LGPL builds published for Windows are rolling and pruned; **the zip
@@ -510,7 +511,9 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   and the whole suite with it named; the toolkit built from a fresh checkout with vcpkg's
   glslang 16.4; the unpacked zip linked from C both ways; and the zip as built here, unpacked on
   the laptop, streaming from an established host by its own GPU and by the software decoder
-  with an LGPL pair beside it.
+  with an LGPL pair beside it. Then the build workflow's own zip the same way, on that laptop and
+  on an older AMD one whose long-term-servicing Windows has no store, by each one's GPU and by
+  the software decoder, the demo's window naming the decoder each session ran on.
 - [x] **W1.11 the static library** (*2026-10-09*, ahead of W1.9, for an application that
   links the client library into its own): `lowlat.lib` from the release build, asked for by
   name, its system libraries named inside it ([06 §3b](06-api.md)). Checked by an ABI gate
@@ -2629,6 +2632,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-10-27: W1.10 built and closed: the client's Windows zip from the build workflow, and the
+  software decoder and the demo in Windows CI; the workflow's zip checked unpacked on two AMD
+  laptops.
 - 2026-10-27: W1.9 built and closed: no GPU menu, no check of the display's GPU and no placement
   rule (the maintainer's decision); the decoder created on the GPU the demo draws on; W1's
   decision and gate amended.
