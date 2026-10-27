@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - AMD's encoder among the decoders' clips
+
+### Added
+- **Three clips from AMD's own encoder**, H.264, HEVC and HEVC Main 10 at 150x146. Its HEVC
+  encoder pads the width to a multiple of 64 and the height to 16, so the picture the second
+  codec's cropped clip codes at 152x152 it codes at 192x160 -- an AMD host's shape, 1366 columns
+  coded at 1408. The clips had come from x264, x265 and NVIDIA's encoder alone.
+
+### Checked
+- On the development machine every decoder -- AMD's, the system's interface on three GPUs,
+  NVIDIA's, Intel's and the system's own -- decodes the three bit for bit, as every clip before
+  them. On the laptop with AMD's runtime 1.4.31, AMD's decoder, the system's interface and the
+  system's own decode every 4:2:0 clip bit for bit, ten-bit HEVC and the three included.
+
 ## 2026-10-27 - W4 closed: the gate on the development machine
 
 ### Checked
