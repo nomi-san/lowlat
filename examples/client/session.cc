@@ -132,9 +132,14 @@ void cycle_decoder()
 
 // The chord switches the pictures between planes and device handles at the
 // next one, with no keyframe; a decoder that hands out no handles refuses,
-// and nothing changes.
+// and nothing changes, as does a renderer that draws planes alone.
 void toggle_kind()
 {
+	if (!_handles && !config::draws_handles()) {
+		printf("demo: pictures as handles: %s draws planes only\n",
+			config::gfx_name(config::get().gfx));
+		return;
+	}
 	uint32_t kind = _handles ? LOWLAT_FRAME_PLANES : LOWLAT_FRAME_HANDLE;
 	lowlat_status s = lowlat_client_set_frame_kind(_client, kind);
 	printf("demo: pictures as %s: %s\n", kind == LOWLAT_FRAME_HANDLE ? "handles" : "planes",
@@ -554,6 +559,35 @@ bool create()
 		if (_row_count < sizeof _rows / sizeof _rows[0])
 			_rows[_row_count++] = row;
 	}
+#if defined(_WIN32)
+	// Nothing named: the decoder is created on the GPU the renderer is made
+	// on, where a picture of textures opens -- by handle always, by planes
+	// where a hardware decoder of the kind asked is listed there, so a
+	// switch to handles moves nothing; otherwise planes are the library's
+	// own choice. The kinds that decode on the processor name no GPU.
+	if (pick == NULL && knobs.device[0] == '\0' && knobs.gfx_adapter != 0
+		&& (info.decoder == LOWLAT_DECODER_AUTO || info.decoder == LOWLAT_DECODER_OPEN
+			|| info.decoder == LOWLAT_DECODER_VENDOR)) {
+		char gpu[sizeof info.device];
+		snprintf(gpu, sizeof gpu, "luid:%08x:%08x", (unsigned) (knobs.gfx_adapter >> 32),
+			(unsigned) knobs.gfx_adapter);
+		bool listed = false;
+		for (unsigned i = 0; i < _row_count; i++) {
+			const lowlat_decoder_info *r = &_rows[i];
+			bool hardware = r->decoder == LOWLAT_DECODER_OPEN || r->decoder == LOWLAT_DECODER_VENDOR;
+			if (hardware && (info.decoder == LOWLAT_DECODER_AUTO || r->decoder == info.decoder)
+				&& strcmp(r->device, gpu) == 0)
+				listed = true;
+		}
+		if (knobs.handles || listed) {
+			snprintf(info.device, sizeof info.device, "%s", gpu);
+			printf("demo: the decoder created on the renderer's GPU, %s\n", gpu);
+		} else {
+			printf("demo: no hardware decoder listed on the renderer's GPU, %s; the library chooses\n",
+				gpu);
+		}
+	}
+#endif
 	lowlat_status s = lowlat_client_create(&info, &_client);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no client: %s\n", lowlat_status_string(s));
@@ -566,7 +600,7 @@ bool create()
 		lowlat_client_get_status(_client, &st);
 		for (unsigned i = 0; i < _row_count; i++) {
 			if (_rows[i].decoder == st.backend
-				&& (knobs.device[0] == 0 || strcmp(_rows[i].device, knobs.device) == 0)) {
+				&& (info.device[0] == 0 || strcmp(_rows[i].device, info.device) == 0)) {
 				_row = i;
 				break;
 			}

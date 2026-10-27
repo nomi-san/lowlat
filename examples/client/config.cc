@@ -6,9 +6,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <dxgi.h>
+#endif
+
 namespace config {
 
 static Settings _settings;
+
+// The interface that imports the library's device handles.
+#if defined(_WIN32)
+static const MTY_GFX HANDLES_GFX = MTY_GFX_D3D11;
+#else
+static const MTY_GFX HANDLES_GFX = MTY_GFX_GL;
+#endif
 
 static const char *env_or(const char *name, const char *fallback)
 {
@@ -31,6 +44,33 @@ const char *gfx_name(MTY_GFX gfx)
 	return gfx == MTY_GFX_GL ? "gl" : gfx == MTY_GFX_VK ? "vk"
 		: gfx == MTY_GFX_D3D11 ? "d3d11" : gfx == MTY_GFX_D3D12 ? "d3d12" : "-";
 }
+
+bool draws_handles()
+{
+	return _settings.gfx == HANDLES_GFX;
+}
+
+#if defined(_WIN32)
+// The system's first adapter, which the toolkit's device is made on when
+// none is named: its identity, low part first, as the pictures name one;
+// zero for none, and for a software one, which decodes nothing.
+static uint64_t first_adapter()
+{
+	IDXGIFactory1 *factory = NULL;
+	if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **) &factory)))
+		return 0;
+	uint64_t luid = 0;
+	IDXGIAdapter1 *adapter = NULL;
+	if (SUCCEEDED(factory->EnumAdapters1(0, &adapter))) {
+		DXGI_ADAPTER_DESC1 desc;
+		if (SUCCEEDED(adapter->GetDesc1(&desc)) && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0)
+			luid = ((uint64_t) (uint32_t) desc.AdapterLuid.HighPart << 32) | desc.AdapterLuid.LowPart;
+		adapter->Release();
+	}
+	factory->Release();
+	return luid;
+}
+#endif
 
 int read()
 {
@@ -89,11 +129,14 @@ int read()
 	s.handles = getenv("LOWLAT_HANDLE") != NULL;
 #if defined(_WIN32)
 	// The renderer starts on the GPU the decoder is named on, where its
-	// shared textures open; unnamed, on the system's default, and it follows
-	// the first picture of textures if that is elsewhere.
+	// shared textures open; with none named, on the system's first adapter,
+	// named to the toolkit all the same, so the decoder can be created where
+	// it is drawn (session.cc).
 	unsigned luid_high = 0, luid_low = 0;
 	if (sscanf(s.device, "luid:%8x:%8x", &luid_high, &luid_low) == 2)
 		s.gfx_adapter = ((uint64_t) luid_high << 32) | luid_low;
+	else if (s.device[0] == '\0')
+		s.gfx_adapter = first_adapter();
 #endif
 #if defined(_WIN32)
 	const char *gfx = env_or("LOWLAT_GFX", "d3d11");
@@ -105,12 +148,11 @@ int read()
 		fprintf(stderr, "demo: LOWLAT_GFX names no graphics interface: %s\n", gfx);
 		return 2;
 	}
-#if defined(__linux__)
-	if (s.handles && s.gfx != MTY_GFX_GL) {
-		fprintf(stderr, "demo: device handles are drawn through GL only; LOWLAT_GFX=vk takes planes\n");
+	if (s.handles && !draws_handles()) {
+		fprintf(stderr, "demo: device handles are drawn through %s only; LOWLAT_GFX=%s takes planes\n",
+			gfx_name(HANDLES_GFX), gfx);
 		return 2;
 	}
-#endif
 	// Without the refresh the capped loop, which does not wait for a
 	// picture, would be paced by nothing at all.
 	s.vsync = strcmp(env_or("LOWLAT_VSYNC", "1"), "0") != 0;

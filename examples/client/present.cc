@@ -44,6 +44,13 @@ static double _shown_at_ms;
 // shared texture opens only on its own GPU.
 static uint64_t _gfx_adapter;
 #endif
+// Whether the picture on the screen is in the renderer's textures already,
+// and when it was last loaded into them. A repeat draws those again with no
+// upload; at least once a second it is loaded all the same, since a context
+// the toolkit makes again by itself, after its device was lost, starts with
+// none.
+static bool _loaded;
+static double _loaded_ms;
 
 static std::atomic_uint _width;
 static std::atomic_uint _height;
@@ -112,6 +119,14 @@ static void *present_loop(void *opaque) noexcept
 	}
 	uint32_t refresh = MTY_WindowGetRefreshRate(toolkit, window);
 	_refresh_ms = 1000.0 / (double) (refresh > 0 ? refresh : 60);
+#if defined(_WIN32)
+	if (knobs.gfx == MTY_GFX_D3D11 && _gfx_adapter != 0)
+		printf("demo: drawing on luid:%08x:%08x\n", (unsigned) (_gfx_adapter >> 32),
+			(unsigned) _gfx_adapter);
+	else
+		printf("demo: drawing through %s on the system's default adapter\n",
+			config::gfx_name(knobs.gfx));
+#endif
 #if defined(__linux__)
 	// A handle is only drawable on a context that imports one: asked once,
 	// before any picture, rather than found out per frame. Direct3D 11 opens
@@ -154,10 +169,13 @@ static void *present_loop(void *opaque) noexcept
 				_last_sequence = fresh.sequence;
 				_shown = fresh;
 				_showing = true;
+				_loaded = false;
 #if defined(_WIN32)
-				// A shared texture opens only on its own GPU: pictures from
-				// another one -- a decoder moved, a device lost and found
-				// again under a new identity -- remake the context there.
+				// A shared texture opens only on its own GPU, and the decoder
+				// starts on the renderer's (session.cc): pictures from another
+				// one -- the decoder moved by the chord or by a row picked, a
+				// device lost and found again under a new identity -- remake
+				// the context there.
 				if (fresh.kind == LOWLAT_FRAME_HANDLE && fresh.adapter != 0
 					&& fresh.adapter != _gfx_adapter) {
 					_gfx_adapter = fresh.adapter;
@@ -190,14 +208,18 @@ static void *present_loop(void *opaque) noexcept
 
 		// Drawn every iteration, new or not: after a new picture, or after
 		// a wait that brought none, so a still stream's window is drawn too.
+		// A repeat names no format, which draws the renderer's textures as
+		// they are; a new picture, or one not loaded for a second, is loaded.
 		if (_showing) {
 			const lowlat_frame *f = &_shown;
 			bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
 			bool full = f->format == LOWLAT_FORMAT_YUV444 || f->format == LOWLAT_FORMAT_YUV444_16;
+			bool load = !_loaded || t - _loaded_ms >= 1000.0;
 			uint32_t sample = deep ? 2 : 1;
 			MTY_RenderDesc desc;
 			memset(&desc, 0, sizeof desc);
-			desc.format = full ? (deep ? MTY_COLOR_FORMAT_3PLANES_16 : MTY_COLOR_FORMAT_3PLANES)
+			desc.format = !load ? MTY_COLOR_FORMAT_UNKNOWN
+				: full ? (deep ? MTY_COLOR_FORMAT_3PLANES_16 : MTY_COLOR_FORMAT_3PLANES)
 				: (deep ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
 			desc.chroma = full ? MTY_CHROMA_444 : MTY_CHROMA_420;
 			desc.filter = MTY_FILTER_LINEAR;
@@ -251,6 +273,10 @@ static void *present_loop(void *opaque) noexcept
 			MTY_WindowDrawQuad(toolkit, window,
 				f->kind == LOWLAT_FRAME_HANDLE ? (const void *) &hw : (const void *) f->planes[0].data,
 				&desc);
+			if (load) {
+				_loaded = true;
+				_loaded_ms = t;
+			}
 		} else {
 			MTY_WindowClear(toolkit, window, 0.0f, 0.0f, 0.0f, 1.0f);
 		}

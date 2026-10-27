@@ -14,8 +14,13 @@
 // exports them (a row saying "handles") can be opened for that. On Linux
 // only GL draws them; `LOWLAT_GFX=vk` draws planes through Vulkan instead of
 // GL. On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by
-// name (`d3d12`, `vk`), and handles through Direct3D 11 alone, its device
-// made on the GPU the pictures say they are on.
+// name (`d3d12`, `vk`), and handles through Direct3D 11 alone. Its device
+// is made on the GPU the decoder is named on, else on the system's first
+// adapter, and with nothing named the decoder is created there too -- by
+// handle always, by planes where a hardware decoder is listed there -- so a
+// picture of textures opens where it is drawn and switching to handles moves
+// nothing; pictures moved to another GPU by the chord or a row, or found
+// again under a new identity after a device was lost, bring it after them.
 // `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
 // the display's next refresh: the lowest latency, torn where a picture
 // lands mid-scan.
@@ -101,9 +106,10 @@ struct Settings {
 	// device handles, or Vulkan, for planes; on Windows Direct3D 11, which
 	// opens the library's shared textures, or 12 or Vulkan, for planes.
 	MTY_GFX gfx;
-	// The GPU the Direct3D 11 context starts on, as the decoder's device names
-	// it (the adapter's identity, low part first), zero for the system's
-	// default.
+	// The GPU the Direct3D 11 context starts on (the adapter's identity, low
+	// part first): the one the decoder's device names, else the system's
+	// first adapter, which the toolkit's default device is made on; zero
+	// where neither is known.
 	uint64_t gfx_adapter;
 	// Whether a present waits for the display's refresh.
 	bool vsync;
@@ -157,5 +163,8 @@ const Settings &get();
 
 // The graphics interface by the name the knob takes; "-" for none.
 const char *gfx_name(MTY_GFX gfx);
+// Whether the interface drawn through imports device handles: GL on Linux,
+// Direct3D 11 on Windows; the others draw planes alone.
+bool draws_handles();
 
 }
