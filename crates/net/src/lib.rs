@@ -29,6 +29,8 @@
 // The host candidates wait on the platform's interface walk.
 #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub mod addrs;
+// A host's browser guests; the connecting side never speaks it.
+#[cfg(feature = "web")]
 pub mod web;
 
 #[cfg(target_os = "linux")]

@@ -11,8 +11,9 @@ authors.workspace = true
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
-# The namespace fixtures run the real shell, not a loop that stands in for one.
-lowlat-net.workspace = true
+# The namespace fixtures run the real shell, not a loop that stands in for one,
+# and the browser pair runs its real transport.
+lowlat-net = { workspace = true, features = ["web"] }
 # And the real mapper, against a mapping daemon in a fixture's gateway.
 lowlat-portmap.workspace = true
 # A browser session under the simulator wants an identity for each end.

@@ -8,18 +8,25 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# The browser transport (`web`): its record layer, the association over it and
+# the certificate a session presents. A host takes browser guests through it;
+# the connecting side never speaks it, so a client-only build leaves all three
+# out.
+web = ["dep:dimpl", "dep:dcsctp", "dep:lowlat-crypto"]
+
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
-lowlat-crypto.workspace = true
+lowlat-crypto = { workspace = true, optional = true }
 
 # The browser transport's two state machines, both sans-IO: fed bytes and
 # told the time by the shell, owning no socket, thread or clock, which is what
 # lets a browser session run under the same fake clock as a native one. The
 # record layer takes the pure-Rust provider; its default provider is a C build
 # and its certificate feature drags that in, so the certificate is ours.
-dimpl = { version = "0.7", default-features = false, features = ["rust-crypto"] }
-dcsctp = "0.1"
+dimpl = { version = "0.7", default-features = false, features = ["rust-crypto"], optional = true }
+dcsctp = { version = "0.1", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
@@ -42,6 +49,20 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 lowlat-common = { workspace = true, features = ["alloc-counter"] }
+
+# The browser transport's own tests; a workspace build has it on through the
+# host.
+[[test]]
+name = "web_bench"
+required-features = ["web"]
+
+[[test]]
+name = "web_openssl"
+required-features = ["web"]
+
+[[test]]
+name = "web_shells"
+required-features = ["web"]
 
 # The churn test's counts on Windows: open handles, the process's threads and
 # its working set, where Linux reads the same from /proc.

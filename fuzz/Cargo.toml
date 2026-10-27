@@ -17,7 +17,7 @@ lowlat-core = { path = "../crates/core" }
 lowlat-audio = { path = "../crates/audio" }
 # The browser pipe: its record layer and its association parse what a peer
 # sends, and both are reached through the session that owns them.
-lowlat-net = { path = "../crates/net" }
+lowlat-net = { path = "../crates/net", features = ["web"] }
 lowlat-crypto = { path = "../crates/crypto" }
 # The video readers: everything a host's bitstream says is read here before
 # the device sees any of it.
