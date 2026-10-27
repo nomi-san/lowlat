@@ -159,13 +159,79 @@ jobs:
       - name: Driver kit
         run: python scripts/fetch-wdk.py
 
+      # vcpkg at the baseline both manifests name, so its ports are theirs, with
+      # the packages it builds kept between runs.
+      - name: vcpkg
+        run: |
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          git -C $vcpkg fetch --quiet origin 19780d9cdf84d0944cf9a318666703b89ab6629c
+          git -C $vcpkg checkout --quiet 19780d9cdf84d0944cf9a318666703b89ab6629c
+          & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+          "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$env:RUNNER_TEMP\vcpkg-cache,readwrite" >> $env:GITHUB_ENV
+
+      - name: vcpkg's packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
+
+      # The runner has no GPU and no codec library: an LGPL pair built by vcpkg,
+      # its decoders alone, is what the software backend's clips decode through,
+      # and glslang's tools are what the demo's toolkit compiles its shaders with.
+      - name: The LGPL pair and the shader compiler
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --x-manifest-root=.github/windows-tools `
+            "--x-install-root=$env:RUNNER_TEMP\windows-tools" --triplet x64-windows --disable-metrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "LOWLAT_FFMPEG_DIR=$env:RUNNER_TEMP\windows-tools\x64-windows\bin" >> $env:GITHUB_ENV
+          "$env:RUNNER_TEMP\windows-tools\x64-windows\tools\glslang" >> $env:GITHUB_PATH
+
       - name: Clippy
         run: cargo clippy --workspace --lib --bins --tests -- -D warnings
 
       # Every crate runs past a failure in another: a timing test's flake on
       # the shared runner once stopped the job before the library's own gates.
+      # The pair named above opens the library's tests that wait for one.
       - name: Tests
         run: cargo test --workspace --lib --bins --tests --no-fail-fast
+
+      # The clips the software backend decodes, which wait for a pair and so
+      # run only where one is named; each target a step, so none hides another.
+      - name: The clips through the pair
+        run: cargo test -p lowlat-decode --test software_decode -- --ignored
+
+      - name: The software backend allocates nothing per unit
+        run: cargo test -p lowlat-decode --test software_no_alloc -- --ignored
+
+      - name: A session through the software backend
+        run: cargo test -p lowlat-client --test hermetic the_session_decodes_the_clip_through_the_software_backend -- --ignored
+
+      # The demo as the build workflow packages it, linked from the client-only
+      # static library: the one thing that links the client the way an
+      # application does, and the one build of the toolkit, which a fresh
+      # checkout makes. Started with no peer, it names that library and leaves.
+      - name: The demo against the client-only static library
+        run: |
+          cargo rustc --release -p lowlat-sdk --no-default-features --features client --crate-type staticlib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item target\release\lowlat.lib "$env:RUNNER_TEMP\lowlat-client.lib"
+          . scripts\vs-env.ps1
+          Push-Location examples\client
+          cmake --preset win-x64-clang-release "-DLOWLAT_LIB=$env:RUNNER_TEMP\lowlat-client.lib"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset win-x64-clang-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          Remove-Item Env:\LOWLAT_PEER, Env:\LOWLAT_SESSION -ErrorAction SilentlyContinue
+          $out = & examples\client\build\win-x64-clang-release\client.exe 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          $out
+          if ($code -ne 2) { "the demo left with $code"; exit 1 }
+          if ($out -notmatch 'features=0x2\b') { "the demo carries more than the client half"; exit 1 }
+          exit 0
 
       # The drivers as they are packaged: release builds, linked.
       - name: The display driver

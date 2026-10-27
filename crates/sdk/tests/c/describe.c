@@ -5,9 +5,11 @@
  * the two builds of the library land on the same file, and the tarball's own
  * copy is the only thing worth asking. The version is checked against the
  * header this was compiled with, which is the header that ships beside it.
+ * An object that reports no host half must export no host entry point.
  *
  *   describe lib/liblowlat.so       prints "abi 0.13 features 0x3"
  *   describe lib/liblowlat.so 0x2   the same, and fails if the bits differ
+ *   describe lib\lowlat.dll 0x2     on Windows
  *
  * The gate's harness is not this program: it names an object without the
  * host half and stops, by design.
@@ -15,16 +17,39 @@
 
 #include "lowlat.h"
 
-#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* dlsym returns an object pointer and a function pointer is needed; copying
- * the bytes is the one spelling that is not a constraint violation. */
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef HMODULE library;
+static library open_library(const char *path) { return LoadLibraryA(path); }
+static void *find(library lib, const char *name)
+{
+    FARPROC raw = GetProcAddress(lib, name);
+    void *out = NULL;
+    memcpy(&out, &raw, sizeof out);
+    return out;
+}
+static void say_open_failed(void)
+{
+    fprintf(stderr, "describe: LoadLibrary failed: error %lu\n", (unsigned long) GetLastError());
+}
+#else
+#include <dlfcn.h>
+typedef void *library;
+static library open_library(const char *path) { return dlopen(path, RTLD_NOW); }
+static void *find(library lib, const char *name) { return dlsym(lib, name); }
+static void say_open_failed(void) { fprintf(stderr, "describe: dlopen failed: %s\n", dlerror()); }
+#endif
+
+/* The lookup returns an object pointer and a function pointer is needed;
+ * copying the bytes is the one spelling that is not a constraint violation. */
 #define RESOLVE(fn, lib, name)                                                 \
     do {                                                                       \
-        void *raw = dlsym((lib), (name));                                      \
+        void *raw = find((lib), (name));                                       \
         if (raw == NULL) {                                                     \
             fprintf(stderr, "describe: %s is not exported\n", (name));         \
             return 2;                                                          \
@@ -39,9 +64,9 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    void *lib = dlopen(argv[1], RTLD_NOW);
+    library lib = open_library(argv[1]);
     if (lib == NULL) {
-        fprintf(stderr, "describe: dlopen failed: %s\n", dlerror());
+        say_open_failed();
         return 2;
     }
 
@@ -63,6 +88,10 @@ int main(int argc, char **argv)
     if (argc == 3 && bits != (uint32_t) strtoul(argv[2], NULL, 0)) {
         fprintf(stderr, "describe: the object reports features 0x%x, expected %s\n",
                 (unsigned) bits, argv[2]);
+        return 1;
+    }
+    if ((bits & LOWLAT_FEATURE_HOST) == 0 && find(lib, "lowlat_host_create") != NULL) {
+        fprintf(stderr, "describe: the object reports no host half and exports lowlat_host_create\n");
         return 1;
     }
     return 0;

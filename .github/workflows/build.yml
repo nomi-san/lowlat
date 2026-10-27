@@ -4,8 +4,10 @@ run-name: "build: ${{ inputs.name || github.ref_name }}"
 # Started by hand: a release build of the daemon, the Debian package, and the
 # SDK in its two forms -- the full library, and the client-only library with
 # the demo inside its tarball -- each the shared library with its header in
-# the usual lib/ and include/ layout, kept as artifacts. Nothing here runs on
-# a push; ci.yml is what every push gets.
+# the usual lib/ and include/ layout; and on Windows the client's zip, the
+# library as a DLL with its import library and as a static one, the demo
+# inside, with its symbols beside it. All kept as artifacts. Nothing here runs
+# on a push; ci.yml is what every push gets.
 on:
   workflow_dispatch:
     inputs:
@@ -172,4 +174,72 @@ jobs:
         with:
           name: lowlat-sdk-linux-x86_64-client-${{ steps.sha.outputs.short }}
           path: lowlat-sdk-linux-x86_64-client-${{ steps.sha.outputs.short }}.tar.gz
+          if-no-files-found: error
+
+  # The client's Windows zip, made by the script a machine runs by hand too
+  # (scripts/package-client-windows.ps1), which checks the zip's own copies:
+  # the DLL the client half with no host entry point, the demo started with no
+  # peer naming the library linked into it. The toolkit's one build compiles
+  # its shaders with glslang's tools from vcpkg, at the demo's baseline.
+  windows:
+    name: Windows client zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Short commit
+        id: sha
+        shell: bash
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: vcpkg
+        run: |
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          git -C $vcpkg fetch --quiet origin 19780d9cdf84d0944cf9a318666703b89ab6629c
+          git -C $vcpkg checkout --quiet 19780d9cdf84d0944cf9a318666703b89ab6629c
+          & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
+          "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$env:RUNNER_TEMP\vcpkg-cache,readwrite" >> $env:GITHUB_ENV
+
+      - name: vcpkg's packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: vcpkg-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
+
+      - name: The shader compiler
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --x-manifest-root=.github/windows-tools `
+            "--x-install-root=$env:RUNNER_TEMP\windows-tools" --triplet x64-windows --disable-metrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$env:RUNNER_TEMP\windows-tools\x64-windows\tools\glslang" >> $env:GITHUB_PATH
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Package
+        run: |
+          scripts\package-client-windows.ps1 -OutDir "$env:RUNNER_TEMP\dist" `
+            -Name lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}
+
+      - name: Upload the client zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}
+          path: ${{ runner.temp }}/dist/lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}.zip
+          if-no-files-found: error
+
+      - name: Upload its symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}-symbols
+          path: ${{ runner.temp }}/dist/lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}-symbols.zip
           if-no-files-found: error

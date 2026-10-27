@@ -95,6 +95,10 @@ target_compile_options(client PRIVATE /W4 /WX /wd4100)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(client PRIVATE -Wno-missing-designated-field-initializers)
 endif()
+# Release writes its symbols beside it, for a crash dump read against the demo as shipped: the
+# debug information in the objects and a PDB from the link, which still drops unreferenced code.
+target_compile_options(client PRIVATE $<$<CONFIG:Release>:/Z7>)
+target_link_options(client PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
 
 # SDL names what it calls into itself; the rest is what the toolkit calls into on this platform.
 target_link_libraries(client PRIVATE lowlat matoya SDL3::SDL3
