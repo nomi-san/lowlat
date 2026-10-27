@@ -41,7 +41,9 @@ the installed driver before the host's side is built, and the step amended. *Ame
 2026-10-26:* W4.3, the report pads, built and checked on the machine and live; a device's
 readiness fixed beside it for all three kinds; its other checks owed at W4's gate. *Amended
 2026-10-27:* W4's gate passed on the development machine and W4 closed; what the gate asked and
-was not run is named in its entry.
+was not run is named in its entry. *Amended 2026-10-27:* W1.9, the demo, built and closed with no
+menu, the maintainer's decision, its decoder created on the GPU it draws on; W1.10 and W1's gate
+are next.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -121,7 +123,13 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   Linux. A renderer on another GPU than the display pays a copy of every presented picture
   across the bus and loses the direct flip, so the application keeps its renderer on the
   display's GPU and the library follows it; the demo names the GPU the toolkit makes its
-  device on, and says so when that is not the display's.
+  device on, and says so when that is not the display's. (*Amended 2026-10-27, at W1.9*: the
+  demo names it and looks no further -- it draws on the GPU its decoder is named on, else on the
+  system's first adapter, and with nothing named creates its decoder there, by handle always and
+  by planes where a hardware decoder is listed there, so a picture of textures opens where it is
+  drawn and switching to handles moves nothing. Which GPU drives the window's monitor is not
+  read: the demo is a command-line tool with chords, and offering a choice of GPU is an
+  application's own interface's, the maintainer's decision.)
 - **A picture of the handle kind is one shared texture per plane**, in the legacy form a
   renderer in the same process opens by its handle: a luma and a two-channel chroma texture
   at eight and ten bits, three single-channel textures for full chroma. Every frame says
@@ -176,7 +184,9 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   links the library from its static build, and a release build optimises the demo's own
   code at the link. The GNU makefile stays for Linux.)
 - **The demo's toolkit gains two things**: a choice of the GPU its device is made on, for a
-  menu, and a pad's feature reports read and written by the toolkit's own controller id. A
+  menu (*amended 2026-10-27, at W1.9*: no menu, the choice being the knob's and the decoder
+  chord's, as above), and a pad's feature reports read and written by the toolkit's own
+  controller id. A
   Sony pad's input reports come from the toolkit's events and its output reports go out
   through the toolkit, so the demo never opens a pad beside it. (*Amended 2026-10-13, at
   W1.9*: the demo's pads and sound are SDL 3's instead, on both platforms -- its gamepads for
@@ -429,7 +439,7 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   a second host in 3.6 ms. On a 2015 dual-core laptop without the HEVC extension, H.264 alone,
   every H.264 clip bit for bit and a 1440p stream kept up with at 21 ms a picture, HEVC asked
   for masked to H.264 ([10 §5.2](10-client.md)).
-- [ ] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
+- [x] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
   of the display's GPU, and from it the renderer's placement: handles when the decoding GPU
   drives the display, planes drawn on the display's GPU when it does not. Checked by both Sony
   pads against an established host. (*Corrected at W1.4*: the toolkit's device made on the
@@ -459,6 +469,26 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   both flat with the window's monitor on the same GPU. The 0.5 KB a draw left comes of drawing
   from shared textures while presenting to another GPU's monitor -- none by planes there, none
   on one GPU -- so the placement above leaves it, and the ten minutes flat are owed by that.)
+  *Built and closed 2026-10-27.* Decided at its interview (the maintainer): **no GPU menu, no
+  check of the display's GPU and no placement taken from it** -- the demo is a command-line tool
+  with chords, and offering a choice of GPU is an application's own interface's -- and the
+  zero-copy route follows the renderer's GPU; W1's decision and gate amended. As built: the
+  renderer is on the GPU the decoder is named on, else on the system's first adapter, named to
+  the toolkit; with nothing named the decoder is created there, by handle always and by planes
+  where a hardware decoder is listed there, so switching kinds moves nothing; pictures moved to
+  another GPU by the decoder chord or a row, or found again after a lost device, bring the
+  renderer after them, as W1.4 built it. A repeated picture is drawn from the textures it is in,
+  and loaded again at least once a second; handles through Direct3D 12 or Vulkan are refused, at
+  start and at the kind chord. Checked against an established host: both kinds with nothing
+  named on the first adapter, the kind chord with no remake; each GPU named; the decoder chord's
+  walk by handle following every move; the AMD GPU's driver restarted under handles, drawn at
+  full rate two seconds after; a repeat captured from the screen whole; by planes the 3D
+  engine's share halved at forty repeats a second; ten minutes flat by planes and by handle on
+  the GPU that drives the window's monitor. A per-user GPU preference reorders the high-performance query
+  too, so it cannot stand in for a laptop whose two orders differ. Recorded rather than passed:
+  by handle on one GPU presenting to another's monitor, 0.5 KB a draw and the processor time
+  climbing, to a full core in ten minutes at 120 draws a second -- open, below the toolkit. Not
+  run, left to W1's gate: wireless Sony pads on Windows and the Linux pads through SDL.
 - [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.
@@ -477,14 +507,20 @@ established hosts:
   both codecs, against a host that sends neither ten-bit nor full chroma;
 - ten-bit and full chroma, both kinds, on every decoder that decodes them, against a host
   that sends both, and the full range;
-- once each, mid-session: a GPU change from the demo's menu, planes to handles and back, a
-  decoder change, and the device lost by restarting it;
+- once each, mid-session: a GPU change from the demo's menu (*amended 2026-10-27, at W1.9*: by
+  the decoder chord, the demo having no menu), planes to handles and back, a decoder change, and
+  the device lost by restarting it;
 - recorded rather than passed or failed: how long a released slot stays unread on the
   integrated GPU, both GPU placements' presentation mode and time to the screen, the
   toolkit's open of a texture on every draw, whether each driver lets a shader read the
-  decoder's output, and full chroma on each GPU;
+  decoder's output, and full chroma on each GPU (*amended 2026-10-27, at W1.9*: the demo
+  chooses no placement, so the presentation is recorded by handle on the decoding GPU's own
+  monitor and by handle presented to another GPU's; the toolkit opens a picture's textures once
+  per allocation since W1.9);
 - both CI jobs, and one Gate C run on Linux before the phase closes, since the slots and the
-  queue are shared with it.
+  queue are shared with it (*amended 2026-10-27, at W1.9*: with both Sony pads through SDL's HID
+  layer there, and a wireless Sony pad on Windows where one is paired, which W1.9 left to the
+  gate).
 
 ## Phase W2 - The host
 
@@ -2574,6 +2610,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-10-27: W1.9 built and closed: no GPU menu, no check of the display's GPU and no placement
+  rule (the maintainer's decision); the decoder created on the GPU the demo draws on; W1's
+  decision and gate amended.
 - 2026-10-27: W4's gate passed; W4 closed.
 
 - 2026-10-26: W1.6 amended again: ten-bit HEVC on AMD's ten-bit component, the other

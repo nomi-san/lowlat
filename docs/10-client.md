@@ -383,7 +383,13 @@ renderer cannot open. (*Measured 2026-09-28*, W1.4: a renderer moved to the Inte
 open its textures, the display being on the NVIDIA, took 5.5 ms from the acquire to the
 screen against 1.4 for planes drawn on the display's GPU, and 9.7 ms from the arrival
 against 5.4 end to end. So a decoder on a GPU that does not drive the display is better
-served by planes than by moving the renderer to it.) **A GPU is named by its identity**
+served by planes than by moving the renderer to it.) (*2026-10-27*, W1.9: the example client
+names it so: it draws on the GPU its decoder is named on, else on the system's first adapter,
+and with nothing named creates its decoder there -- by handle always, by planes where a hardware
+decoder is listed there -- so its textures open where they are drawn. Pictures moved to another
+GPU, by its decoder chord or a lost device found again under a new identity, bring its renderer
+after them. Which GPU drives its window's monitor it does not read; that choice is an
+application's own interface's.) **A GPU is named by its identity**
 (*built 2026-09-27*, W1.3), the one the system gives it for the boot, spelled `luid:HIGH:LOW`
 in the listing and taken back as the device; it changes when the GPU is reset or its driver
 replaced, so an application names it again from the listing then and never keeps it. The
@@ -466,7 +472,11 @@ planes take. The presentation's own mode moves both kinds by about a millisecond
 runs that stayed in the slower one took 4.5 ms by handle, so a comparison across runs says
 less than one within a session. Ten-bit and full chroma at both depths arrive by handle on
 the two GPUs that decode them. On the integrated GPU the handle route took more processor
-time than planes, 13 to 15 % of a core against 4 to 6, not yet explained.
+time than planes, 13 to 15 % of a core against 4 to 6, not yet explained. (*Explained
+2026-09-30, W1.6, and fixed 2026-10-27*: the example client's toolkit opened every plane's
+texture again at every draw, and drawing on one GPU while presenting to another's monitor grew
+the process with every draw, its processor time climbing with it -- the figure was the climb's
+average. It opens a picture's textures once now.)
 
 ## §5 The decoder, and when a client asks for a keyframe
 

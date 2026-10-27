@@ -3,6 +3,82 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - A client build leaves the browser transport out
+
+### Changed
+- **The browser transport is the IO shell crate's `web` feature**
+  ([00, the crate map](00-overview.md#crate-map)): its record layer, the association over it and
+  the certificate a session presents. The host's crate turns it on, as do the simulator and the
+  fuzz targets that drive it. A client never speaks it, and a client-only build of the library
+  resolved both state machines and 33 crates beneath them -- `chacha20poly1305`, `x25519-dalek`,
+  `p384`, `hkdf` and a second `rand` among them -- for nothing: it now resolves 100 crates where
+  it resolved 135. The transport's own tests ask for the feature, which a workspace build has
+  through the host.
+
+### Checked
+- Both platforms' lints and tests as before, the transport's tests among them in a workspace
+  build, the net crate linted alone without the feature, and a client-only build's graph naming
+  neither state machine; both of the transport's fuzz targets build.
+
+## 2026-10-27 - W1.9 closed: the demo decodes where it draws
+
+### Decided
+- **The demo offers no menu and reads no monitor** ([impl-plan-windows.md](impl-plan-windows.md)
+  W1.9): it is a command-line tool driven by its knobs and chords, and offering a choice of GPU
+  is an application's own interface's. W1's GPU menu, the check of which GPU drives the window's
+  monitor and a placement rule taken from it are dropped; W1's decision and gate are amended.
+
+### Changed
+- **The demo creates its decoder on the GPU it draws on** ([10 §4.2](10-client.md)): on Windows
+  it draws on the GPU the decoder is named on, else on the system's first adapter, which it now
+  names to the toolkit itself, and with nothing named it creates the decoder there -- by handle
+  always, by planes where a hardware decoder is listed there. Until now the library settled on
+  its own first GPU and the renderer moved to whichever GPU the first picture of textures came
+  from, so where the two orders differ -- a laptop whose panel is on its integrated GPU -- a
+  session by handle took the renderer off the panel's GPU and presented across. Switching kinds
+  now moves nothing. Pictures moved to another GPU by the decoder chord or a row picked there,
+  or found again under a new identity after a device was lost, still bring the renderer after
+  them.
+- **A picture drawn again is not uploaded again.** When no new picture comes within its wait the
+  demo draws the one on screen from the textures it is already in, and loads it all the same at
+  least once a second, since the toolkit makes its renderer again, textures and all, whenever
+  its device changes. By planes the RTX 5060's 3D engine went from 4.1 and 4.4 % of its time to
+  2.0 % with about forty repeats a second, in one host's stream back to back, the new pictures'
+  arrival to present unchanged at 2.8 ms.
+
+### Fixed
+- **Handles through Direct3D 12 or Vulkan on Windows**: such a session handed the renderer the
+  textures' handles as if they were rows of planes. It is refused at start now, as on Linux, and
+  the kind chord refuses handles where the renderer draws planes alone, on both platforms.
+
+### Checked
+- On the development machine against an established host: with nothing named, the decoder and
+  the renderer on the system's first adapter by either kind, the kind chord switching both ways
+  with no keyframe and no remake; each of the three GPUs named, both kinds, drawn on it; the
+  decoder chord by handle walking every row, the renderer following each move to another GPU;
+  the AMD GPU's driver restarted under handles, the device found again under a new identity half
+  a second later and the stream drawn at full rate again two seconds after the restart; the
+  kind chord under Direct3D 12 refused; a repeated picture captured from the screen whole. The
+  demo builds at `/W4 /WX` with all four presets and on Linux from a clean clone.
+- **Ten minutes flat** by planes and by handle on the GPU that drives the window's monitor:
+  private bytes, handles and processor time level throughout, the host at 120 pictures a second.
+
+### Measured
+- A per-user GPU preference set to power saving reorders every adapter query the process makes,
+  the high-performance one included, so under it the library's first GPU and the system's first
+  adapter agree and the two builds place alike.
+
+### Open
+- **By handle on one GPU presenting to another's monitor the processor time climbs**: the AMD GPU
+  drawing to the RTX 5060's monitor at 120 draws a second grew 58 KB a second, the 0.5 KB a draw
+  left on 2026-10-27, and the demo's processor time rose from 29 % of a core at two and a half
+  minutes to 101 % at ten. It is reached only when the GPU named for the decoder drives none of
+  the window's monitors; below the toolkit, not pursued here.
+
+### Not run
+- Wireless Sony pads on Windows and the Linux pads through SDL, left to W1's gate; the pads'
+  smoke, no pad being on the machine and no pad code touched.
+
 ## 2026-10-27 - The demo opens a picture's textures once
 
 ### Fixed

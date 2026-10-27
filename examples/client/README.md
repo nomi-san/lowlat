@@ -50,14 +50,17 @@ developer environment, with `fxc`
 path. The C and C++ runtimes are linked statically throughout. The library
 there carries the client half; for its software decoder `LOWLAT_FFMPEG_DIR`
 names the directory of an LGPL FFmpeg build's DLLs, or the pair sits beside
-`client.exe`. Pictures are drawn as planes through Direct3D 11, or 12 or
+`client.exe`. Pictures are drawn through Direct3D 11, on the GPU the decoder
+is named on, else on the system's first adapter, or as planes through 12 or
 Vulkan with `LOWLAT_GFX=d3d12` or `vk`. The first run asks the firewall to let
 the demo receive, since the session arrives over UDP.
 
 The token is what `lowlat-login` produces; the peer id is the host's, as its
-service prints it. `LOWLAT_DEVICE` names a render node for the decoder (the
-first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open`,
-`vendor` or `none`, and `LOWLAT_SERVER` names the signaling service. The
+service prints it. `LOWLAT_DEVICE` names a render node for the decoder, or on
+Windows a GPU's identity as the table prints it, `luid:HIGH:LOW` (the first
+that decodes by default; on Windows the GPU the demo draws on, as below),
+`LOWLAT_DECODER` picks `auto`, `open`, `vendor` or `none`, and
+`LOWLAT_SERVER` names the signaling service. The
 decoders this machine can open are printed at start, one numbered row each
 with what it decodes, and `LOWLAT_DECODER_INDEX` picks a row by number.
 `LOWLAT_STUN` names reflexive servers, `host:port` separated by commas, up to
@@ -110,7 +113,13 @@ a host sizing a display of its own takes from an owner arriving into an empty
 room; unset, the demo asks nothing of the person's monitor. `LOWLAT_HANDLE`
 asks for pictures as device handles, which the
 toolkit's renderer imports and draws with nothing copied through this
-process; only a decoder whose row says "handles" opens that way.
+process; only a decoder whose row says "handles" opens that way, and only GL
+on Linux and Direct3D 11 on Windows draw them. A handle opens on its own GPU,
+so on Windows the decoder is created on the GPU the demo draws on when nothing
+names one -- by handle always, by planes too where a hardware decoder is
+listed there, so switching to handles moves nothing -- and pictures moved to
+another GPU, by the chord or a row picked there, bring the renderer after
+them, as does a device lost and found again under a new identity.
 
 `LOWLAT_PAD_RAW` sends a DualShock 4 or a DualSense as its own report
 ([docs/10-client.md](../../docs/10-client.md) section 8), on every platform:
@@ -165,7 +174,9 @@ focus; `W` toggles fullscreen; `D` asks the host to stream its next output,
 through the same application protocol a settings panel uses; `F` switches
 the picture between stretched to the window and shown at its own size; `R`
 lets go of a captured pointer (and takes it again); `C` cycles the video
-preferences; `X` moves the session to the next decoder listed at start; `Q`
+preferences; `X` moves the session to the next decoder listed at start; `H`
+switches the pictures between planes and device handles at the next one, with
+no keyframe, where the decoder and the renderer draw them; `Q`
 leaves the session cleanly and quits, as closing the window does. A bare
 Windows key is not sent while the keyboard is not
 grabbed, because the desktop here takes it and the host would be left

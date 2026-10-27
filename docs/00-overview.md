@@ -59,7 +59,9 @@ lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, I
 lowlat-crypto    credentials, key material, the process certificate, and the only
                  source of randomness
 lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport's
-                 record layer and association, driven by the same loop
+                 record layer and association, driven by the same loop, behind the
+                 crate's `web` feature, which the host turns on and a client build
+                 leaves off
 lowlat-portmap   gateway port mapping for the client and the host: PCP, NAT-PMP and
                  UPnP's gateway device; the one crate that speaks HTTP, and only to
                  the gateway
