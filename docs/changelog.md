@@ -3,6 +3,68 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-27 - W4 closed: the gate on the development machine
+
+### Checked
+- **The library's demo's pads**, a DualShock 4 and a DualSense on a laptop's USB, sent as their
+  reports: each on the input driver as its product, delivering 2 and 9 ms after it was made; the
+  controller libraries' HID layer named both, read the serial from the host's pairing report and
+  the DualSense's firmware from its peer, the touchpad, both motion sensors and every button
+  pressed; the lightbar, a rumble and the DualSense's trigger effects written back and felt on
+  the real pads. Ten minutes, no fault. The game controller panel and the common game launcher
+  named both by their products; a browser's HID chooser by the framework's string, and a
+  browser's gamepad interface offered no vibration on the DualSense, as on the real one.
+- **The setting**, through the application example's live switch: off, both pads the Xbox pad
+  from their states; turned on mid-session, the pads plugged kept their family and the next
+  plugged came as their products; turned off, they stayed until plugged again, then the Xbox pad.
+- **The keyboard and the mouse**, the maintainer's run: every key class, typing on the lock
+  screen and into an elevation prompt, the chord's keys raising nothing and the attention chord
+  the service's; relative aim, both wheels, a drag held across the client turning its pointer
+  relative; raw input naming a device, no injected flag.
+- **The switch moved both ways mid-session** with Shift and the left button held from the demo:
+  the button released on the old path 200 ms after the switch, Shift pressed again on the new one
+  by the client's repeat while still held, and nothing held once the guest let go.
+- **The host killed and the driver removed mid-session**, Shift and the left button held from an
+  established client: both released 200 ms after either, and none of the driver's devices left
+  3 s after; killed, the service started its next host; removed, the host ran on, its pad on the
+  bus from its reports at once and its keyboard and mouse on the batch input call at the next
+  input. Installed again by its script, the running host took the driver up at the next session.
+- **The record**, a mouse motion through the host's own path to its arrival in raw input, the
+  batch input call against the input driver's mouse, p50/p95/p99/max in microseconds:
+
+  | | batch, 1 kHz | driver, 1 kHz | batch, 125 Hz | driver, 125 Hz |
+  |---|---|---|---|---|
+  | idle | 47/67/161/646 | 101/154/566/2074 | 57/103/431/979 | 114/180/419/908 |
+  | one busy loop per logical processor | 43/73/312/916 | 78/117/282/1043 | 44/62/206/4567 | 81/111/220/10599 |
+
+  One report of 4000 unmatched, idle at 1 kHz. From the switch to the mouse's first motion in raw
+  input 13.5 to 18.7 ms on a slot used before; a device on a new node listed 6 to 15 ms after it
+  is made (W4.0).
+- **The package** installed again by its script with no prompt, test signing off. CI green on the
+  pushed branch, the Windows job building the input driver; the Linux bar.
+
+### Found at the gate and fixed
+- With the library's demo on a laptop: AMD's decoder on a cropped stream and on ten-bit HEVC under
+  an older runtime, and a ten-bit request without the second codec's bit -- the two entries below.
+
+### Known and deferred
+- **Two hosts signed in as one account on one machine take the same offers**: the first to
+  connect serves the guest and the other's attempt fails. Seen with the application example
+  beside the service.
+- **The demo misses a pad plugged again within about two seconds**: it learns a raw pad is gone
+  only from a failed read, so the host is told nothing.
+- **The application example's signaling stopped once on a message that was not an object**, and
+  connected again.
+- **One pad report refused** as the pad moved to the bus at the driver's removal.
+- **This host stays at the limited range** ([05 §3.1](05-host.md)), where an established host sends
+  the full range a client asks for. Noted, not decided.
+
+### Not run
+- W4.2's pixel count at 125 percent and a machine with no mouse; a game on the pads' maker's own
+  PC library.
+
+W4's gate is marked passed.
+
 ## 2026-10-26 - Ten-bit HEVC on AMD's older runtime, and ten bits naming the second codec
 
 ### Fixed

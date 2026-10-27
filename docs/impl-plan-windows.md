@@ -39,7 +39,9 @@ what a program writes to a pad's features stays on the host, on both platforms, 
 without the driver is refused as `virtual_input` is; the pads checked against their consumers on
 the installed driver before the host's side is built, and the step amended. *Amended
 2026-10-26:* W4.3, the report pads, built and checked on the machine and live; a device's
-readiness fixed beside it for all three kinds; its other checks owed at W4's gate.
+readiness fixed beside it for all three kinds; its other checks owed at W4's gate. *Amended
+2026-10-27:* W4's gate passed on the development machine and W4 closed; what the gate asked and
+was not run is named in its entry.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -2388,7 +2390,7 @@ are through. The decisions are recorded once, here; the design they add up to is
 
 ### Steps
 
-- [ ] **W4.0 the driver and its package**: the two crates and the generated declarations; the
+- [x] **W4.0 the driver and its package**: the two crates and the generated declarations; the
   four kinds; a device to a handle and its neutral report at the handle's end; the feature table
   and the written reports; the setup information, the package and its test signature; the script
   that installs, updates and removes it, nothing of it in `lowlatd` (*amended 2026-10-22*); CI
@@ -2417,7 +2419,7 @@ are through. The decisions are recorded once, here; the design they add up to is
   device; the host's side of the interface and its checks on the machine, ignored until the
   driver is installed. Run: every check needing no installed driver, each broken once. Owed: the
   install, the checks on the machine and the measurements above.
-- [ ] **W4.1 the keyboard and the switch**: the input configuration with `virtual_input` and its
+- [x] **W4.1 the keyboard and the switch**: the input configuration with `virtual_input` and its
   two calls in its minor, the Windows-only fields declared on Windows alone in the same minor,
   `lowlatd`'s flag; a guest's HID keyboard while the switch is on, the chord's rule, the batch
   input call where there is no driver. Checked by every
@@ -2449,7 +2451,7 @@ are through. The decisions are recorded once, here; the design they add up to is
   keyboard and the mouse together -- raw input and the injected flag, the lock screen and an
   elevation prompt, the chord's keys, the switch moved mid-session, the driver removed -- so one
   set of machine changes covers both devices; this step stays unticked until the gate runs them.
-- [ ] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
+- [x] **W4.2 the pointer**: a guest's HID mouse while the switch is on -- both collections, the
   multiplier, every button and wheel on the relative collection (*amended 2026-10-22*; as W4.0's
   measurement of the two collections settles it) -- and absolute positions as W4.0's measurement
   settles them.
@@ -2476,7 +2478,7 @@ are through. The decisions are recorded once, here; the design they add up to is
   asked. Owed, at W4's gate: the sweep's pixel count at 125 percent, raw input naming the
   device, a machine with no mouse, a drag held across the client turning relative. *Seen:* the
   devices carry no name of their own -- the framework's, "HID VHF Driver" ([11 §2.3](11-drivers.md)).
-- [ ] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
+- [x] **W4.3 the report pads**: `virtual_pads` taking a reserved byte of the input configuration
   in its minor; the DualShock 4 and the DualSense on the driver, the feature table filled from the
   peer, what is written to a pad sent back to the peer; the answers a Linux pad gives moved to
   where both platforms build them, Linux unchanged. Checked by the library's demo's DualShock 4
@@ -2551,7 +2553,16 @@ library's demo:
 - the test-signed package installing silently with no test mode, by its script; CI building the
   driver; both CI jobs and the Linux bar.
 
+*Passed 2026-10-27* on the development machine, every leg as written, the figures in the
+[changelog](changelog.md)'s entry of the day; three faults found at it, with the library's demo
+on a laptop, were fixed the day before -- AMD's decoder on a cropped stream and on ten-bit HEVC
+under an older runtime, and a ten-bit request without the second codec's bit. Not run, and
+named there: W4.2's pixel count at 125 percent and a machine with no mouse, and a game on the
+pads' maker's own PC library.
+
 ## Change log
+
+- 2026-10-27: W4's gate passed; W4 closed.
 
 - 2026-10-26: W1.6 amended again: ten-bit HEVC on AMD's ten-bit component, the other
   corrupting memory on an older runtime ([10 §5.2](10-client.md)).

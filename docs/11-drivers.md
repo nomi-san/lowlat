@@ -652,7 +652,11 @@ write answered and handed to no one, its output report back; a guest's DualSense
 first report, read as a game reads it, a game's output report back, gone at its unplug; the
 keyboard's and the mouse's checks back to back, the second's devices made while raw input still
 listed the first's. Live: an established macOS client's DualSense on a cable as its product,
-everything written back. Owed: W4's gate.
+everything written back. Owed: W4's gate. *Passed 2026-10-27* (W4's gate): the library's demo's
+pads and an established client's as their products, the setting off and changed mid-session,
+the keyboard and the mouse on every leg, the switch moved with keys held, the host killed and the
+driver removed mid-session with nothing held and no device behind, the latency recorded against
+the batch input call ([changelog](changelog.md)).
 
 Planned 2026-10-15. **The driver and its package are built and checked live** (W3.0,
 2026-10-15): installed silently with no test mode; a bound monitor plugged by an unelevated
