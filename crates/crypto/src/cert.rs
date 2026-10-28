@@ -17,10 +17,14 @@ use std::time::{Duration, SystemTime};
 use p256::ecdsa::{DerSignature, SigningKey};
 use p256::pkcs8::EncodePrivateKey;
 use sha2::{Digest, Sha256};
-use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::SubjectPublicKeyInfo;
+use x509_cert::TbsCertificate;
+use x509_cert::builder::profile::BuilderProfile;
+use x509_cert::builder::{Builder, CertificateBuilder};
+use x509_cert::ext::Extension;
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
-use x509_cert::spki::SubjectPublicKeyInfoOwned;
+use x509_cert::spki::SubjectPublicKeyInfoRef;
 use x509_cert::time::{Time, Validity};
 use zeroize::Zeroizing;
 
@@ -125,28 +129,16 @@ fn mint() -> Result<Certificate, Error> {
         .checked_add(VALID_FOR)
         .and_then(|t| Time::try_from(t).ok())
         .ok_or(Error::Certificate)?;
-    let validity = Validity {
-        not_before,
-        not_after,
-    };
+    let validity = Validity::new(not_before, not_after);
 
     let subject: Name = "CN=lowlat".parse().map_err(|_| Error::Certificate)?;
-    let spki = SubjectPublicKeyInfoOwned::from_key(*key.verifying_key())
-        .map_err(|_| Error::Certificate)?;
+    let spki =
+        SubjectPublicKeyInfo::from_key(key.verifying_key()).map_err(|_| Error::Certificate)?;
 
-    // Self-signed, subject as issuer, no extensions: the peer checks only the
-    // digest, and an extension it did not ask for is one more thing to refuse.
-    let builder = CertificateBuilder::new(
-        Profile::Manual { issuer: None },
-        serial,
-        validity,
-        subject,
-        spki,
-        &key,
-    )
-    .map_err(|_| Error::Certificate)?;
+    let builder = CertificateBuilder::new(SelfSigned(subject), serial, validity, spki)
+        .map_err(|_| Error::Certificate)?;
     let certificate = builder
-        .build::<DerSignature>()
+        .build::<_, DerSignature>(&key)
         .map_err(|_| Error::Certificate)?;
     let der = x509_cert::der::Encode::to_der(&certificate).map_err(|_| Error::Certificate)?;
 
@@ -159,6 +151,29 @@ fn mint() -> Result<Certificate, Error> {
         key_pkcs8,
         fingerprint,
     })
+}
+
+/// Self-signed, subject as issuer, no extensions: the peer checks only the
+/// digest, and an extension it did not ask for is one more thing to refuse.
+struct SelfSigned(Name);
+
+impl BuilderProfile for SelfSigned {
+    fn get_issuer(&self, subject: &Name) -> Name {
+        subject.clone()
+    }
+
+    fn get_subject(&self) -> Name {
+        self.0.clone()
+    }
+
+    fn build_extensions(
+        &self,
+        _spk: SubjectPublicKeyInfoRef<'_>,
+        _issuer_spk: SubjectPublicKeyInfoRef<'_>,
+        _tbs: &TbsCertificate,
+    ) -> x509_cert::builder::Result<Vec<Extension>> {
+        Ok(Vec::new())
+    }
 }
 
 /// SHA-256 of a DER certificate, which is what a fingerprint is.
@@ -279,23 +294,21 @@ mod tests {
     fn the_certificate_parses_and_its_key_signs() {
         let certificate = certificate().expect("certificate");
         let parsed = x509_cert::Certificate::from_der(certificate.der()).expect("a certificate");
-        assert_eq!(
-            parsed.tbs_certificate.subject,
-            parsed.tbs_certificate.issuer
-        );
-        assert!(parsed.tbs_certificate.extensions.is_none());
+        let tbs = parsed.tbs_certificate();
+        assert_eq!(tbs.subject(), tbs.issuer());
+        assert!(tbs.extensions().is_none());
 
         let key = SigningKey::from_pkcs8_der(certificate.key_pkcs8()).expect("the key loads");
-        let spki = &parsed.tbs_certificate.subject_public_key_info;
+        let spki = tbs.subject_public_key_info();
         let public =
             p256::ecdsa::VerifyingKey::from_sec1_bytes(spki.subject_public_key.raw_bytes())
                 .expect("a P-256 public key");
         assert_eq!(&public, key.verifying_key());
 
         // The self-signature verifies under the certified key.
-        let tbs = x509_cert::der::Encode::to_der(&parsed.tbs_certificate).unwrap();
+        let tbs = x509_cert::der::Encode::to_der(parsed.tbs_certificate()).unwrap();
         let signature =
-            DerSignature::from_bytes(parsed.signature.raw_bytes()).expect("a DER signature");
+            DerSignature::from_bytes(parsed.signature().raw_bytes()).expect("a DER signature");
         public
             .verify(&tbs, &signature)
             .expect("the self-signature holds");

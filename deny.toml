@@ -16,19 +16,7 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # `crypto-bigint` 0.5.5, reached through `elliptic-curve` 0.13 under the
-    # DTLS record layer and the browser transport's certificate. The advisory
-    # is secret-dependent branches in arithmetic meant to be constant-time,
-    # which a peer timing many handshakes might observe, depending on the
-    # compiler and the CPU. It is fixed in 0.7.6 alone, which wants the 0.14
-    # line of the elliptic-curve crates, and the DTLS layer reaches that line
-    # only from 0.9, which changes its interface: the move is its own change,
-    # with the certificate's crates beside it. P-256 here signs only that
-    # transport's identity, a key made for the process's life. Remove this
-    # once the DTLS layer is on the 0.14 line.
-    { id = "RUSTSEC-2026-0387", reason = "fixed only on the 0.14 line, which the DTLS layer reaches from 0.9, not yet taken" },
-]
+ignore = []
 
 [licenses]
 version = 2

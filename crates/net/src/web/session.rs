@@ -196,11 +196,10 @@ impl WebSession {
             private_key: certificate.key_pkcs8().to_vec(),
         };
         let epoch = Instant::now();
-        // A server link sends nothing until a first flight reaches it and
-        // runs no timer until then, so it is made at once: the peer's first
-        // flight can land before this side's own punch has settled, and a
-        // link that did not exist yet would drop it and cost the peer a
-        // whole retransmission interval.
+        // A server link sends nothing until a first flight reaches it, so it
+        // is made at once: the peer's first flight can land before this
+        // side's own punch has settled, and a link that did not exist yet
+        // would drop it and cost the peer a whole retransmission interval.
         let (link, state) = match role {
             Role::Client => (None, State::AwaitingPath),
             Role::Server => (
@@ -209,7 +208,7 @@ impl WebSession {
                     certificate.clone(),
                     epoch,
                     now_ms,
-                )),
+                )?),
                 State::Handshaking,
             ),
         };
@@ -917,10 +916,10 @@ mod tests {
         assert_eq!(wire[0], 0x16, "the first record is a handshake record");
         assert!(len >= 13);
         // Drained to the end, as the shell drains, the retransmission
-        // deadline is known.
+        // deadline is known: a second, jittered by a quarter either way.
         while session.get_output(0.0, &mut wire).is_some() {}
         let due = session.next_timer_ms(0.0);
-        assert!(due.is_finite() && due <= 1000.0, "flight timer reads {due}");
+        assert!((750.0..=1250.0).contains(&due), "flight timer reads {due}");
     }
 
     #[test]

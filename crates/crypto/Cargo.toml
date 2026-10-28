@@ -17,12 +17,10 @@ getrandom.workspace = true
 # certificate, which a peer trusts by SHA-256 digest alone. The same crates,
 # at the same versions, that the handshake library resolves, so nothing is
 # duplicated in the graph.
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
-ecdsa = { version = "0.16", default-features = false, features = ["der", "pkcs8", "pem", "signing", "verifying"] }
-# `hazmat` is what unlocks a profile with no extensions, which is the shape a
-# peer that checks only the digest wants.
-x509-cert = { version = "0.2", default-features = false, features = ["builder", "hazmat", "std"] }
-sha2 = { version = "0.10", default-features = false, features = ["oid"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
+ecdsa = { version = "0.17", default-features = false, features = ["der", "pkcs8", "pem", "algorithm"] }
+x509-cert = { version = "0.3", default-features = false, features = ["builder", "std"] }
+sha2 = { version = "0.11", default-features = false, features = ["oid"] }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 # The record cipher, lent to the core's envelope: AES-GCM from a vetted
 # library that picks the processor's widest AES and carry-less multiply

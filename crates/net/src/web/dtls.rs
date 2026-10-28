@@ -87,18 +87,23 @@ impl Link {
     }
 
     /// A link in the server role: it waits for the peer's first flight.
+    ///
+    /// Its timers run once here: the record layer draws the random its answer
+    /// carries on that first run, and a first flight met before one panics it.
     pub(super) fn server(
         config: Arc<Config>,
         certificate: DtlsCertificate,
         epoch: Instant,
         now_ms: f64,
-    ) -> Self {
-        let dtls = Dtls::new_12(config, certificate, instant(epoch, now_ms));
-        Self {
+    ) -> Result<Self, dimpl::Error> {
+        let now = instant(epoch, now_ms);
+        let mut dtls = Dtls::new_12(config, certificate, now);
+        dtls.handle_timeout(now)?;
+        Ok(Self {
             dtls,
             epoch,
             deadline: None,
-        }
+        })
     }
 
     /// Feed one datagram. Malformed input is discarded inside; an error is
@@ -127,7 +132,9 @@ impl Link {
 
     /// Queue application data for the wire. Wrapped on the next poll.
     pub(super) fn send(&mut self, data: &[u8]) -> Result<(), dimpl::Error> {
-        self.dtls.send_application_data(data)
+        // A link made for one version takes the whole slice or fails; a short
+        // count comes only from one still choosing its version.
+        self.dtls.send_application_data(data).map(|_| ())
     }
 
     /// Say goodbye. The alert leaves on the next poll.
