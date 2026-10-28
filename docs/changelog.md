@@ -31,15 +31,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Both platforms' bars (Windows 1,468 tests and none failing; Linux 1,428 with the two
   dual-stack tests that fail on every run there); the fuzz crate built, and the pipe's two
   targets a minute each from their corpora, clean.
+- **Live, the service on this build**: a stock browser client on Chrome over the browser pipe --
+  the handshake and the association up 0.4 s after the answer, through the usual INIT collision,
+  then 54 s of H.264 with input and sound, no retransmission, round trip 3 to 11 ms, a clean
+  leave -- and a native client after it, 44 s of HEVC, the same.
 
 ### Known
 - **RustCrypto's two generations side by side**: the core and the simulator are still on the
   0.10 line, so a client-only build carries 8 duplicated crates where it carried 1, and a
   host-only build 19 where it carried 5. Moving the core is its own change, measured on the
   envelope.
-
-### Not run
-- A stock browser client against a host on this build.
 
 ## 2026-10-28 - Dependencies: a nested gateway answer, and the minimum toolchain at 1.95
 
