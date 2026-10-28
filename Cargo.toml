@@ -28,7 +28,7 @@ exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/nomi-san/lowlat"
 authors = ["Nguyen Duy <wuuyi123@gmail.com>"]
@@ -104,6 +104,12 @@ mem_forget = "deny"
 float_cmp = "warn"
 cast_possible_truncation = "warn"
 cast_sign_loss = "warn"
+# Rewrites the minimum toolchain made available, not taken over code that
+# already says what it means. `collapsible_if` is one lint for a nested
+# `if let` and a plain nested `if`, so the second goes unchecked with it.
+manual_is_multiple_of = "allow"
+chunks_exact_to_as_chunks = "allow"
+collapsible_if = "allow"
 
 [profile.release]
 lto = "fat"

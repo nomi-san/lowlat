@@ -254,6 +254,23 @@ jobs:
           RUSTFLAGS: --cfg loom
           LOOM_MAX_PREEMPTIONS: "3"
 
+  msrv:
+    name: the declared toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The manifest's rust-version is what the resolver acts on: it holds back
+      # any release that asks for a newer compiler, a security fix included.
+      # Checking the workspace on exactly that toolchain keeps the number one a
+      # build has passed. It is read from the manifest, so a raise is made
+      # there alone.
+      - name: Check on the declared toolchain
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          rustup toolchain install "$version" --profile minimal --no-self-update
+          cargo +"$version" check --workspace --all-targets --all-features
+
   deny:
     name: licenses and advisories
     runs-on: ubuntu-latest
