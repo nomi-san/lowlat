@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - The session's writes to the service carry the deadline; the demo's toolkit rebuilt on change
+
+### Fixed
+- **A helper's or a tray's writes to the service wait at most the channel's deadline**, and a
+  frame not taken ends the connection, which its read loop then makes again. Before, they
+  waited for as long as the service did not read, and a failed one left the connection in use,
+  part of a frame behind it ([07 §5.1](07-platforms.md), rule 3). This closes the deadline
+  entry's Known item.
+- **The demo's makefile builds the toolkit again when anything it is built from has changed**,
+  not only when its archive is missing: a kept archive linked a toolkit layout the demo's
+  sources no longer agreed with, and neither the compiler nor the linker said so. This closes
+  W1's Linux gate entry's second Known item.
+
+### Checked
+- A test holding one end of a socket pair as the session's and never reading the other: the
+  write fails in about 0.2 s and the connection is shut, its own end reading as ended at once.
+  With the deadline raised to 3 s the test fails on its 1 s bound, having waited 6.2 s: a frame
+  cut short waits once for the part written and once more for the write that fails, so a frame
+  takes up to twice the deadline (the previous entry corrected to say so).
+- The demo's makefile: up to date, no toolkit run; a toolkit source or one of its `deps`
+  headers touched, one run and the archive rebuilt; after it, none.
+- fmt, clippy, the daemon's tests.
+
+### Known
+- **The Windows demo build still keeps its toolkit**: its CMake defines the toolkit's build
+  only when the library is missing at configure time. Not changed here, where it cannot be
+  built.
+
 ## 2026-10-28 - Three small fixes: the demo's repeated pad states, a GPU test, the login script
 
 ### Fixed
@@ -32,14 +60,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **A session-side program that stops reading no longer stops the service.** The service wrote
   to its helpers and trays with no deadline while holding a lock its own loop needs, so one
   that stopped reading -- hung, or stopped -- would in time stall signaling for every guest. A
-  frame now waits at most 100 ms for room, and a program that has not taken one is dropped,
-  its connection shut, which also ends the thread reading from it
-  ([07 §5.1](07-platforms.md), rule 3).
+  write now waits at most 100 ms for room (a frame cut short at most twice that, as the next
+  entry measured), and a program that has not taken one is dropped, its connection shut, which
+  also ends the thread reading from it ([07 §5.1](07-platforms.md), rule 3).
 
 ### Checked
 - A test holding one end of a socket pair as a tray and never reading it: the frames fill the
-  buffer and the next write drops the peer in about 100 ms. With the deadline raised to 3 s the
-  test fails on its 1 s bound.
+  buffer and the peer is dropped in about 0.2 s. With the deadline raised to 3 s the test fails
+  on its 1 s bound.
 - fmt, clippy and the daemon's tests.
 
 ### Known
