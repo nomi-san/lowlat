@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - The local channel's writes carry a deadline
+
+### Fixed
+- **A session-side program that stops reading no longer stops the service.** The service wrote
+  to its helpers and trays with no deadline while holding a lock its own loop needs, so one
+  that stopped reading -- hung, or stopped -- would in time stall signaling for every guest. A
+  frame now waits at most 100 ms for room, and a program that has not taken one is dropped,
+  its connection shut, which also ends the thread reading from it
+  ([07 §5.1](07-platforms.md), rule 3).
+
+### Checked
+- A test holding one end of a socket pair as a tray and never reading it: the frames fill the
+  buffer and the next write drops the peer in about 100 ms. With the deadline raised to 3 s the
+  test fails on its 1 s bound.
+- fmt, clippy and the daemon's tests.
+
+### Known
+- **The other direction has none yet**: a helper's or a tray's own writes to the service still
+  wait for as long as the service does not read, and a failed one leaves the connection in
+  use.
+
 ## 2026-10-28 - lowlatd holds an offer that needs approval, then declines it
 
 ### Fixed

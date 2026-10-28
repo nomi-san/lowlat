@@ -665,7 +665,11 @@ seat taken or an attempt abandoned, and never what was already there when the tr
    stops answering is dropped rather than waited for. An unbounded wait on a process in
    somebody's session is an unbounded wait on somebody's session. One request is outstanding
    at a time, a second is refused rather than queued, and the answer is read by the loop that
-   asked, on its next pass, from the same queue the session's signals arrive on.
+   asked, on its next pass, from the same queue the session's signals arrive on. *Amended
+   2026-10-28:* the service's writes too, to a tray as well as a helper. A frame waits at most
+   100 ms for room, which it needs only once a buffer's worth has gone unread, and a program
+   that has not taken it is then dropped; before, one that stopped reading could stall the
+   service's loop, which writes while holding what that loop needs.
 4. **A helper speaks only for itself.** The peer's credentials, not its claims, say which user
    is on the other end, and its statements apply to that user's session and no other. It is
    never asked to do anything it could not do on its own behalf, so it carries no privilege
