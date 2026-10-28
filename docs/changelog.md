@@ -3,6 +3,30 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - lowlatd holds an offer that needs approval, then declines it
+
+### Fixed
+- **An offer that is neither the owner's nor marked to skip approval is no longer admitted.**
+  `lowlatd` admitted every relayed offer within its capacity, so an account the host was
+  shared with got in without the approval signaling asked for. Such an offer is now held
+  unanswered for 35 s and then declined ([04 §3](04-signaling.md)); every offer's log line
+  names both flags.
+
+### Checked
+- **Live, an established client on an account the host was shared with, not pre-approved**:
+  the offer arrived with both flags clear and was held; the client gave up by itself after
+  30 s, reporting that the host had not approved in time, and the decline followed 5 s later.
+  Declined after 15 s instead, the client reported a decline at once. Nothing reached the host
+  when the client gave up.
+- **The owner's offer**, this project's client on the host's own account, arrived with both
+  flags set and was admitted and streamed as before.
+- fmt, clippy and the daemon's tests.
+
+### Known
+- **Nobody can approve yet**: `lowlatd` has no prompt, so an account the host was shared with
+  is admitted only when signaling marks it pre-approved. An approval from the tray is the local
+  channel's question ([07 §5.1](07-platforms.md)).
+
 ## 2026-10-28 - W1's gate on Linux: both Sony pads through SDL's HID layer
 
 ### Checked

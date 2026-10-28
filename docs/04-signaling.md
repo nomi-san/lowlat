@@ -136,6 +136,17 @@ The relayed forms carry what the direct forms cannot: the sender's identity, own
 whether approval may be skipped, and the requested permissions. The host reads permissions
 from the relayed offer and never from the client.
 
+**An offer that needs approval is held, then declined, where nobody can approve it.** The
+owner's offer arrives with ownership and the approval flag both set; one from an account the
+host was shared with, not pre-approved, arrives with both clear. `lowlatd` has no prompt, so it
+holds the second kind unanswered for 35 s and then declines it. An established client waiting
+on an approval gives up by itself after 30 s, which it reports as the host not approving in
+time, and tells the host nothing when it does; a decline is a different answer, shown at once
+as declined. The hold therefore shows a guest what a host shows while nobody approves, and the
+decline after it frees what the offer held and ends the wait of a client that keeps no timer
+of its own. An application on the library decides for itself, approving with `begin_p2p` or
+declining.
+
 ## §4 Credentials
 
 Carried in the offer and the answer:
