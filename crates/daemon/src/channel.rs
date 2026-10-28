@@ -43,13 +43,16 @@ const MAX_FRAME: usize = 1 << 20;
 /// so a deadline after that would drop the quiet ones.
 const HELLO_MS: u64 = 5_000;
 
-/// How long a frame to a session-side program may wait to be taken.
+/// How long one write on this channel may wait for room, in either direction.
+/// A frame the deadline cuts short waits twice -- once for the part written,
+/// once for the write that then fails -- so a frame takes at most twice this.
 ///
 /// **A write waits only once the socket's buffer is full**, which is a reader
-/// that has left a buffer's worth of frames unread -- minutes of state at the
-/// rate it is sent. Past this the connection is dropped rather than waited on:
-/// every write here holds a lock the service's own loop needs, so a reader
-/// that stopped would otherwise stop the service with it.
+/// that has left a buffer's worth of frames unread -- minutes of what is sent
+/// here. Past this the connection is dropped rather than waited on: the
+/// service's writes hold a lock its own loop needs, and a session-side
+/// program's hold the one its other threads write through, so a reader that
+/// stopped would otherwise stop the writer with it.
 const WRITE_MS: u64 = 100;
 
 /// How many session-side programs may be connected at once.
@@ -341,13 +344,17 @@ pub(crate) fn state(state: &serde_json::Value) {
 }
 
 /// A second reference to a connection, for this end's writes, with their
-/// deadline (`WRITE_MS`) set.
+/// deadline set.
 fn held_handle(stream: &UnixStream) -> Option<UnixStream> {
     let handle = stream.try_clone().ok()?;
-    handle
-        .set_write_timeout(Some(std::time::Duration::from_millis(WRITE_MS)))
-        .ok()?;
+    with_deadline(&handle).ok()?;
     Some(handle)
+}
+
+/// Writes on this socket wait at most `WRITE_MS`. The option is the socket's,
+/// so every reference to it shares it.
+fn with_deadline(stream: &UnixStream) -> std::io::Result<()> {
+    stream.set_write_timeout(Some(std::time::Duration::from_millis(WRITE_MS)))
 }
 
 /// One frame to every connection held, dropping each that does not take it;
@@ -913,8 +920,24 @@ pub(crate) fn is_bye(body: &[u8]) -> Option<String> {
 /// session, and a session reaching out arrives with an identity.
 pub(crate) fn connect(role: Role, can: Can) -> std::io::Result<UnixStream> {
     let mut stream = UnixStream::connect(SOCKET)?;
+    with_deadline(&stream)?;
     write_frame(&mut stream, &hello(role, can))?;
     Ok(stream)
+}
+
+/// One frame to the service from the session's side, the connection given up
+/// when it is not taken.
+///
+/// **Ended rather than kept**, as the service's end does (`tell`): a write that
+/// failed or ran out its deadline may have left part of a frame behind, and
+/// nothing after it would read. Shutting the stream down ends the read loop
+/// that owns the connection, and that loop connects again.
+pub(crate) fn send(stream: &mut UnixStream, body: &[u8]) -> std::io::Result<()> {
+    let sent = write_frame(stream, body);
+    if sent.is_err() {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+    sent
 }
 
 /// This end's own first frame.
@@ -1046,6 +1069,35 @@ mod tests {
         while read_frame(&mut gone, &mut drained).is_ok() {}
         let mut byte = [0u8; 1];
         assert_eq!(gone.read(&mut byte).expect("an end, not a wait"), 0);
+    }
+
+    /// **The session's end gives a connection up the same way.** A frame the
+    /// service does not take within the deadline ends the connection, which
+    /// ends the read loop that owns it, rather than writing on after part of a
+    /// frame.
+    #[test]
+    fn a_frame_the_service_does_not_take_ends_the_connection() {
+        let (mut ours, theirs) = pair();
+        with_deadline(&ours).expect("a write deadline");
+        let body = vec![b'x'; 64 * 1024];
+        let started = std::time::Instant::now();
+        let mut frames = 0;
+        while frames < 1000 && send(&mut ours, &body).is_ok() {
+            frames += 1;
+        }
+        let took = started.elapsed();
+        assert!(
+            frames < 1000,
+            "a reader that never reads took {frames} frames"
+        );
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "waited {took:?} on a service that had stopped"
+        );
+        // Shut down, so the loop reading this connection sees its end at once.
+        let mut byte = [0u8; 1];
+        assert_eq!(ours.read(&mut byte).expect("an end, not a wait"), 0);
+        drop(theirs);
     }
 
     /// **A real accepted connection, not a socket pair.** The credentials come

@@ -108,7 +108,7 @@ pub(crate) fn session() -> ! {
                 if let Ok(kept) = latest.lock()
                     && let Some(outputs) = kept.as_ref()
                     && let Err(error) =
-                        channel::write_frame(&mut stream, channel::layout(outputs).as_bytes())
+                        channel::send(&mut stream, channel::layout(outputs).as_bytes())
                 {
                     lowlat_common::log_warn!(
                         "session: the service did not take the layout, {error}"
@@ -129,7 +129,7 @@ pub(crate) fn session() -> ! {
                     if let Some(asked) = channel::is_mode_ask(&body) {
                         let outcome = change_mode(&asked.output, asked.size, asked.rotation);
                         let answer = channel::reply(asked.id, &outcome);
-                        if let Err(error) = channel::write_frame(&mut stream, &answer) {
+                        if let Err(error) = channel::send(&mut stream, &answer) {
                             lowlat_common::log_warn!(
                                 "session: the service did not take the answer, {error}"
                             );
@@ -281,11 +281,10 @@ fn act(click: sni::Click, writer: &std::sync::Mutex<Option<std::os::unix::net::U
             "video": [{ "encoderMaxBitrate": mbps }],
         })),
     };
-    let sent = writer.lock().ok().and_then(|mut writer| {
-        writer
-            .as_mut()
-            .map(|stream| channel::write_frame(stream, &frame))
-    });
+    let sent = writer
+        .lock()
+        .ok()
+        .and_then(|mut writer| writer.as_mut().map(|stream| channel::send(stream, &frame)));
     match sent {
         Some(Ok(())) => lowlat_common::log_info!("tray: asked, {click:?}"),
         Some(Err(error)) => lowlat_common::log_warn!("tray: not asked, {click:?} error={error}"),
@@ -377,7 +376,7 @@ fn watch_layout(
         let body = channel::layout(outputs);
         if let Ok(mut writer) = writer.lock()
             && let Some(stream) = writer.as_mut()
-            && let Err(error) = channel::write_frame(stream, body.as_bytes())
+            && let Err(error) = channel::send(stream, body.as_bytes())
         {
             lowlat_common::log_warn!("session: the service did not take the layout, {error}");
         }
@@ -465,7 +464,7 @@ fn own_clipboard(
             lowlat_common::log_info!("session: the desktop copied {} bytes", text.len());
             if let Ok(mut writer) = writer.lock()
                 && let Some(stream) = writer.as_mut()
-                && let Err(error) = crate::channel::write_frame(stream, body.as_bytes())
+                && let Err(error) = crate::channel::send(stream, body.as_bytes())
             {
                 lowlat_common::log_warn!("session: the service did not take it, error={error}");
             }
