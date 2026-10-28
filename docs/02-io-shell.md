@@ -335,7 +335,8 @@ whole.
   ([08 §8](08-testing.md)): 23 allocations per received datagram and 20 per sent one, 14 us at
   p50 and 24 us at p99 per datagram on the development machine (2026-09-12). A change that
   moves those figures is reviewed as an allocation regression, and the native path's counting
-  assertion still reads zero on the same build.
+  assertion still reads zero on the same build. *2026-10-28:* the record layer's move to 0.9
+  left the counts as they were, to the allocation.
 - **This crate contains `unsafe`, and it is the first that does outside the concurrency
   primitives.** Batched receive, offload send, and the wake descriptor are all syscalls. Keep
   the unsafe in thin wrappers whose safety argument is local, and note that the `miri`

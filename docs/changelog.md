@@ -3,6 +3,44 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - The browser transport's record layer moved, and no advisory exception left
+
+### Changed
+- **The DTLS record layer is on 0.9, and the certificate's crates moved with it** (P-256 0.14,
+  ECDSA 0.17, X.509 0.3, SHA-2 0.11): the elliptic-curve 0.14 line, where the fixed
+  `crypto-bigint` is, so the last advisory exception is gone and `deny.toml` carries none. The
+  certificate is made through a profile of its own -- subject as issuer, no extensions -- since
+  the builder dropped its manual one; it comes out as before, a version 1 certificate with the
+  same fields.
+- **A server-role link runs its timers once when it is made.** The record layer draws the
+  random its answer carries on that first run, and a first flight met before one now panics
+  it. The host is always the DTLS client, so only the tests' guest side takes that role.
+- **The first retransmission is jittered**, a second and a quarter either way, where it was a
+  second flat; the test that reads it reads the window.
+- **The fuzz crate's lockfile follows**, and takes the XML reader's fixed release with it,
+  which the day's first pass left out there.
+
+### Checked
+- **The pipe's measured exemption holds, to the allocation**: over the benchmark's ten seconds,
+  393,290 allocations on the host side and 343,886 on the guest's, as before the move; per
+  datagram 12.4 to 12.5 us at p50 against 12.8 to 13.1 on the same machine the hour before, and
+  16 to 24 us at p99 against 17 to 33.
+- **What a browser sees of the host is unchanged**: its first flight offers the same version,
+  suites, groups, signature algorithms and extensions, in the same order, and the certificate
+  decodes to the same fields.
+- Both platforms' bars (Windows 1,468 tests and none failing; Linux 1,428 with the two
+  dual-stack tests that fail on every run there); the fuzz crate built, and the pipe's two
+  targets a minute each from their corpora, clean.
+
+### Known
+- **RustCrypto's two generations side by side**: the core and the simulator are still on the
+  0.10 line, so a client-only build carries 8 duplicated crates where it carried 1, and a
+  host-only build 19 where it carried 5. Moving the core is its own change, measured on the
+  envelope.
+
+### Not run
+- A stock browser client against a host on this build.
+
 ## 2026-10-28 - Dependencies: a nested gateway answer, and the minimum toolchain at 1.95
 
 ### Fixed
