@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - Three small fixes: the demo's repeated pad states, a GPU test, the login script
+
+### Fixed
+- **The demo sends a pad's state only when it changed.** A worn stick's jitter inside the
+  deadzone marked the pad changed and the same state went again -- 17,075 of a DualSense's
+  18,049 states in ten minutes at W1's Linux gate. Each pad keeps the state it last sent and
+  skips an equal one, and forgets it when a session starts, so a new host gets each pad's next
+  state. This closes that gate entry's first Known item.
+- **The capture's exported-layout test runs on a display device.** It exported from a
+  conversion-only device, which carries no external-memory interface, and on every real GPU the
+  call aborted the whole test binary, the tests after it with it; ignored by default, it had not
+  been run since. It passes on the NVIDIA, AMD and Intel drivers.
+- **The login script parses without a warning on Python 3.13**: its docstring names a Windows
+  path, whose backslashes read as escapes.
+
+### Checked
+- The exported-layout test on all three Vulkan drivers, and the capture crate's GPU tests run
+  whole on NVIDIA (11, none aborted); the demo built and its websocket check passed; fmt,
+  clippy.
+
+### Not run
+- The demo's change against a live pad: the pads had been unplugged by then.
+
 ## 2026-10-28 - The local channel's writes carry a deadline
 
 ### Fixed
@@ -86,10 +109,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   Renoir APU under a game, 265 held pictures in about 80 s to none and the conversion 0.6 ms;
   an Alder Lake iGPU's HEVC from one picture and an engine hang to 591 pictures and none; the
   HDMI screen placed at its offset, the pointer staying on it.
+- **The raised priority granted**, under the packaged service with its new bounding set: an
+  established client at 2560x1440 from the RTX 5060, no refusal logged and the conversion 0.12
+  to 0.15 ms at the median.
 
 ### Not run here
-- A GNOME session; the raised priority granted (it needs `CAP_SYS_NICE`, the packaged
-  service's); a game load.
+- A GNOME session; a game load.
 
 ## 2026-10-28 - W1's gate on Linux: both Sony pads through SDL's HID layer
 
