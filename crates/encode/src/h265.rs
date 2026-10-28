@@ -667,6 +667,16 @@ pub enum Picture {
     Refresh,
     /// Predicted from the picture immediately before it.
     Predicted { poc_lsb: u32 },
+    /// The same prediction coded as a bidirectional slice whose second list
+    /// names the same picture as its first.
+    ///
+    /// **For an encoder that codes no predicted slices.** Intel's low-power
+    /// HEVC encoder on the integrated parts says so through the prediction
+    /// direction attribute (`VA_PREDICTION_DIRECTION_BI_NOT_EMPTY`); handed a
+    /// predicted slice it codes the first picture and then fails every one
+    /// after it. Nothing reorders: the picture still references only the one
+    /// before it, so the delay is the predicted slice's.
+    LowDelayB { poc_lsb: u32 },
 }
 
 impl Picture {
@@ -674,7 +684,7 @@ impl Picture {
     pub fn unit_type(self) -> u8 {
         match self {
             Self::Refresh => NAL_IDR_N_LP,
-            Self::Predicted { .. } => NAL_TRAIL_R,
+            Self::Predicted { .. } | Self::LowDelayB { .. } => NAL_TRAIL_R,
         }
     }
 
@@ -688,6 +698,18 @@ impl Picture {
         match self {
             Self::Refresh => 2,
             Self::Predicted { .. } => 1,
+            Self::LowDelayB { .. } => 0,
+        }
+    }
+
+    /// This picture as an encoder that codes no predicted slices needs it: a
+    /// predicted picture becomes a low-delay bidirectional one, and a refresh
+    /// stays what it is.
+    #[must_use]
+    pub fn low_delay_b(self) -> Self {
+        match self {
+            Self::Predicted { poc_lsb } => Self::LowDelayB { poc_lsb },
+            other => other,
         }
     }
 }
@@ -716,7 +738,7 @@ pub fn slice_header(params: &Params, picture: Picture, out: &mut [u8]) -> Option
     w.ue(0); // slice_pic_parameter_set_id
     w.ue(u32::from(picture.slice_type()));
 
-    if let Picture::Predicted { poc_lsb } = picture {
+    if let Picture::Predicted { poc_lsb } | Picture::LowDelayB { poc_lsb } = picture {
         // Fixed width, and the width is what the sequence set declared. A
         // refresh carries no count at all: it restarts the order by being one.
         w.bits(poc_lsb, params.log2_max_poc_lsb_minus4 + 4);
@@ -734,9 +756,17 @@ pub fn slice_header(params: &Params, picture: Picture, out: &mut [u8]) -> Option
     w.bit(true); // slice_sao_luma_flag
     w.bit(true); // slice_sao_chroma_flag
 
-    if let Picture::Predicted { .. } = picture {
-        // One reference, which is what the picture set already defaults to.
+    if let Picture::Predicted { .. } | Picture::LowDelayB { .. } = picture {
+        // One reference, which is what the picture set already defaults to,
+        // in each list a bidirectional slice has.
         w.bit(false); // num_ref_idx_active_override_flag
+        if let Picture::LowDelayB { .. } = picture {
+            // The device is told the same zero; it codes the second list's
+            // vector differences rather than assuming them zero.
+            w.bit(false); // mvd_l1_zero_flag
+        }
+        // No cabac_init_flag, temporal predictor or weight table follow: the
+        // picture and sequence sets switch all three off.
         w.ue(5u32.saturating_sub(MAX_NUM_MERGE_CAND)); // five_minus_max_num_merge_cand
     }
 

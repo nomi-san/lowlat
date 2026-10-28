@@ -340,5 +340,32 @@ fn the_hevc_parameter_sets_read_back() {
         assert_eq!(header.st_rps.delta_s0[0], -1);
         assert!(header.st_rps.used_s0[0]);
         assert_eq!(header.header_bytes as usize + 4, predicted.bytes_written);
+
+        // The same picture as low-delay B: bidirectional, one reference in
+        // each list from the defaults, the same reference set, and the
+        // second list's vector differences coded.
+        let low_delay_b = write265::slice_header(
+            &params,
+            write265::Picture::Predicted { poc_lsb: 6 }.low_delay_b(),
+            &mut out,
+        )
+        .unwrap();
+        let bytes = unit(&out[..low_delay_b.bytes_written]);
+        let header = hevc::slice::parse(bytes, |_| Some(pps), |_| Some(sps), None).unwrap();
+        assert!(!header.is_idr());
+        assert_eq!(header.pic_order_cnt_lsb, 6);
+        assert_eq!(header.slice_type, hevc::slice::SliceType::B);
+        assert_eq!(header.num_ref_idx_l0_active_minus1, 0);
+        assert_eq!(header.num_ref_idx_l1_active_minus1, 0);
+        assert!(!header.mvd_l1_zero);
+        assert_eq!(header.st_rps.num_negative, 1);
+        assert_eq!(header.st_rps.delta_s0[0], -1);
+        assert!(header.st_rps.used_s0[0]);
+        assert_eq!(header.header_bytes as usize + 4, low_delay_b.bytes_written);
+        // A refresh stays a refresh.
+        assert_eq!(
+            write265::Picture::Refresh.low_delay_b(),
+            write265::Picture::Refresh
+        );
     }
 }
