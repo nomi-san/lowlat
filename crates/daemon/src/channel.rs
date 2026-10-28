@@ -43,6 +43,15 @@ const MAX_FRAME: usize = 1 << 20;
 /// so a deadline after that would drop the quiet ones.
 const HELLO_MS: u64 = 5_000;
 
+/// How long a frame to a session-side program may wait to be taken.
+///
+/// **A write waits only once the socket's buffer is full**, which is a reader
+/// that has left a buffer's worth of frames unread -- minutes of state at the
+/// rate it is sent. Past this the connection is dropped rather than waited on:
+/// every write here holds a lock the service's own loop needs, so a reader
+/// that stopped would otherwise stop the service with it.
+const WRITE_MS: u64 = 100;
+
 /// How many session-side programs may be connected at once.
 ///
 /// A helper and a tray, and room for a replacement arriving before its
@@ -226,7 +235,7 @@ struct Held {
 /// it, because two answers to "has an application taken the pointer" is not a
 /// state anything can act on.
 fn take_place(peer: Peer, can: Can, stream: &UnixStream) {
-    let Ok(handle) = stream.try_clone() else {
+    let Some(handle) = held_handle(stream) else {
         return;
     };
     let Ok(mut live) = HELPERS.lock() else { return };
@@ -280,13 +289,19 @@ static STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// started by hand against a quiet stream would otherwise show nothing until
 /// something happened.
 fn attach(peer: Peer, stream: &UnixStream) {
-    let Ok(mut handle) = stream.try_clone() else {
+    let Some(mut handle) = held_handle(stream) else {
         return;
     };
     if let Ok(kept) = STATE.lock()
         && let Some(body) = kept.as_ref()
+        && let Err(error) = write_frame(&mut handle, body.as_bytes())
     {
-        let _ = write_frame(&mut handle, body.as_bytes());
+        lowlat_common::log_warn!(
+            "channel: tray dropped, it did not take a frame, pid={} error={error}",
+            peer.pid
+        );
+        let _ = handle.shutdown(std::net::Shutdown::Both);
+        return;
     }
     if let Ok(mut live) = TRAYS.lock() {
         live.push(Held {
@@ -322,11 +337,43 @@ pub(crate) fn state(state: &serde_json::Value) {
     }
     *kept = Some(body.clone());
     let Ok(mut live) = TRAYS.lock() else { return };
-    for held in live.iter_mut() {
-        if let Err(error) = write_frame(&mut held.handle, body.as_bytes()) {
-            lowlat_common::log_warn!("channel: tray unreachable, pid={} error={error}", held.pid);
+    tell(&mut live, body.as_bytes(), "tray");
+}
+
+/// A second reference to a connection, for this end's writes, with their
+/// deadline (`WRITE_MS`) set.
+fn held_handle(stream: &UnixStream) -> Option<UnixStream> {
+    let handle = stream.try_clone().ok()?;
+    handle
+        .set_write_timeout(Some(std::time::Duration::from_millis(WRITE_MS)))
+        .ok()?;
+    Some(handle)
+}
+
+/// One frame to every connection held, dropping each that does not take it;
+/// answers whether any did.
+///
+/// **Dropped rather than kept**, because a write that failed or ran out its
+/// deadline may have left part of a frame behind, and nothing after it would
+/// read. Shutting the handle down wakes the connection's own thread out of its
+/// read, which ends it.
+fn tell(live: &mut Vec<Held>, body: &[u8], role: &str) -> bool {
+    let mut reached = false;
+    live.retain_mut(|held| match write_frame(&mut held.handle, body) {
+        Ok(()) => {
+            reached = true;
+            true
         }
-    }
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "channel: {role} dropped, it did not take a frame, pid={} error={error}",
+                held.pid
+            );
+            let _ = held.handle.shutdown(std::net::Shutdown::Both);
+            false
+        }
+    });
+    reached
 }
 
 /// What a tray has asked for that the service has not acted on yet.
@@ -526,14 +573,7 @@ pub(crate) fn greet(stream: &mut UnixStream) -> Option<Greeting> {
 pub(crate) fn screen_awake(awake: bool) {
     let body = serde_json::json!({ "awake": awake }).to_string();
     let Ok(mut live) = HELPERS.lock() else { return };
-    for held in live.iter_mut() {
-        if let Err(error) = write_frame(&mut held.handle, body.as_bytes()) {
-            lowlat_common::log_warn!(
-                "channel: helper unreachable, pid={} error={error}",
-                held.pid
-            );
-        }
-    }
+    tell(&mut live, body.as_bytes(), "helper");
 }
 
 /// A request the service has put to the session and not heard back on.
@@ -609,7 +649,14 @@ pub(crate) fn ask_mode(ask: ModeAsk<'_>) -> Result<(), &'static str> {
         },
     })
     .to_string();
-    if write_frame(&mut held.handle, body.as_bytes()).is_err() {
+    if let Err(error) = write_frame(&mut held.handle, body.as_bytes()) {
+        lowlat_common::log_warn!(
+            "channel: helper dropped, it did not take a frame, pid={} error={error}",
+            held.pid
+        );
+        let _ = held.handle.shutdown(std::net::Shutdown::Both);
+        let pid = held.pid;
+        live.retain(|held| held.pid != pid);
         return Err("the session helper is unreachable");
     }
     *asked = Some(Asked {
@@ -771,11 +818,7 @@ pub(crate) fn clipboard(text: &[u8]) -> bool {
     let Ok(mut live) = HELPERS.lock() else {
         return false;
     };
-    let mut reached = false;
-    for held in live.iter_mut() {
-        reached |= write_frame(&mut held.handle, body.as_bytes()).is_ok();
-    }
-    reached
+    tell(&mut live, body.as_bytes(), "helper")
 }
 
 /// The copied text a frame carries, in either direction.
@@ -963,6 +1006,46 @@ mod tests {
         ONE_AT_A_TIME
             .lock()
             .unwrap_or_else(|held| held.into_inner())
+    }
+
+    /// **A program that stops reading is dropped, not waited on.** One end of a
+    /// pair held as a tray, the other never read: frames go out until the
+    /// socket's buffer is full, and the write that would then wait runs out its
+    /// deadline and drops the peer, its handle shut down. Without the deadline
+    /// that write waits for as long as the reader does, which is forever.
+    #[test]
+    fn a_program_that_stops_reading_is_dropped_not_waited_on() {
+        let (ours, theirs) = pair();
+        let mut live = vec![Held {
+            uid: 0,
+            pid: 1,
+            can: Can::default(),
+            handle: held_handle(&ours).expect("a held handle"),
+        }];
+        let body = vec![b'x'; 64 * 1024];
+        let started = std::time::Instant::now();
+        let mut frames = 0;
+        while !live.is_empty() && frames < 1000 {
+            tell(&mut live, &body, "tray");
+            frames += 1;
+        }
+        let took = started.elapsed();
+        assert!(
+            live.is_empty(),
+            "kept a reader that took nothing for {frames} frames"
+        );
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "waited {took:?} on a reader that had stopped"
+        );
+        // The shut handle ends the connection for the other end as well.
+        let mut gone = theirs;
+        gone.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("a read deadline");
+        let mut drained = Vec::new();
+        while read_frame(&mut gone, &mut drained).is_ok() {}
+        let mut byte = [0u8; 1];
+        assert_eq!(gone.read(&mut byte).expect("an end, not a wait"), 0);
     }
 
     /// **A real accepted connection, not a socket pair.** The credentials come
