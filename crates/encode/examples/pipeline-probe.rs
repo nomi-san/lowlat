@@ -149,10 +149,13 @@ fn main() {
     let compute_device = cuda
         .device(0)
         .unwrap_or_else(|e| fail(&format!("compute device: {e}")));
-    let context = cuda
+    // The imported memory outlives the encoder below. Keep an independent
+    // primary-context retain until after that import is destroyed; otherwise
+    // dropping the encoder releases the context before cuDestroyExternalMemory.
+    let import_context = cuda
         .retain_primary(&compute_device)
         .unwrap_or_else(|e| fail(&format!("compute context: {e}")));
-    context
+    import_context
         .make_current()
         .unwrap_or_else(|e| fail(&format!("make current: {e}")));
 
@@ -166,6 +169,9 @@ fn main() {
     println!("frame taken by the encoder's runtime");
 
     let api = nvenc::Api::load().unwrap_or_else(|e| fail(&format!("encoder: {e}")));
+    let context = cuda
+        .retain_primary(&compute_device)
+        .unwrap_or_else(|e| fail(&format!("encoder context: {e}")));
     let session = api
         .open_session(context)
         .unwrap_or_else(|e| fail(&format!("session: {e}")));
