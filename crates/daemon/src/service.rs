@@ -755,8 +755,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         hostname
     });
     // Declines every offer, which is the only way to exercise the refusal path
-    // against a real peer: approval is otherwise unconditional here.
+    // against a real peer.
     let reject_all = std::env::args().any(|arg| arg == "--reject");
+    // **Opens, so off unless asked.** Admits an offer signaling marks as
+    // needing approval, with the permissions it relayed: with no prompt here,
+    // the one way to let an account the host was shared with in without its
+    // being pre-approved.
+    let approve_shared = flag_set("--approve-shared");
     let base_port: u16 = flag("--port")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
@@ -1077,6 +1082,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &name,
                     max_guests,
                     reject_all,
+                    approve_shared,
                     &settings,
                     &stop,
                 )
@@ -1181,6 +1187,7 @@ async fn session_loop(
     name: &str,
     capacity: u32,
     reject_all: bool,
+    approve_shared: bool,
     settings: &app::Settings,
     stop: &Stop,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -1241,18 +1248,25 @@ async fn session_loop(
                         // gives one.** An offer that is neither the owner's nor
                         // marked to skip it is held unanswered, as a host holds
                         // one while nobody approves, and declined after
-                        // `HOLD_MS`.
+                        // `HOLD_MS` -- unless the switch approves it.
                         if !offer.is_owner && !offer.skip_approval {
-                            lowlat_common::log_info!(
-                                "lowlatd: holding {}, it needs approval and nothing here approves",
-                                offer.attempt_id
-                            );
-                            held.push((
-                                offer.attempt_id.clone(),
-                                offer.from.clone(),
-                                lowlat_common::clock::Time::now(),
-                            ));
-                            continue;
+                            if approve_shared {
+                                lowlat_common::log_info!(
+                                    "lowlatd: approving {}, it needs approval and --approve-shared gives it",
+                                    offer.attempt_id
+                                );
+                            } else {
+                                lowlat_common::log_info!(
+                                    "lowlatd: holding {}, it needs approval and nothing here approves",
+                                    offer.attempt_id
+                                );
+                                held.push((
+                                    offer.attempt_id.clone(),
+                                    offer.from.clone(),
+                                    lowlat_common::clock::Time::now(),
+                                ));
+                                continue;
+                            }
                         }
 
                         // Admission is the application's decision, and past
