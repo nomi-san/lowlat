@@ -345,6 +345,8 @@ struct gamepad {
 	SDL_JoystickID which;      // SDL's name for it
 	uint32_t id;               // as named to the library: the slot's number
 	bool pending;              // changed since it was last sent
+	bool has_last;             // `last` is what this session's host was sent
+	lowlat_pad_state last;     // the state sent last
 };
 
 static gamepad _pads[PADS];
@@ -490,10 +492,22 @@ static lowlat_pad_state state_of(SDL_Gamepad *pad)
 	return st;
 }
 
+// Field by field, since the structure's padding is not part of its state.
+static bool same(const lowlat_pad_state &a, const lowlat_pad_state &b)
+{
+	return a.buttons == b.buttons && a.lx == b.lx && a.ly == b.ly && a.rx == b.rx &&
+		a.ry == b.ry && a.lt == b.lt && a.rt == b.rt;
+}
+
 // The latest state of each gamepad that changed, while the window is in
 // front: a pad reaches the host only then, as the keys and the mouse do. What
 // changed meanwhile waits, so the state a pad holds goes when the window comes
 // back, and a state with no session up waits for the session.
+//
+// A state the host was already sent is not sent again. A stick's jitter inside
+// the deadzone marks the pad changed while what it reads, once centred, is
+// what went last time: a pad at rest with a worn stick sent its same state
+// dozens of times a second.
 static void flush()
 {
 	if (!MTY_AppIsActive(app::toolkit()))
@@ -503,12 +517,19 @@ static void flush()
 		if (p->pad == NULL || !p->pending)
 			continue;
 		lowlat_pad_state st = state_of(p->pad);
+		if (p->has_last && same(st, p->last)) {
+			p->pending = false;
+			continue;
+		}
 		lowlat_status s = lowlat_client_send_pad_state(session::client(), p->id, &st);
 		if (s == LOWLAT_ERR_NOT_STARTED)
 			continue;
 		p->pending = false;
-		if (s == LOWLAT_OK)
+		if (s == LOWLAT_OK) {
 			_sent++;
+			p->last = st;
+			p->has_last = true;
+		}
 		if (config::get().trace_pads)
 			printf("pad %u: lx=%d ly=%d rx=%d ry=%d lt=%u rt=%u buttons=%04x -> %s\n", p->id,
 				st.lx, st.ly, st.rx, st.ry, st.lt, st.rt, st.buttons, lowlat_status_string(s));
@@ -546,6 +567,10 @@ void poll(bool established)
 				break;
 		}
 	}
+	// A new session's host has been sent no state yet, so each pad's next goes.
+	if (established && !_was_established)
+		for (size_t i = 0; i < PADS; i++)
+			_pads[i].has_last = false;
 	if (config::get().raw_pads) {
 		// A new session has none of the pads' feature reports.
 		if (established && !_was_established)
