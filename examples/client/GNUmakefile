@@ -55,7 +55,16 @@ client: $(SOURCES) $(HEADERS) $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a $(LIBDEP)
 	$(CXX) $(CXXFLAGS) $(SDL_CFLAGS) -o $@ $(SOURCES) $(LIBS) $(SDL_LIBS) $(SYSLIBS) \
 		-static-libstdc++
 
-$(MATOYA)/bin/linux/$(ARCH)/libmatoya.a:
+# **Built again when anything it is built from has changed**, not only when
+# it is missing: an archive kept across a change to the toolkit's headers
+# links a layout the demo's sources no longer agree with, and neither the
+# compiler nor the linker says so. Its own makefile rebuilds the whole toolkit
+# every time it runs, about a second, so this decides only whether to run it.
+MATOYA_SOURCES := $(shell find $(MATOYA)/src $(MATOYA)/deps -type f \( -name '*.c' -o -name '*.h' \
+                  -o -name '*.m' -o -name '*.vert' -o -name '*.frag' -o -name '*.vertvk' \
+                  -o -name '*.fragvk' \))
+
+$(MATOYA)/bin/linux/$(ARCH)/libmatoya.a: $(MATOYA_SOURCES)
 	TERM=xterm $(MAKE) -C $(MATOYA)
 
 $(TARGET)/liblowlat.so: FORCE
