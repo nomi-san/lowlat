@@ -35,7 +35,11 @@ RestartSec=2
 # nobody else. A dedicated account carrying the capability was measured to be
 # refused at each of those doors. The bounding set keeps root to what capture,
 # the device nodes and those directories need.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+# CAP_SYS_NICE is what the kernel asks before it grants the conversion's queue
+# a raised GPU priority; without it a game holding the GPU starves the
+# conversion and the guest is held on the last picture (measured on a Renoir
+# APU). Its absence is logged and the conversion runs at normal priority.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_NICE
 NoNewPrivileges=yes
 
 # Where the session side connects, created and torn down with the service.

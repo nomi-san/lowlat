@@ -12,6 +12,7 @@
 use std::ffi::CStr;
 use std::os::fd::RawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ash::vk;
 use drm::buffer::DrmFourcc;
@@ -487,11 +488,12 @@ impl Device {
         // us perfectly well.
         // SAFETY: the device came from this instance.
         let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
-        let queue_family = families
-            .iter()
-            .position(|family| family.queue_flags.contains(vk::QueueFlags::COMPUTE))
-            .and_then(|at| u32::try_from(at).ok())
-            .ok_or(Error::NoQueue)?;
+        let family_for = |raised: bool| {
+            conversion_family(&families, raised)
+                .and_then(|at| u32::try_from(at).ok())
+                .ok_or(Error::NoQueue)
+        };
+        let plain = family_for(false)?;
 
         // The family that encodes, which is not required to be the one that
         // converts and on one vendor here cannot even copy.
@@ -510,57 +512,117 @@ impl Device {
             None
         };
 
-        let priorities = [1.0_f32];
-        let mut queues = vec![
-            vk::DeviceQueueCreateInfo::default()
+        // **The conversion asks to be scheduled ahead of other work.** A
+        // compute-only family runs beside graphics, but at the same priority
+        // it still waits for the compute units a game holds: measured on a
+        // Renoir APU, the conversion took 31 ms under a heavy graphics load
+        // on either family. The kernel grants the priority only to a process
+        // that may raise its own scheduling priority, and a driver may refuse
+        // it on a family for reasons of its own; **any refusal is answered by
+        // asking again without it, on the family the conversion always had**,
+        // so a device that opened before opens as it did.
+        let priority = [
+            ash::khr::global_priority::NAME,
+            ash::ext::global_priority::NAME,
+        ]
+        .into_iter()
+        .find(|name| advertises(&available, name));
+        // Built whole per attempt: the feature structures are chained by
+        // pointer, and a chain rebuilt from structures still linked from the
+        // last attempt loops.
+        let attempt = |queue_family: u32, high: Option<&CStr>| {
+            let priorities = [1.0_f32];
+            let mut global = vk::DeviceQueueGlobalPriorityCreateInfoKHR::default()
+                .global_priority(vk::QueueGlobalPriorityKHR::HIGH);
+            let mut conversion = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
-                .queue_priorities(&priorities),
-        ];
-        if let Some(family) = encode_family.filter(|family| *family != queue_family) {
-            queues.push(
-                vk::DeviceQueueCreateInfo::default()
-                    .queue_family_index(family)
-                    .queue_priorities(&priorities),
-            );
-        }
-        let mut names: Vec<*const core::ffi::c_char> =
-            required.iter().map(|name| name.as_ptr()).collect();
-        if encode {
-            names.extend(REQUIRED_ENCODE.iter().map(|name| name.as_ptr()));
-            for wanted in OPTIONAL_ENCODE {
-                if advertises(&available, wanted) {
-                    names.push(wanted.as_ptr());
+                .queue_priorities(&priorities);
+            if high.is_some() {
+                conversion = conversion.push_next(&mut global);
+            }
+            let mut queues = vec![conversion];
+            if let Some(family) = encode_family.filter(|family| *family != queue_family) {
+                queues.push(
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(family)
+                        .queue_priorities(&priorities),
+                );
+            }
+            let mut names: Vec<*const core::ffi::c_char> =
+                required.iter().map(|name| name.as_ptr()).collect();
+            if let Some(name) = high {
+                names.push(name.as_ptr());
+            }
+            if encode {
+                names.extend(REQUIRED_ENCODE.iter().map(|name| name.as_ptr()));
+                for wanted in OPTIONAL_ENCODE {
+                    if advertises(&available, wanted) {
+                        names.push(wanted.as_ptr());
+                    }
                 }
             }
+            // The single-byte and two-byte storage formats the conversion
+            // writes are not in the set every device must support unasked.
+            let mut features = vk::PhysicalDeviceFeatures2::default();
+            features.features.shader_storage_image_extended_formats = vk::TRUE;
+            // **What lets one shader write either depth.** The conversion's
+            // targets are declared without a format, so the store converts to
+            // whatever the view was made with; naming a format in the shader
+            // instead would pin it to one output depth and need a second
+            // compiled copy for the other.
+            features.features.shader_storage_image_write_without_format = vk::TRUE;
+            // Creating an image in a two-plane layout needs this even though
+            // nothing here samples one: the conversion reaches its planes
+            // through views, because the two-plane format itself cannot be
+            // written to on any device seen here while each of its planes can.
+            let mut ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+                .sampler_ycbcr_conversion(true);
+            // Turned on with the video interface and never otherwise.
+            let mut sync =
+                vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+            let mut create = vk::DeviceCreateInfo::default()
+                .queue_create_infos(&queues)
+                .enabled_extension_names(&names)
+                .push_next(&mut features)
+                .push_next(&mut ycbcr);
+            if encode {
+                create = create.push_next(&mut sync);
+            }
+            // SAFETY: every borrowed slice outlives the call, and the
+            // extension names are static.
+            unsafe { instance.create_device(physical, &create, None) }
+        };
+        let (device, queue_family) = match priority {
+            Some(name) => {
+                let raised = family_for(true)?;
+                match attempt(raised, Some(name)) {
+                    Ok(device) => Ok((device, raised)),
+                    Err(refused) => {
+                        if refused == vk::Result::ERROR_NOT_PERMITTED_KHR {
+                            // **Said once.** Every device this process makes
+                            // meets the same answer, and a host without the
+                            // privilege is the usual case rather than a fault.
+                            static UNPRIVILEGED: AtomicBool = AtomicBool::new(false);
+                            if !UNPRIVILEGED.swap(true, Ordering::Relaxed) {
+                                lowlat_common::log_info!(
+                                    "capture: the conversion runs at normal priority; a \
+                                     raised one needs CAP_SYS_NICE, and a game can then hold \
+                                     the stream on its last picture"
+                                );
+                            }
+                        } else {
+                            lowlat_common::log_warn!(
+                                "capture: the conversion runs at normal priority; the driver \
+                                 refused a raised one, {refused}"
+                            );
+                        }
+                        attempt(plain, None).map(|device| (device, plain))
+                    }
+                }
+            }
+            None => attempt(plain, None).map(|device| (device, plain)),
         }
-        // The single-byte and two-byte storage formats the conversion writes
-        // are not in the set every device must support unasked.
-        let mut features = vk::PhysicalDeviceFeatures2::default();
-        features.features.shader_storage_image_extended_formats = vk::TRUE;
-        // **What lets one shader write either depth.** The conversion's targets
-        // are declared without a format, so the store converts to whatever the
-        // view was made with; naming a format in the shader instead would pin
-        // it to one output depth and need a second compiled copy for the other.
-        features.features.shader_storage_image_write_without_format = vk::TRUE;
-        // Creating an image in a two-plane layout needs this even though
-        // nothing here samples one: the conversion reaches its planes through
-        // views, because the two-plane format itself cannot be written to on
-        // any device seen here while each of its planes can.
-        let mut ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
-            .sampler_ycbcr_conversion(true);
-        // Turned on with the video interface and never otherwise.
-        let mut sync = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
-        let mut create = vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queues)
-            .enabled_extension_names(&names)
-            .push_next(&mut features)
-            .push_next(&mut ycbcr);
-        if encode {
-            create = create.push_next(&mut sync);
-        }
-        // SAFETY: every borrowed slice outlives the call, and the extension
-        // names are static.
-        let device = unsafe { instance.create_device(physical, &create, None) }.map_err(driver)?;
+        .map_err(driver)?;
         // SAFETY: the family index came from this device's own enumeration and
         // one queue was requested from it.
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
@@ -615,6 +677,28 @@ impl Drop for DeviceInner {
             self.device.destroy_device(None);
         }
     }
+}
+
+/// The queue family the conversion runs on.
+///
+/// **Raised, a family that computes without drawing comes first.** The first
+/// family that computes is usually the graphics one, and there a conversion
+/// waits behind every frame a game has queued: measured on a Renoir APU, a
+/// stream fell from 59 pictures a second to 18 under a heavy graphics load,
+/// and a fullscreen game held the guest on its last picture. A compute-only
+/// family runs beside the graphics one, but only raised: at normal priority it
+/// measured no better, so an unraised conversion keeps the first family that
+/// computes, which is also the fallback.
+fn conversion_family(families: &[vk::QueueFamilyProperties], raised: bool) -> Option<usize> {
+    let computes =
+        |family: &vk::QueueFamilyProperties| family.queue_flags.contains(vk::QueueFlags::COMPUTE);
+    let beside = |family: &vk::QueueFamilyProperties| {
+        computes(family) && !family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+    };
+    raised
+        .then(|| families.iter().position(beside))
+        .flatten()
+        .or_else(|| families.iter().position(computes))
 }
 
 /// The pixel layout a captured buffer is in, as this interface names it.
@@ -1288,6 +1372,31 @@ mod tests {
         );
         // Something nothing here scans out has no import rather than a guess.
         assert_eq!(super::pixel_format(DrmFourcc::Yuyv), None);
+    }
+
+    /// Raised, the conversion takes the family that computes without drawing,
+    /// and falls back to one that does both; unraised it keeps the first that
+    /// computes. The families are the AMD open driver's order: graphics,
+    /// compute, decode, encode.
+    #[test]
+    fn conversion_runs_beside_graphics() {
+        let family = |flags| vk::QueueFamilyProperties {
+            queue_flags: flags,
+            ..Default::default()
+        };
+        let amd = [
+            family(vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER),
+            family(vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER),
+            family(vk::QueueFlags::VIDEO_DECODE_KHR),
+            family(vk::QueueFlags::VIDEO_ENCODE_KHR),
+        ];
+        assert_eq!(super::conversion_family(&amd, true), Some(1));
+        // Unraised, the compute-only family measured no better.
+        assert_eq!(super::conversion_family(&amd, false), Some(0));
+        // One family for everything is still served.
+        assert_eq!(super::conversion_family(&amd[..1], true), Some(0));
+        assert_eq!(super::conversion_family(&amd[2..], true), None);
+        assert_eq!(super::conversion_family(&amd[2..], false), None);
     }
 
     /// The node numbers have to come out of the encoding the kernel uses, which
