@@ -11,6 +11,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   shared with got in without the approval signaling asked for. Such an offer is now held
   unanswered for 35 s and then declined ([04 §3](04-signaling.md)); every offer's log line
   names both flags.
+- **`--approve-shared` admits them instead**, each with the permissions signaling relayed; off
+  by default, since it opens the host to every account it is shared with.
 
 ### Checked
 - **Live, an established client on an account the host was shared with, not pre-approved**:
@@ -20,12 +22,53 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   when the client gave up.
 - **The owner's offer**, this project's client on the host's own account, arrived with both
   flags set and was admitted and streamed as before.
+- **`--approve-shared`, live**: the same shared account's offer, both flags clear, was admitted
+  at once with the permissions signaling relayed (keyboard, pointer and pad) and streamed HEVC
+  at 120 pictures a second for 20 s with its input, no resend asked.
 - fmt, clippy and the daemon's tests.
 
 ### Known
-- **Nobody can approve yet**: `lowlatd` has no prompt, so an account the host was shared with
-  is admitted only when signaling marks it pre-approved. An approval from the tray is the local
-  channel's question ([07 §5.1](07-platforms.md)).
+- **Nobody can approve one guest at a time yet**: `lowlatd` has no prompt, so an account the
+  host was shared with is admitted only when signaling marks it pre-approved, or by
+  `--approve-shared`, which admits every one. An approval from the tray is the local channel's
+  question ([07 §5.1](07-platforms.md)).
+
+## 2026-10-28 - Four contributions: GNOME's scanout and HDMI name, the conversion beside a game, Intel's HEVC
+
+### Fixed
+- **GNOME's ten-bit scanout imports.** It scans out `XRGB2101010`, blue lowest, and only the
+  red-lowest word was mapped, so the first capture failed at import and a guest was sent no
+  picture ([07 §3](07-platforms.md)). A layout with no equivalent is now refused naming its
+  format.
+- **GNOME's HDMI output is found in the layout.** The session names the kernel's `HDMI-A-<n>`
+  as `HDMI-<n>`, so absolute input spanned the picture alone and the pointer left an HDMI
+  screen for the panel beside it; the name is read as the device's
+  ([09](09-compatibility.md), other desktops).
+- **HEVC streams from Intel's low-power encoder.** On the integrated parts it codes no
+  predicted slices and says so through its prediction direction; handed one, it hung the video
+  engine after the first picture. Where a device requires the second list, a predicted picture
+  goes out as a low-delay bidirectional slice whose second list repeats the first
+  ([05 §4](05-host.md)).
+- **A game on an AMD GPU no longer holds the stream on its last picture.** With a raised
+  priority granted, the conversion runs on a compute-only queue family at that priority;
+  refused, the device is made as before and the refusal is said once ([05 §3](05-host.md)). The
+  service's bounding set carries `CAP_SYS_NICE` for it ([07 §6.1](07-platforms.md)).
+
+### Checked
+- **On the development machine (Linux, KDE)**, the four together on this branch: the bar
+  (1,433 tests); the conversion exact on NVIDIA's, the AMD open driver's and Intel's Vulkan
+  drivers, each refusing the raised priority to an unprivileged process and falling back; the
+  Vulkan encoder's stream the same byte for byte; the Arc A380's HEVC moved to low-delay B and
+  decoding clean in software and on the Intel, AMD and NVIDIA decoders, the AMD encoder's
+  stream unchanged byte for byte; KDE's output names as before. CI green on each merge.
+- **The contributors' own runs**, GNOME Shell 50.1 on Ubuntu 26.04 with established clients: a
+  Renoir APU under a game, 265 held pictures in about 80 s to none and the conversion 0.6 ms;
+  an Alder Lake iGPU's HEVC from one picture and an engine hang to 591 pictures and none; the
+  HDMI screen placed at its offset, the pointer staying on it.
+
+### Not run here
+- A GNOME session; the raised priority granted (it needs `CAP_SYS_NICE`, the packaged
+  service's); a game load.
 
 ## 2026-10-28 - W1's gate on Linux: both Sony pads through SDL's HID layer
 

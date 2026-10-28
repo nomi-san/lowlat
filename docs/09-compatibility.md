@@ -252,12 +252,14 @@ bus and are not Wayland's, so a desktop offering them on X11 offers them here to
 ### Other desktops, by what each one offers
 
 Nothing below is measured; it is what each stack offers against the rows above, and it says
-what would have to be built for each.
+what would have to be built for each. *Amended 2026-10-28:* GNOME's capture and layout rows
+are measured now, on GNOME Shell 50.1 (Ubuntu 26.04) with established clients, by a
+contributor: marked where they are.
 
 | | GNOME on Wayland | Xfce, and any X11 session |
 |---|---|---|
-| capture | scanout, as on any Wayland compositor | scanout where the X server presents through the display device: the open drivers do, one vendor's does not (§3 to §5 and [07 §2](07-platforms.md)) |
-| layout and orientation | `zxdg_output_manager_v1` and `wl_output`, offered | **no Wayland socket**: a RandR query, not built; absent, the axis spans the picture |
+| capture | scanout, as on any Wayland compositor; *measured*: a ten-bit panel scanned out `XRGB2101010`, blue lowest, imported ([07 §3](07-platforms.md)) | scanout where the X server presents through the display device: the open drivers do, one vendor's does not (§3 to §5 and [07 §2](07-platforms.md)) |
+| layout and orientation | `zxdg_output_manager_v1` and `wl_output`, offered; *measured*: an HDMI connector named without its type letter (`HDMI-1` for `HDMI-A-1`), read as the device's name | **no Wayland socket**: a RandR query, not built; absent, the axis spans the picture |
 | idle inhibitor | the shell serves `org.freedesktop.ScreenSaver` | the desktop's screensaver or power manager serves it |
 | clipboard | **none**: no privileged selection protocol to speak of | an X selection client, not built |
 | mode and turn | `org.gnome.Mutter.DisplayConfig` on the session bus, a second mechanism behind the same capability | RandR, not built |

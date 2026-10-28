@@ -147,7 +147,10 @@ design as written:
 - **It is 10-bit, and that is not predictable.** The compositor scans out `ABGR2101010`, not
   an 8-bit format. Colour conversion must accept 10-bit input even while the encoder emits
   8-bit ([05 §3](05-host.md)), and it argues for bringing 10-bit encode forward from its
-  deferred position.
+  deferred position. *Amended 2026-10-28:* nor is the word's order. GNOME scanned out
+  `XRGB2101010` on an AMD APU, the same packing with blue lowest, and before it was mapped the
+  first capture failed at import and a guest was sent no picture; both orders import, and a
+  layout with no equivalent is refused naming its format.
 
   **Do not infer the scanout format from anything above it.** Asking the X server reports
   depth 24, because that is the visual X clients draw into; under a Wayland session the X
@@ -745,6 +748,12 @@ failing somewhere deep in a stream.
 **It is a capability rather than a group because of what it gates**, which is reading another
 process's buffers out of the display controller. No group confers that, and no distribution
 ships one that does.
+
+*Amended 2026-10-28 (the maintainer's decision):* the unit's bounding set also carries
+`CAP_SYS_NICE`. The kernel asks for it before it grants the conversion's queue a raised
+priority ([05 §3](05-host.md)), which is what keeps a game on the same GPU from holding the
+stream on its last picture. Beside `CAP_SYS_ADMIN` it widens little. Without it the service
+runs as before, its conversion at normal priority, and says so once.
 
 ## §7 Audio
 

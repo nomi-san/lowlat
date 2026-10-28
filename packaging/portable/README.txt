@@ -25,6 +25,9 @@ the policy bypass shown, or Unblock-File on the scripts first.
 3. The host: asks for the Parsec account the first time (Python 3 needed),
    then starts lowlatd as the system account in a window of its own. Its
    other arguments are the host's flags, --name "Office PC" for one.
+   --approve-shared lets in an account the host is shared with that is not
+   pre-approved; without it such a guest is told, after 30 s, that the host
+   did not approve in time.
 
      powershell -ExecutionPolicy Bypass -File start-host.ps1
 

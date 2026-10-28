@@ -144,8 +144,9 @@ on an approval gives up by itself after 30 s, which it reports as the host not a
 time, and tells the host nothing when it does; a decline is a different answer, shown at once
 as declined. The hold therefore shows a guest what a host shows while nobody approves, and the
 decline after it frees what the offer held and ends the wait of a client that keeps no timer
-of its own. An application on the library decides for itself, approving with `begin_p2p` or
-declining.
+of its own. `lowlatd --approve-shared` admits them instead, each with the permissions signaling
+relayed; it is off by default, since it opens the host to every account it is shared with. An
+application on the library decides for itself, approving with `begin_p2p` or declining.
 
 ## §4 Credentials
 

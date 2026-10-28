@@ -263,6 +263,13 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   overwriting.
 - Conversion runs on the same device as capture and encode. A cross-device path means a
   readback, which §4 forbids implicitly.
+- **Raised, the conversion runs beside the graphics queue** (*2026-10-28*). Where the device
+  grants its queue a high global priority -- the kernel asks for `CAP_SYS_NICE`
+  ([07 §6.1](07-platforms.md)) -- the conversion takes a family that computes without drawing,
+  at that priority, so a game holding the graphics queue no longer holds the stream on its last
+  picture: on an AMD APU under a game, 265 held pictures in 80 s became none, the conversion
+  0.6 ms. Refused, the device is made as before, on the first family that computes, and the
+  refusal is said once: at normal priority the compute-only family measured no better.
 - **An integrated device powers its compute block down between frames, and the first
   conversion after the gap pays the wakeup.** Measured on the open stack: 0.4 ms warm
   against 1.3 ms after a few milliseconds of idle, with no encoder and no display activity
@@ -406,7 +413,7 @@ Backends:
 | hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
 | hardware, AMD on Windows | shipped (*2026-10-20*) | H.264 and HEVC, HEVC at ten bits from the host's conversion, no full chroma; the low-latency usage, a latency-constrained variable rate with the largest picture bounded by the buffer; at eight bits the captured picture read in place and converted in the encoder's own hardware (§3) |
 | hardware, Intel on Windows | shipped (*2026-10-25*) | H.264 and HEVC, HEVC at ten bits and full chroma at both depths, all from the host's conversion; the current runtime alone; a variable rate, the buffer at six pictures of the session's ceiling and each picture bounded by the encoder's own largest-picture limit, moved with every live change; the runtime's remote-gaming tuning in both codecs; HEVC's predicted pictures the runtime's low-delay bidirectional slices; one picture in the engine at a time |
-| hardware, open stack | shipped | AMD and Intel parts, reached through the display interface |
+| hardware, open stack | shipped | AMD and Intel parts, reached through the display interface; HEVC's predicted pictures as low-delay bidirectional slices where a device requires the second list (*2026-10-28*: Intel's low-power encoder, which otherwise hangs after the first picture on the integrated parts) |
 | hardware, Vulkan Video | explicit choice | H.264 and HEVC at either depth, half-resolution chroma only; conversion and encode on one interface, where the conversion may write the encoder's picture |
 | software | later | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
 
