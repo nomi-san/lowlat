@@ -366,6 +366,20 @@ mod tests {
         let bomb = b"<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY a \"aaaa\">]><x>&a;</x>";
         assert_eq!(parse("AddPortMapping", 200, bomb), Err(Error::Xml));
     }
+
+    /// Unclosed, an answer nests as deep as the node bound inside its cap, and
+    /// is refused without taking the mapper down.
+    #[test]
+    fn a_nesting_to_the_node_bound_is_refused_on_a_default_stack() {
+        // The document is a node itself.
+        let body = "<a>".repeat(MAX_NODES as usize - 1);
+        assert!(body.len() <= crate::http::CONTROL_CAP);
+        // A thread of its own, which takes the default stack as the mapper's does.
+        let answer = std::thread::spawn(move || parse("AddPortMapping", 200, body.as_bytes()))
+            .join()
+            .unwrap();
+        assert_eq!(answer, Err(Error::Xml));
+    }
 }
 
 #[cfg(test)]

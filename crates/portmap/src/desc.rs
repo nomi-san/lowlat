@@ -269,6 +269,21 @@ mod tests {
         assert_eq!(reached(MAX_DEPTH + 1), 0);
     }
 
+    /// The node bound is no depth bound: a description may nest that deep
+    /// inside its cap, and the reader must not take the mapper down with it.
+    #[test]
+    fn a_nesting_to_the_node_bound_is_read_on_a_default_stack() {
+        // The document is a node itself.
+        let levels = MAX_NODES as usize - 1;
+        let body = format!("{}{}", "<a>".repeat(levels), "</a>".repeat(levels));
+        assert!(body.len() <= crate::http::DESCRIPTION_CAP);
+        // A thread of its own, which takes the default stack as the mapper's does.
+        let found = std::thread::spawn(move || parse(body.as_bytes(), &location()))
+            .join()
+            .unwrap();
+        assert_eq!(found, Ok(Description::default()));
+    }
+
     /// A device that declares another encoding and writes its name in it is
     /// read all the same: the services are what is read, and they are text.
     #[test]
