@@ -77,6 +77,16 @@ const IDLE_MS: u64 = 50;
 /// what is used.
 const ROSTER_MS: f64 = 2000.0;
 
+/// How long an offer that needs approval is held before it is declined.
+///
+/// **Past the client's own wait.** An established client gives up on an
+/// attempt nobody answered after 30 s, as the host not approving in time, and
+/// tells the host nothing; a decline is a different answer, shown at once as
+/// declined. Holding past that wait shows a guest what a host shows while
+/// nobody approves, and the decline after it frees what the offer held here
+/// and ends the wait of a client that keeps no timer of its own.
+const HOLD_MS: f64 = 35_000.0;
+
 /// The address on a readiness marker is ignored by the receiver, so this is a
 /// placeholder rather than anywhere we can be reached. A widely deployed peer
 /// sends this exact value, which is what establishes that it is ignored.
@@ -1200,6 +1210,9 @@ async fn session_loop(
         settings.guest_clipboard.name()
     );
     let mut rostered = lowlat_common::clock::Time::now();
+    // Offers waiting for an approval nothing here gives, oldest first: the
+    // attempt, who sent it, and when.
+    let mut held: Vec<(String, String, lowlat_common::clock::Time)> = Vec::new();
     // What the session's side of this host keeps between passes.
     let mut side = session_side::Side::new();
 
@@ -1210,7 +1223,13 @@ async fn session_loop(
                 match message.action.as_str() {
                     "offer_relay" => {
                         let offer: OfferRelay = serde_json::from_value(message.payload)?;
-                        lowlat_common::log_info!("lowlatd: offer {} from {}", offer.attempt_id, offer.from);
+                        lowlat_common::log_info!(
+                            "lowlatd: offer {} from {}, owner={} skip_approval={}",
+                            offer.attempt_id,
+                            offer.from,
+                            offer.is_owner,
+                            offer.skip_approval
+                        );
                         peers.insert(
                             offer.attempt_id.clone(),
                             Introduced {
@@ -1218,14 +1237,33 @@ async fn session_loop(
                                 name: offer.user.name.clone(),
                             },
                         );
+                        // **Signaling says who needs approval, and nothing here
+                        // gives one.** An offer that is neither the owner's nor
+                        // marked to skip it is held unanswered, as a host holds
+                        // one while nobody approves, and declined after
+                        // `HOLD_MS`.
+                        if !offer.is_owner && !offer.skip_approval {
+                            lowlat_common::log_info!(
+                                "lowlatd: holding {}, it needs approval and nothing here approves",
+                                offer.attempt_id
+                            );
+                            held.push((
+                                offer.attempt_id.clone(),
+                                offer.from.clone(),
+                                lowlat_common::clock::Time::now(),
+                            ));
+                            continue;
+                        }
 
-                        // Admission is the application's decision, and this
-                        // application's policy is capacity alone.
+                        // Admission is the application's decision, and past
+                        // approval this application's policy is capacity alone.
                         // **Silence is not a refusal.** A declined answer is a
                         // wire event the peer acts on at once; no answer at all
-                        // leaves it connecting indefinitely, because nothing in
-                        // the protocol reports a host that never replied. Every
-                        // offer gets an answer, including the ones we turn down.
+                        // leaves a peer that keeps no timer of its own
+                        // connecting indefinitely, because nothing in the
+                        // protocol reports a host that never replied. Every
+                        // offer gets an answer, including the ones we turn down
+                        // and the ones held for approval.
                         let refusal = if reject_all {
                             Some("policy".to_string())
                         } else {
@@ -1326,6 +1364,7 @@ async fn session_loop(
                     "offer_cancel_relay" => {
                         let cancel: CancelRelay = serde_json::from_value(message.payload)?;
                         lowlat_common::log_info!("lowlatd: cancelled {}", cancel.attempt_id);
+                        held.retain(|(attempt, _, _)| *attempt != cancel.attempt_id);
                         seam.end_connection(&cancel.attempt_id);
                         peers.remove(&cancel.attempt_id);
                         client.send("conn_update", &advertisement(name, capacity, occupancy(seam)))?;
@@ -1367,6 +1406,29 @@ async fn session_loop(
         if lowlat_common::clock::elapsed_ms(rostered) >= ROSTER_MS && occupancy(seam) > 0 {
             rostered = lowlat_common::clock::Time::now();
             app::announce_guests(seam);
+        }
+
+        // **A held offer gets its answer too**, once its hold is over.
+        while held
+            .first()
+            .is_some_and(|(_, _, since)| lowlat_common::clock::elapsed_ms(*since) >= HOLD_MS)
+        {
+            let (attempt, to, _) = held.remove(0);
+            lowlat_common::log_info!("lowlatd: declining {attempt}: not approved in time");
+            let empty = no_credentials();
+            client.send(
+                "answer",
+                &Answer {
+                    approved: false,
+                    attempt_id: &attempt,
+                    data: AnswerData {
+                        base: HostDataBase::default(),
+                        creds: &empty,
+                    },
+                    to: &to,
+                },
+            )?;
+            peers.remove(&attempt);
         }
 
         side.pass(seam, settings, peers, established);
