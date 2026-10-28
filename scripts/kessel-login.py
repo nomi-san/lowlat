@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Log in to the signaling service and hand lowlatd its session.
+r"""Log in to the signaling service and hand lowlatd its session.
 
 The service authenticates a host by a session token it hands out at login,
 and logging in is a person's job: it may need a second factor, and a new
