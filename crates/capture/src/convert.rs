@@ -3118,7 +3118,13 @@ mod tests {
     fn the_exported_layout_describes_the_descriptor() {
         let width = 256;
         let height = 128;
-        let device = Device::any().expect("a device that can convert");
+        // A display device: the export needs the interfaces a capture opens
+        // with, which a conversion-only device does not carry.
+        let device = (0..8)
+            .find_map(|n| {
+                Device::for_display(&std::path::PathBuf::from(format!("/dev/dri/card{n}"))).ok()
+            })
+            .expect("a display device");
         let target = device.allocate_nv12(width, height).expect("a target");
 
         let (fd, layout) = device.export_nv12(&target, true).expect("export the frame");
