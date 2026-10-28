@@ -3,6 +3,56 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - W1 closed: the gate on the development machine
+
+### Checked
+- **Ten minutes on every decoder** against an established host that sends neither ten-bit nor
+  full chroma, at 2560x1440, H.264 and HEVC each, by planes: D3D11 on the NVIDIA, Intel and AMD
+  GPUs, NVIDIA's, Intel's and AMD's own decoders, the LGPL pair and the system's decoder. Sixteen
+  runs from the build workflow's zip, each on the decoder asked for, one build each, the
+  process's memory flat across the ten minutes. Arrival to present, H.264 / HEVC: NVIDIA's own
+  2.9 / 3.2 ms, D3D11 on the NVIDIA 3.1 / 3.4, the pair 3.8 / 3.9, the system's 4.0 / 4.5, D3D11
+  on the Intel card 5.0 / 4.5, Intel's own 5.1 / 4.5, AMD's own 7.2 / 9.5.
+- **Ten-bit and full chroma, both kinds**, against a second established host that sends both, at
+  1920x1080 and 120 pictures a second in the full range: ten-bit on all eight decoders, by planes
+  and by handle on the six that hand out both; 4:4:4 at eight and at ten bits through D3D11 and
+  the vendors' own decoders on the NVIDIA and the Intel card, by both kinds, and through the pair.
+  Thirty-two runs, each on the decoder and kind asked for, 119 to 120 pictures a second.
+- **Mid-session**: the decoder walked every twelve seconds through every decoder on all three
+  GPUs, by handle and by planes, the declaration made again for each -- ten-bit 4:2:0 where full
+  chroma is not taken; planes to handles and back every ten seconds, with no rebuild; and the AMD
+  GPU's driver restarted under a session decoding on it by handle: the device lost, found again
+  under a new identity 1.4 s later, the decoder built again at 1.7 s, the full rate back within
+  three seconds.
+- **Recorded**: the presentation by handle on the decoding GPU's own monitor and presented from
+  another GPU's -- composed by the system in every case, 13.6 to 14.7 ms from the present to the
+  screen at 120 a second, the render to present 0.24 ms on the display's own GPU, 2.7 ms from the
+  Intel card and 1.0 ms from the AMD; every driver lets a shader read the decoder's output, on
+  every committed clip, and the copy route decodes too; full chroma on the NVIDIA and the Intel
+  card and refused by the AMD; the toolkit opens a picture's textures once per allocation (since
+  W1.9). **How long a released slot stays unread**, measured once with a build that timed each
+  slot from its release to the decoder's next take, not kept: by handle through D3D11 on the AMD
+  GPU at 120 a second, as little as 0 to 3 us, its decoder near its limit; AMD's own decoder from
+  12 us, the NVIDIA mostly from 4.4 ms (once 76 us). On the integrated GPU the renderer's wait
+  before each acquire is the whole margin, as W1.4 expected.
+- **The attended half** -- input, the cursor and relative mode by hand -- the maintainer's own
+  run the day before.
+- CI green on the pushed branch, every job, the Windows job decoding the clips through the pair
+  and starting the demo.
+
+### Known
+- **D3D11 on the AMD GPU falls behind a demanding stream**: at 2560x1440 near 80 pictures a
+  second it decoded in 12.7 to 13.5 ms, 63 to 65 ms from arrival to present with late fragments
+  counted as loss, and at 1920x1080 ten-bit 120 a second by planes it kept 106 a second at 45 ms.
+  The engine's low clock under one decode (W1.3); the automatic order takes AMD's own decoder
+  there, which kept pace in every run.
+
+### Not run
+- The Gate C run on Linux, with both Sony pads through SDL's HID layer: left at the maintainer's
+  word.
+
+W1's gate is marked passed.
+
 ## 2026-10-27 - The GPU tests ask the caps for what a machine may lack
 
 ### Changed

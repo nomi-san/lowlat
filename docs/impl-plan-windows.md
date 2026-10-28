@@ -44,7 +44,8 @@ readiness fixed beside it for all three kinds; its other checks owed at W4's gat
 was not run is named in its entry. *Amended 2026-10-27:* W1.9, the demo, built and closed with no
 menu, the maintainer's decision, its decoder created on the GPU it draws on; W1.10 and W1's gate
 are next. *Amended 2026-10-27:* W1.10, the client's Windows zip, built and closed; W1's gate is
-next.
+next. *Amended 2026-10-28:* W1's gate passed on the development machine and W1 closed, its run on
+Linux left at the maintainer's word.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -543,6 +544,12 @@ established hosts:
   queue are shared with it (*amended 2026-10-27, at W1.9*: with both Sony pads through SDL's HID
   layer there, and a wireless Sony pad on Windows where one is paired, which W1.9 left to the
   gate).
+
+*Passed 2026-10-28* on the development machine, every leg as written but one, the figures in the
+[changelog](changelog.md)'s entry of the day: the Gate C run on Linux, with both Sony pads, was
+left at the maintainer's word. The attended half was the maintainer's own run the day before.
+Recorded rather than fixed: D3D11 on the AMD GPU falls behind a demanding stream, its engine's
+low clock under one decode (W1.3), where the automatic order takes AMD's own decoder.
 
 ## Phase W2 - The host
 
@@ -2632,6 +2639,7 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-10-28: W1's gate passed, its run on Linux left (the maintainer's decision); W1 closed.
 - 2026-10-27: W1.10 built and closed: the client's Windows zip from the build workflow, and the
   software decoder and the demo in Windows CI; the workflow's zip checked unpacked on two AMD
   laptops.
