@@ -38,7 +38,7 @@ pub enum Error {
     /// The device exposes no queue that can run the conversion.
     NoQueue,
     /// The captured framebuffer is in a layout this interface has no name for.
-    UnknownFormat,
+    UnknownFormat(DrmFourcc),
     /// No memory type satisfies both the image and the imported descriptor.
     NoMemoryType,
     /// The device will export a picture in neither of the two ways a frame is
@@ -74,7 +74,9 @@ impl core::fmt::Display for Error {
             Self::NoDeviceForNode => f.write_str("no device reports driving that display node"),
             Self::Unsupported(what) => write!(f, "the display's device does not support {what}"),
             Self::NoQueue => f.write_str("the display's device exposes no usable queue"),
-            Self::UnknownFormat => f.write_str("captured pixel layout has no equivalent here"),
+            Self::UnknownFormat(fourcc) => {
+                write!(f, "captured pixel layout {fourcc} has no equivalent here")
+            }
             Self::NoMemoryType => f.write_str("no memory type suits both image and descriptor"),
             Self::NoExport => f.write_str("the device exports a picture in neither way"),
             Self::BadShader => f.write_str("the committed conversion shader is unusable"),
@@ -767,7 +769,7 @@ impl Device {
     /// both drivers here scan out of something tiled or compressed, and a
     /// buffer read as though it were plain rows is garbage.
     pub fn import(&self, source: &Imports<'_>) -> Result<Imported, Error> {
-        let format = pixel_format(source.format).ok_or(Error::UnknownFormat)?;
+        let format = pixel_format(source.format).ok_or(Error::UnknownFormat(source.format))?;
 
         let layouts: Vec<vk::SubresourceLayout> = source
             .planes
