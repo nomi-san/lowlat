@@ -163,7 +163,8 @@ See [docs/06-api.md](docs/06-api.md).
 
 ## Building
 
-Requires a stable Rust toolchain, Rust 2024 edition.
+Requires a stable Rust toolchain no older than the `rust-version` in
+[Cargo.toml](Cargo.toml), which CI checks; Rust 2024 edition.
 
 ```sh
 cargo build --release

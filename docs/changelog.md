@@ -3,6 +3,42 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - Dependencies: a nested gateway answer, and the minimum toolchain at 1.95
+
+### Fixed
+- **A deeply nested gateway description or answer took the process down.** The XML reader
+  recursed once per nested element, and on a thread with the default stack, as the port
+  mapper's is, 2,581 levels overflowed it in a release build and 135 in a debug one -- inside
+  the node bound and both body caps, and any device that answers a search on the link can
+  serve one. Its 0.21.2 reads element content without recursing. Two tests parse the deepest
+  nesting the node bounds allow on a default stack; with the earlier release they take the
+  test process down.
+
+### Changed
+- **The compatible releases taken across the lockfile**, 36 crates, with `generic-array` held
+  at 0.14.7: `crypto-common` 0.1.7 pins it, and a plain update downgrades `crypto-common` to
+  take 0.14.9, whose deprecations fail the lints in the core.
+- **The minimum toolchain is 1.95, from 1.85**, which the workspace no longer built on. The
+  number is what the resolver acts on: it holds back any release that asks for a newer
+  compiler, and held back `time`'s fix for its advisory -- taken now (0.3.55), its exception
+  gone. A CI job checks the workspace on the toolchain the manifest names, read from the
+  manifest.
+- **Three rewrites the new minimum makes available are allowed, not taken**
+  (`manual_is_multiple_of`, `chunks_exact_to_as_chunks`, `collapsible_if`): applied, they
+  rewrote 38 files, data paths among them, for no change in behaviour. `collapsible_if` also
+  covers a plain nested `if`, which goes unchecked with it.
+
+### Known
+- **The browser transport's `crypto-bigint` advisory keeps its exception.** The fixed release
+  is on the elliptic-curve 0.14 line, which the DTLS layer reaches from its 0.9 alone: a change
+  of its interface and of the certificate's crates beside it, left for a change of its own.
+
+### Checked
+- Both platforms' bars on each change: on Windows 1,468 tests and none failing, on a clean
+  Linux clone 1,428 with the two dual-stack tests that fail on every run there. The workspace
+  checks clean on 1.95.0 on both platforms. The CI job's step, run as written, passes, and
+  fails with the manifest set back to 1.85.
+
 ## 2026-10-28 - W1 closed: the gate on the development machine
 
 ### Checked

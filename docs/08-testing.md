@@ -332,7 +332,9 @@ linked against the client-only library, which is the one check that every client
 application links is there. The hand-started build workflow produces the library in both
 forms as tarballs, the client one with the demo inside, and a `FEATURES` line in each is
 read from the tarball's own copy of the library rather than from the build directory,
-where the two builds land on the same file.
+where the two builds land on the same file. The workspace is also checked on the minimum
+toolchain its manifest declares, read from the manifest: the resolver holds back any release
+that asks for a newer compiler, so the number must be one a build has passed.
 
 **Windows builds and tests on every commit too**, the lints as errors, for every crate with
 a Windows side; the crates without one yet build empty there, so the whole workspace builds
