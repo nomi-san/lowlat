@@ -3,6 +3,40 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-28 - W1's gate on Linux: both Sony pads through SDL's HID layer
+
+### Checked
+- **Ten minutes at the desk against an established host**, from a cold connect, on the
+  development machine's Linux side: H.264 at 120 pictures a second, 8.1 ms from arrival to
+  present (the median second; the worst second's p99 32 ms), decode 1.4 ms and read-back 1.4 ms
+  by planes, the reader at most one picture behind, the process's memory flat after its first
+  30 s. Keys, buttons, the wheel and pointer motion sent and none dropped, relative mode in and
+  out three times, 25 pointer pictures with no miss; sound whenever the host played; 1,350
+  resend requests answered, the recent loss at most a ten-thousandth.
+- **Both Sony pads through SDL's HID layer**, a DualShock 4 and a DualSense, each opened by SDL's
+  own driver for it: 18,237 states sent and none refused. The DualShock 4's two sticks, both
+  triggers to their ends and its buttons; the DualSense's left stick, d-pad, shoulder and
+  touchpad, and its right stick at full range through SDL's gamepad layer alone after the run.
+  The host took both as the sixteen-button pad, which is what states are sent as.
+- The Linux bar on this machine's toolchain (1.99.1): 1,430 tests and none failing, the two
+  dual-stack tests among them; SDL 3.4.18 built from its release and the demo against it, the
+  websocket reader's check passing.
+
+### Known
+- **The demo sends a pad's state again when nothing in it changed.** Stick jitter inside the
+  demo's 2,000 deadzone marks the pad changed, and the state it sends is the one before: 17,075
+  of the DualSense's 18,049 states repeated the last, against 6 of the DualShock 4's 195.
+- **The demo's makefile builds the toolkit only when its archive is missing**, so a tree that
+  already has one keeps it across a change to the toolkit's sources, headers included, with no
+  build error. `make -C third_party/matoya clean` before building the demo after one.
+
+### Not run
+- The DualSense's triggers and face buttons: its sticks are faulty, a fault of that pad.
+- A rumble from the host (it sent none), and the pads as their own reports
+  (`LOWLAT_PAD_RAW`), which an established host reads only in a mode its owner sets.
+
+W1's gate is passed in full.
+
 ## 2026-10-28 - The browser transport's record layer moved, and no advisory exception left
 
 ### Changed
