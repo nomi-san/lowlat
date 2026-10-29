@@ -147,13 +147,169 @@ mod imp {
     }
 }
 
+/// The system's address wait: the public one where the system has it (14.4
+/// on), the private one below that, each found by name at run time, since a
+/// symbol linked by name and absent stops the load on an older system.
+///
+/// **Its timeout is coalesced**: the system lets a timed wait run late by an
+/// eighth to a quarter of its length (measured, see
+/// [`crate::clock::precise_sleep`]); a wake is not delayed. Measured
+/// 2026-10-29, a wake reached a waiter parked in the kernel in 17 us at the
+/// median through either pair, no sooner than through the bucket table below:
+/// what this buys is a wait per address, with no shared bucket and no wake of
+/// every waiter on one.
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::{AtomicU32, Duration};
+    use core::ffi::{CStr, c_int, c_void};
+    use std::sync::OnceLock;
+
+    type PublicWait = unsafe extern "C" fn(*mut c_void, u64, usize, u32, u32, u64) -> c_int;
+    type PublicWake = unsafe extern "C" fn(*mut c_void, usize, u32) -> c_int;
+    type PrivateWait = unsafe extern "C" fn(u32, *mut c_void, u64, u64, u64) -> c_int;
+    type PrivateWake = unsafe extern "C" fn(u32, *mut c_void, u64) -> c_int;
+
+    /// The clock a public wait's timeout is measured on.
+    const OS_CLOCK_MACH_ABSOLUTE_TIME: u32 = 32;
+    /// The private wait's compare-and-wait on a 32-bit value.
+    const UL_COMPARE_AND_WAIT: u32 = 1;
+    /// The private wake's flag for every waiter rather than one.
+    const ULF_WAKE_ALL: u32 = 0x100;
+    /// The private calls' flag for an error returned rather than set in errno.
+    const ULF_NO_ERRNO: u32 = 0x0100_0000;
+
+    #[derive(Clone, Copy)]
+    pub(super) enum System {
+        Public {
+            wait: PublicWait,
+            wake_one: PublicWake,
+            wake_all: PublicWake,
+        },
+        Private {
+            wait: PrivateWait,
+            wake: PrivateWake,
+        },
+    }
+
+    fn find(name: &CStr) -> *mut c_void {
+        // SAFETY: a lookup in the process's own namespace by a valid name.
+        unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) }
+    }
+
+    pub(super) fn public() -> Option<System> {
+        let (wait, wake_one, wake_all) = (
+            find(c"os_sync_wait_on_address_with_timeout"),
+            find(c"os_sync_wake_by_address_any"),
+            find(c"os_sync_wake_by_address_all"),
+        );
+        if wait.is_null() || wake_one.is_null() || wake_all.is_null() {
+            return None;
+        }
+        // SAFETY: the signatures are the system's own, from its header.
+        unsafe {
+            Some(System::Public {
+                wait: core::mem::transmute::<*mut c_void, PublicWait>(wait),
+                wake_one: core::mem::transmute::<*mut c_void, PublicWake>(wake_one),
+                wake_all: core::mem::transmute::<*mut c_void, PublicWake>(wake_all),
+            })
+        }
+    }
+
+    pub(super) fn private() -> Option<System> {
+        let (wait, wake) = (find(c"__ulock_wait2"), find(c"__ulock_wake"));
+        if wait.is_null() || wake.is_null() {
+            return None;
+        }
+        // SAFETY: the signatures are the kernel's own, unchanged since 11.
+        unsafe {
+            Some(System::Private {
+                wait: core::mem::transmute::<*mut c_void, PrivateWait>(wait),
+                wake: core::mem::transmute::<*mut c_void, PrivateWake>(wake),
+            })
+        }
+    }
+
+    /// Found once. Every supported system has the private pair, so `None`
+    /// is a system below the floor, where a wait sleeps out its timeout.
+    fn system() -> Option<System> {
+        static FOUND: OnceLock<Option<System>> = OnceLock::new();
+        *FOUND.get_or_init(|| public().or_else(private))
+    }
+
+    pub(super) fn wait(atom: &AtomicU32, expected: u32, timeout: Duration) {
+        match system() {
+            Some(system) => wait_with(system, atom, expected, timeout),
+            None => std::thread::sleep(timeout),
+        }
+    }
+
+    pub(super) fn wake(atom: &AtomicU32, count: i32) {
+        if let Some(system) = system() {
+            wake_with(system, atom, count);
+        }
+    }
+
+    pub(super) fn wait_with(system: System, atom: &AtomicU32, expected: u32, timeout: Duration) {
+        let address = core::ptr::from_ref(atom).cast_mut().cast();
+        // Never zero: the caller rounds a timeout up to a millisecond, and
+        // zero would be an error to one call and forever to the other.
+        let nanos = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX).max(1);
+        // SAFETY: the atomic outlives the call and is four bytes, which is the
+        // size passed; the return is ignored because every outcome -- woken,
+        // changed, timed out, interrupted -- sends the caller to recheck.
+        unsafe {
+            match system {
+                System::Public { wait, .. } => {
+                    wait(
+                        address,
+                        u64::from(expected),
+                        size_of::<u32>(),
+                        0,
+                        OS_CLOCK_MACH_ABSOLUTE_TIME,
+                        nanos,
+                    );
+                }
+                System::Private { wait, .. } => {
+                    wait(
+                        UL_COMPARE_AND_WAIT | ULF_NO_ERRNO,
+                        address,
+                        u64::from(expected),
+                        nanos,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn wake_with(system: System, atom: &AtomicU32, count: i32) {
+        let address = core::ptr::from_ref(atom).cast_mut().cast();
+        // SAFETY: waking an address nobody waits on is permitted, and
+        // reported as an error that means exactly that.
+        unsafe {
+            match system {
+                System::Public {
+                    wake_one, wake_all, ..
+                } => {
+                    let wake = if count == 1 { wake_one } else { wake_all };
+                    wake(address, size_of::<u32>(), 0);
+                }
+                System::Private { wake, .. } => {
+                    let all = if count == 1 { 0 } else { ULF_WAKE_ALL };
+                    wake(UL_COMPARE_AND_WAIT | ULF_NO_ERRNO | all, address, 0);
+                }
+            }
+        }
+    }
+}
+
 /// Portable fallback: a fixed table of buckets keyed by address.
 ///
 /// Correct but coarser than a futex, since unrelated addresses can share a
 /// bucket and produce extra wakes. Callers recheck their predicate, so extra
-/// wakes are harmless. Linux and Windows get the real thing above; this
+/// wakes are harmless. Linux, Windows and macOS get the real thing above; this
 /// exists so the workspace builds and tests anywhere else.
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod imp {
     use super::{AtomicU32, Duration};
     use core::sync::atomic::Ordering;
@@ -257,6 +413,35 @@ mod tests {
             waited < Duration::from_secs(5),
             "waiter ran to its timeout instead of being woken: {waited:?}"
         );
+    }
+
+    /// Both of the system's pairs wake a waiter parked on them, well before
+    /// its timeout: the public one the test above runs through, and the
+    /// private one below it, which a system that has the public one never
+    /// runs, so it is driven here by name.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn each_of_the_systems_waits_is_woken() {
+        for (name, system) in [("public", imp::public()), ("private", imp::private())] {
+            let system = system.unwrap_or_else(|| panic!("the {name} pair was not found"));
+            let flag = Arc::new(AtomicU32::new(0));
+            let waiter_flag = Arc::clone(&flag);
+            let waiter = std::thread::spawn(move || {
+                let begin = Instant::now();
+                while waiter_flag.load(Ordering::Acquire) == 0 {
+                    imp::wait_with(system, &waiter_flag, 0, Duration::from_secs(10));
+                }
+                begin.elapsed()
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            flag.store(1, Ordering::Release);
+            imp::wake_with(system, &flag, 1);
+            let waited = waiter.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(5),
+                "the {name} pair ran to its timeout instead of being woken: {waited:?}"
+            );
+        }
     }
 
     /// **The middle of ten waits, not one.** A wait may return early -- a

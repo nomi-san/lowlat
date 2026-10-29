@@ -162,7 +162,7 @@ pub fn precise_sleep(duration: Duration) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn sleep_until(target: Instant) {
     let remaining = target.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
@@ -209,6 +209,75 @@ fn sleep_until(target: Instant) {
         if rc != libc::EINTR {
             return;
         }
+    }
+}
+
+/// A kernel-queue timer marked critical, armed once.
+///
+/// **macOS lets every ordinary timed wait run late by a share of its length**
+/// -- a sleep, an absolute one, a kernel queue's own timeout: an eighth in a
+/// foreground process and a quarter in one started from a remote shell, up to
+/// 1 and 5 ms (measured 2026-10-29: 2 ms landed 260 to 510 us late). A timer
+/// marked critical is exempt, landing 30 us late at the median and 60 at the
+/// 95th percentile, inside the spin margin. Armed once, so a wait interrupted
+/// by a signal waits again for the same expiry rather than a fresh interval.
+#[cfg(target_os = "macos")]
+fn sleep_until(target: Instant) {
+    let remaining = target.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return;
+    }
+    // SAFETY: kqueue(2) takes no arguments; the descriptor is closed below.
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        // No descriptor to spare: the coalesced sleep, late but not lost.
+        std::thread::sleep(remaining);
+        return;
+    }
+    let timer = libc::kevent {
+        ident: 0,
+        filter: libc::EVFILT_TIMER,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
+        data: isize::try_from(remaining.as_nanos()).unwrap_or(isize::MAX),
+        udata: core::ptr::null_mut(),
+    };
+    // SAFETY: one valid change and no event slots; returns once applied.
+    let armed = unsafe {
+        libc::kevent(
+            queue,
+            &raw const timer,
+            1,
+            core::ptr::null_mut(),
+            0,
+            core::ptr::null(),
+        )
+    };
+    if armed < 0 {
+        std::thread::sleep(remaining);
+    } else {
+        let mut fired = timer;
+        loop {
+            // SAFETY: one event slot we own, no changes, no timeout.
+            let rc = unsafe {
+                libc::kevent(
+                    queue,
+                    core::ptr::null(),
+                    0,
+                    &raw mut fired,
+                    1,
+                    core::ptr::null(),
+                )
+            };
+            if rc >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break;
+            }
+        }
+    }
+    // SAFETY: the descriptor came from kqueue above and is closed once.
+    unsafe {
+        libc::close(queue);
     }
 }
 
@@ -280,6 +349,27 @@ mod tests {
         let begin = Time::now();
         precise_sleep(Duration::from_millis(5));
         assert!(elapsed_ms(begin) >= 5.0);
+    }
+
+    /// **The middle of ten landings, not one**: a sleep the system coalesces
+    /// lands an eighth to a quarter of 5 ms late, 600 us and more, every time,
+    /// where the critical timer and the spin land on the deadline. One sample
+    /// could be a preemption; the median cannot.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_precise_sleep_lands_on_its_deadline() {
+        let mut late_us: Vec<f64> = (0..10)
+            .map(|_| {
+                let begin = Time::now();
+                precise_sleep(Duration::from_millis(5));
+                elapsed_ms(begin).mul_add(1000.0, -5000.0)
+            })
+            .collect();
+        late_us.sort_by(f64::total_cmp);
+        assert!(
+            late_us[5] < 200.0,
+            "precise sleeps landed this late, in us: {late_us:?}"
+        );
     }
 
     /// The named clock in microseconds, not another unit: an interval read

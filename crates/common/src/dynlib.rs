@@ -58,7 +58,8 @@ unsafe impl Send for Library {}
 unsafe impl Sync for Library {}
 
 impl Library {
-    /// Open a library by name, or by absolute path.
+    /// Open a library by name, or by absolute path. On macOS by path alone:
+    /// the system's search for a bare name takes the working directory.
     ///
     /// Returns `None` if it is absent or fails to load. The caller knows which
     /// names it tried and is the one that can say so usefully in a log, which
@@ -150,6 +151,14 @@ mod imp {
     const FLAGS: i32 = libc::RTLD_NOW | libc::RTLD_LOCAL;
 
     pub(super) fn open(name: &CStr) -> *mut c_void {
+        // **macOS searches the working directory for a bare name** in an
+        // ordinary process -- measured 2026-10-29: a library planted there
+        // opened by name -- so a name with no directory in it is refused there,
+        // and the caller names the file it means.
+        #[cfg(target_os = "macos")]
+        if !name.to_bytes().contains(&b'/') {
+            return core::ptr::null_mut();
+        }
         // SAFETY: `name` is a valid NUL-terminated string for the call.
         unsafe { libc::dlopen(name.as_ptr(), FLAGS) }
     }
@@ -235,8 +244,12 @@ mod tests {
 
     /// Present on any glibc system. Versioned, because the unversioned alias
     /// is a linker script rather than an object and will not load.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     const LIBC: &CStr = c"libc.so.6";
+    /// The system's C library, by the path every macOS answers for, though
+    /// the file itself lives in the shared cache.
+    #[cfg(target_os = "macos")]
+    const LIBC: &CStr = c"/usr/lib/libSystem.B.dylib";
     /// The C runtime every supported Windows carries.
     #[cfg(windows)]
     const LIBC: &CStr = c"ucrtbase.dll";
@@ -272,6 +285,18 @@ mod tests {
         let symbol: Option<unsafe extern "C" fn()> =
             unsafe { library.symbol(c"lowlat_no_such_symbol_exists") };
         assert!(symbol.is_none());
+    }
+
+    /// A bare name is never searched on macOS, where the system's search
+    /// takes the working directory too; the same library by its path opens.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bare_name_is_refused() {
+        assert!(
+            Library::open(c"libSystem.B.dylib").is_none(),
+            "a bare name was searched"
+        );
+        assert!(Library::open(LIBC).is_some());
     }
 
     #[test]
