@@ -1,8 +1,8 @@
 # Implementation plan: macOS
 
 **Status:** planned 2026-10-29 at its interview. macOS gets the client only: there is no host on
-macOS and none is planned. The platform seams (M0) come first and the client (M1) after them;
-nothing is built.
+macOS and none is planned. The platform seams (M0) come first and the client (M1) after them.
+*Amended 2026-10-29:* M0 built and closed the same day; M1 is next.
 
 ## Why the seams come first
 
@@ -51,13 +51,21 @@ macOS gets a named place -- a module of the same name per platform, never a trai
   pass there -- 748 on each -- and on Linux and Windows as before. The simulator's long
   trajectory test takes 581 s on arm64 against 186 on Windows: the core's own cipher runs in
   software on arm64 unless told otherwise, which M0.4 settles.
-- [ ] **M0.4 build**: dependencies scoped by target; the licence and advisory gate checking the
+- [x] **M0.4 build**: dependencies scoped by target; the licence and advisory gate checking the
   Apple targets; a macOS job in CI that builds, lints and tests arm64 natively and x86_64 under
-  the system's translation layer; AGENTS naming macOS's bar.
+  the system's translation layer; AGENTS naming macOS's bar. *Built 2026-10-29.* The host's
+  crates are the decoder's and the client's test dependencies only where a host runs (M0.2,
+  M0.3). The licence and advisory gate checks both Apple targets and finds nothing new: no crate
+  enters the graph for macOS alone. CI's macOS job lints and tests in the Windows form, each
+  architecture on its own runner. The core's own cipher keeps its software path on arm64: the
+  processor's instructions would take the simulator's longest test from 581 s to 442 s, and live
+  sessions seal with the vetted library, which uses them already (the maintainer's decision).
 
 **Gate:** the Linux and Windows tests and every lint as before, nothing there behaving
 differently, and every crate with a macOS side building, linting and passing its tests on both
-architectures.
+architectures. *Passed 2026-10-29*: on the development Mac, both architectures, 748 tests each;
+Windows 1468; Linux 1433, its two dual-stack tests failing on a loopback that names one family
+only, as before any of this (an environment, checked on the commit before). M0 is closed.
 
 ## Phase M1 - The client
 
@@ -148,5 +156,7 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-29: M0.1 to M0.4 built, M0's gate passed and M0 closed; M0.3 corrected at the build,
+  the library's client half moving to M1.2 with the seam it stands on.
 - 2026-10-29: planned at its interview: M0, the platform seams, and M1, the client; no host on
   macOS.

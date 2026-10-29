@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M0.4: macOS in CI and in the licence gate; M0 closed
+
+### Changed
+- **CI lints and tests macOS on every commit** ([08](08-testing.md)), in the Windows form, arm64
+  and x86_64 each on a runner of its own, the second under the system's translation layer.
+- **The licence and advisory gate checks both Apple targets.** No crate enters the graph for
+  macOS alone, so it finds what it found before.
+- The core's own cipher keeps its software path on arm64 (the maintainer's decision): the
+  processor's instructions would shorten the simulator's longest test from 581 s to 442 s, and
+  live sessions seal with the vetted library, which uses them already.
+
+### Measured
+- M0's gate: the whole workspace builds, lints and passes its tests on both Mac architectures --
+  748 each -- and on Linux and Windows as before.
+
 ## 2026-10-29 - M0.3: the whole workspace builds for macOS
 
 ### Changed
