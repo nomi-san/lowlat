@@ -3,6 +3,22 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M0.2: the decoders and the sound crate build for macOS
+
+### Changed
+- **The GPU vendors' runtimes and their bindings stay on Linux and Windows**
+  ([impl-plan-macos.md](impl-plan-macos.md)): NVIDIA's compute and decode runtimes, the
+  encoder's generated headers, and the decoder built on them. The packed full-chroma layouts,
+  which only those platforms' decoders hand back, go with them.
+- **The sound crate's capture is the host's**, and stays on the platforms a host runs on; its
+  codec builds everywhere.
+- The decoder crate's tests take the host's encoder and capture crates only where a host runs.
+
+### Measured
+- The three crates build, lint and pass their tests on arm64 and on x86_64 under the
+  translation layer, in the form Windows checks them in; nothing on Linux or Windows behaves
+  differently.
+
 ## 2026-10-29 - M0.1: the shared primitives on macOS
 
 ### Changed

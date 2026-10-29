@@ -30,8 +30,15 @@ macOS gets a named place -- a module of the same name per platform, never a trai
   library planted there opened). The common tests pass on arm64 and on x86_64 under the
   translation layer, 65 each, and on Linux and Windows as before; each new check failed when
   broken.
-- [ ] **M0.2 audio, drivers, decode**: the GPU vendors' runtimes and their bindings left out of
+- [x] **M0.2 audio, drivers, decode**: the GPU vendors' runtimes and their bindings left out of
   macOS; the audio crate's capture, which is the host's, empty there, its codec unchanged.
+  *Built 2026-10-29.* NVIDIA's compute and decode runtimes, the encoder's generated headers and
+  the decoder over them, and the packed full-chroma layouts only those decoders hand back, are
+  Linux's and Windows's; so are the sound capture and its test. The decoder crate's tests take
+  the host's encoder and capture crates where a host runs alone, as do the tests of the
+  encoders' writers. The three crates build, lint and pass their tests on arm64 and on x86_64
+  under the translation layer in the Windows form (`--lib --bins --tests`): their examples probe
+  one platform's hardware. Linux and Windows unchanged.
 - [ ] **M0.3 client and library**: a macOS module, empty, for each of the client's per-platform
   modules; the library's client half building as a shared and a static library, the host half
   and the display controller left out ([00 D14](00-overview.md)).
