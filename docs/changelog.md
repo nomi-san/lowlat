@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M0.3: the whole workspace builds for macOS
+
+### Changed
+- **The client and the library build empty on macOS for now** ([impl-plan-macos.md](impl-plan-macos.md)):
+  the client stands on the network shell's platform module, which macOS gets next, so the seam
+  and the library's client half come with it, as on Windows before its client phase. The
+  step's plan had the library's client half here; corrected at the build.
+- **The host's crates build empty on macOS**, and the service says no host runs on the
+  platform and exits ([00 D14](00-overview.md)). The client's tests take the host's crates only
+  where they build.
+
+### Measured
+- The whole workspace builds and lints for arm64 and for x86_64, and its tests pass on both --
+  748 each, under the translation layer for the second -- and on Linux and Windows as before.
+- The simulator's longest test takes 581 s on arm64 and 607 under the translation layer, against
+  186 on Windows: the core's own cipher, which the simulator seals with, runs in software on
+  arm64 unless the build asks for the processor's instructions.
+
 ## 2026-10-29 - M0.2: the decoders and the sound crate build for macOS
 
 ### Changed

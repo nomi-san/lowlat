@@ -39,9 +39,18 @@ macOS gets a named place -- a module of the same name per platform, never a trai
   encoders' writers. The three crates build, lint and pass their tests on arm64 and on x86_64
   under the translation layer in the Windows form (`--lib --bins --tests`): their examples probe
   one platform's hardware. Linux and Windows unchanged.
-- [ ] **M0.3 client and library**: a macOS module, empty, for each of the client's per-platform
+- [x] **M0.3 client and library**: a macOS module, empty, for each of the client's per-platform
   modules; the library's client half building as a shared and a static library, the host half
-  and the display controller left out ([00 D14](00-overview.md)).
+  and the display controller left out ([00 D14](00-overview.md)). *Built 2026-10-29, corrected
+  at the build*: the client stands on the network shell's platform module -- the decode thread
+  wakes the session through it, the seam opens its socket -- which macOS gets at M1.1, so the
+  client and the library build empty there until the seam and the library's client half come
+  with M1.2, as W0.6 had them build on Windows; the client's macOS modules move to M1.2 with
+  them. The host's crates build empty on macOS for good, and the service says no host runs
+  there and exits. The whole workspace builds and lints for both architectures, and its tests
+  pass there -- 748 on each -- and on Linux and Windows as before. The simulator's long
+  trajectory test takes 581 s on arm64 against 186 on Windows: the core's own cipher runs in
+  software on arm64 unless told otherwise, which M0.4 settles.
 - [ ] **M0.4 build**: dependencies scoped by target; the licence and advisory gate checking the
   Apple targets; a macOS job in CI that builds, lints and tests arm64 natively and x86_64 under
   the system's translation layer; AGENTS naming macOS's bar.
@@ -112,7 +121,7 @@ and D14's amendment [00](00-overview.md).
   Linux's loopback, and by the soak; the receive, the wake and the mark measured, the mark over
   Wi-Fi under upload load.
 - [ ] **M1.2 the seam, VideoToolbox and the demo**: the seam and the library's client half on the
-  shell; VideoToolbox decoding H.264 and HEVC, ten-bit and full chroma where the system answers
+  shell, with the client's macOS modules (moved here from M0.3); VideoToolbox decoding H.264 and HEVC, ten-bit and full chroma where the system answers
   that it decodes them, its pictures leased as planes without a copy; the pair from the package
   managers' directories; the demo built for macOS. Checked by the reference clips and by sessions
   against both hosts.
