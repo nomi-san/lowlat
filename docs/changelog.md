@@ -39,6 +39,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   churn and 6 after, the two that left being another test's loops, so a leak test failed on
   threads that had gone. Reproduced on the development Mac with a longer churn, every time; with
   the tests taking turns, none in sixteen runs, and Linux and Windows as before.
+- **The port mapper's tests wait for the status they assert.** The fake gateway's table holds a
+  mapping before the mapper has read the gateway's answer and stated it, so a read the moment the
+  table holds it can see none: CI's Windows runner read port 0 for a mapped range. With the
+  status delayed 150 ms, the three tests that read it so fail as they stood and pass as fixed.
 
 ## 2026-10-29 - M0.4: macOS in CI and in the licence gate; M0 closed
 
