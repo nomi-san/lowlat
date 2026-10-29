@@ -75,6 +75,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The common tests pass on arm64 and on x86_64 under the translation layer, and on Linux and
   Windows as before; each new check failed when broken.
 
+### Corrected after CI
+- **The precise sleep's test reads the timer it arms, not the clock.** CI's x86_64 macOS runner
+  preempted half of ten precise sleeps, 0.3 to 1.8 ms late, and the median failed; and a
+  coalesced sleep lands on time whenever something else wakes the processor -- a quarter of
+  twenty on arm64, more than half under the translation layer, measured on the development Mac
+  with the critical timer taken out -- so no landing time tells the two apart on every machine.
+  The test now checks the change the sleep arms: one shot, in nanoseconds, marked critical. The
+  landings are a measurement run by hand on an idle Mac: twenty 5 ms sleeps within 7 us on both
+  architectures.
+
 ## 2026-10-29 - M planned: the macOS client
 
 ### Decided
