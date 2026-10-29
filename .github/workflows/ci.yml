@@ -240,6 +240,43 @@ jobs:
       - name: The input driver
         run: cargo build -p lowlat-hid --release
 
+  # The client's platform (docs/impl-plan-macos.md): each architecture on its
+  # own arm64 runner, x86_64's tests under the system's translation layer.
+  # Windows's form: the examples probe one platform's hardware.
+  macos:
+    name: macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          rustup component add clippy
+          rustup target add ${{ matrix.target }}
+
+      - name: The translation layer
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --lib --bins --tests --target ${{ matrix.target }} -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast --target ${{ matrix.target }}
+
   loom:
     name: model checking
     runs-on: ubuntu-latest
