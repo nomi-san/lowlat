@@ -28,8 +28,9 @@ httparse = "1.10"
 # cannot grow into more than its bytes.
 roxmltree = { version = "0.21", default-features = false, features = ["std"] }
 
-# The interface a search leaves by, and the machine's name.
-[target.'cfg(target_os = "linux")'.dependencies]
+# The interface a search leaves by, and the machine's name; on macOS the
+# routing table's answer for the gateway and the machine's identifier too.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc.workspace = true
 
 # The adapter walk that names the default gateway, the interface a search

@@ -30,8 +30,17 @@ pub const EXTERNAL: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
 const SERVICE: &str = "urn:schemas-upnp-org:service:WANIPConnection:1";
 /// The second service's kind, which a mapper asks before the first's.
 const SECOND_SERVICE: &str = "urn:schemas-upnp-org:service:WANIPConnection:2";
-/// A second loopback address, standing for a host that is not the gateway.
-const ELSEWHERE: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+/// An address on this machine standing for a host that is not the gateway: a
+/// second loopback address where the system answers on all of 127/8, and on
+/// macOS, which holds 127.0.0.1 alone, the machine's own address beyond it.
+fn other_host() -> Ipv4Addr {
+    #[cfg(not(target_os = "macos"))]
+    let address = Ipv4Addr::new(127, 0, 0, 2);
+    #[cfg(target_os = "macos")]
+    let address = crate::mapper::local_toward(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 9))
+        .expect("a host other than the gateway needs an address beyond the loopback");
+    address
+}
 /// How long a request applied and never answered holds its connection.
 const HOLD: Duration = Duration::from_secs(3);
 
@@ -205,7 +214,7 @@ impl Fake {
         // tells the two apart.
         let mut elsewhere = None;
         if behaviour.elsewhere.is_some() {
-            let listener = TcpListener::bind((ELSEWHERE, 0)).unwrap();
+            let listener = TcpListener::bind((other_host(), 0)).unwrap();
             listener.set_nonblocking(true).unwrap();
             elsewhere = Some(listener.local_addr().unwrap().port());
             let (state, stop) = (Arc::clone(&state), Arc::clone(&stop));
@@ -233,12 +242,12 @@ impl Fake {
         let http_port = listener.local_addr().unwrap().port();
         let (location, control_url) = match (behaviour.elsewhere, elsewhere) {
             (Some(Elsewhere::Location), Some(port)) => (
-                format!("http://{ELSEWHERE}:{port}/rootDesc.xml"),
+                format!("http://{}:{port}/rootDesc.xml", other_host()),
                 "/ctl/IPConn".to_string(),
             ),
             (Some(Elsewhere::Control), Some(port)) => (
                 format!("http://{loopback}:{http_port}/rootDesc.xml"),
-                format!("http://{ELSEWHERE}:{port}/ctl/IPConn"),
+                format!("http://{}:{port}/ctl/IPConn", other_host()),
             ),
             _ => (
                 format!("http://{loopback}:{http_port}/rootDesc.xml"),

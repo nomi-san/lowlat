@@ -38,7 +38,7 @@ const APPLICATION: &[u8] = b"lowlat port mapping";
 /// machine's own identifier, reduced by a keyed hash so that nothing of it
 /// leaves the machine, tells them apart; this side's own entry for an
 /// address it no longer has still matches.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn description(seed: &str) -> String {
     describe(seed, crate::sys::machine_id().as_deref())
 }
@@ -56,9 +56,9 @@ pub fn describe(seed: &str, machine: Option<&[u8]>) -> String {
 }
 
 /// The machine's name, the seed when the application gives none: on Windows
-/// its network name, as the system reports it; on Linux its host name. Empty
-/// when the system will not say.
-#[cfg(any(target_os = "linux", windows))]
+/// its network name, as the system reports it; on Linux and macOS its host
+/// name. Empty when the system will not say.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn machine_name() -> String {
     crate::sys::machine_name().unwrap_or_default()
 }
@@ -110,7 +110,7 @@ mod tests {
 
     /// The machine's identifier is read where the system keeps one, and the
     /// description carries its hash, never the identifier itself.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn this_machine_has_an_identifier_and_hides_it() {
         let Some(id) = crate::sys::machine_id() else {
@@ -126,7 +126,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn the_machine_has_a_name() {
         let name = machine_name();

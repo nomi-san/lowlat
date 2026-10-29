@@ -47,7 +47,7 @@ pub mod ssdp;
 pub mod url;
 
 mod error;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod mapper;
 
 #[cfg(target_os = "linux")]
@@ -56,12 +56,18 @@ mod sys;
 #[cfg(windows)]
 #[path = "sys/windows.rs"]
 mod sys;
+#[cfg(target_os = "macos")]
+#[path = "sys/macos.rs"]
+mod sys;
 
-#[cfg(all(any(test, feature = "fake"), any(target_os = "linux", windows)))]
+#[cfg(all(
+    any(test, feature = "fake"),
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub mod fake;
 
 pub use error::{Error, Result};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use mapper::{Config, Gateway, Mapper, Protocol, Reader, Status, confirmed};
 
 /// Replies captured from three gateways (`tests/data/`): an OpenWrt router, a
