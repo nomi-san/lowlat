@@ -47,7 +47,12 @@ pub mod hevc;
 #[cfg(windows)]
 pub mod mf;
 pub mod nal;
+/// NVIDIA's own decoder, reached on Linux and Windows alone.
+#[cfg(any(target_os = "linux", windows))]
 pub mod nvdec;
+/// The packed full-chroma layouts the device interfaces on Linux and Windows
+/// decode into.
+#[cfg(any(target_os = "linux", windows))]
 mod packed;
 pub mod software;
 /// The split into plane textures, which exists on Windows alone.

@@ -17,7 +17,11 @@
 /// AMD's own video runtime, reached on Windows alone.
 #[cfg(windows)]
 pub mod amf;
+/// NVIDIA's compute runtime, reached on Linux and Windows alone.
+#[cfg(any(target_os = "linux", windows))]
 pub mod cuda;
+/// NVIDIA's video decoder, reached on Linux and Windows alone.
+#[cfg(any(target_os = "linux", windows))]
 pub mod cuvid;
 /// The system's video decoding interface, which exists on Windows alone.
 #[cfg(windows)]

@@ -1,7 +1,9 @@
 //! What the encoders write, the readers read back to the same values: the
 //! parameter sets and the slice headers of both codecs, checked field by
-//! field rather than by decoding.
+//! field rather than by decoding. The writers are the host's encoders', so
+//! this runs where a host does.
 
+#![cfg(any(target_os = "linux", windows))]
 #![allow(clippy::cast_possible_truncation)]
 
 use lowlat_decode::h264;

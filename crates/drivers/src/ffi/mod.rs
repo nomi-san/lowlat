@@ -37,6 +37,7 @@
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg(any(target_os = "linux", windows))]
 #[cfg_attr(target_os = "linux", path = "linux/nvenc.rs")]
 #[cfg_attr(windows, path = "windows/nvenc.rs")]
 pub mod nvenc;
@@ -56,6 +57,7 @@ pub mod nvenc;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg(any(target_os = "linux", windows))]
 #[cfg_attr(target_os = "linux", path = "linux/cuda.rs")]
 #[cfg_attr(windows, path = "windows/cuda.rs")]
 pub mod cuda;
@@ -75,6 +77,7 @@ pub mod cuda;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg(any(target_os = "linux", windows))]
 #[cfg_attr(target_os = "linux", path = "linux/cuvid.rs")]
 #[cfg_attr(windows, path = "windows/cuvid.rs")]
 pub mod cuvid;
@@ -158,10 +161,14 @@ pub mod mf_guids;
 #[path = "windows/vpl.rs"]
 pub mod vpl;
 
+/// Generated with the encoder's header, whose types they name: Linux and
+/// Windows alone, as it is.
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
+#[cfg(any(target_os = "linux", windows))]
 pub mod guids;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
+#[cfg(any(target_os = "linux", windows))]
 pub mod versions;
 
 #[allow(

@@ -22,7 +22,9 @@ lowlat-common = { workspace = true, features = ["alloc-counter"] }
 
 # The parameter-set writers, so what the encoders write is checked to parse
 # back to what they were told; and on Windows the vendor encoder itself, fed
-# the synthetic source, whose every picture the D3D11 decoder takes back.
+# the synthetic source, whose every picture the D3D11 decoder takes back. The
+# host's crates, so where a host runs alone.
+[target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
 lowlat-encode.workspace = true
 lowlat-capture.workspace = true
 

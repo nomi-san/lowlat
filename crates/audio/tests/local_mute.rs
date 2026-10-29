@@ -10,6 +10,8 @@
 //! which `scripts/audio-virtual-source.sh up` provides on a machine whose only
 //! real output is of the first.
 
+#![cfg(any(target_os = "linux", windows))]
+
 use std::sync::Arc;
 
 use lowlat_audio::{Capture, Config, Live, Wanted};

@@ -3,6 +3,7 @@
 //! runtime and decode interface, so it is off by default:
 //! `cargo test -p lowlat-decode --test nvdec_decode -- --ignored`.
 
+#![cfg(any(target_os = "linux", windows))]
 #![allow(
     clippy::type_complexity,
     clippy::too_many_arguments,

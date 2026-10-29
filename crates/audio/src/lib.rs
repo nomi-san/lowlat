@@ -16,6 +16,9 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+/// The desktop's own output, captured for a host: Linux and Windows alone,
+/// the platforms a host runs on.
+#[cfg(any(target_os = "linux", windows))]
 pub mod capture;
 pub mod decode;
 pub mod encode;
@@ -52,6 +55,7 @@ mod ffi {
 #[global_allocator]
 static ALLOC: lowlat_common::alloc_counter::Counting = lowlat_common::alloc_counter::Counting;
 
+#[cfg(any(target_os = "linux", windows))]
 pub use capture::{Capture, Config, Live, Output, Wanted, outputs};
 pub use decode::Decoder;
 pub use encode::Encoder;
