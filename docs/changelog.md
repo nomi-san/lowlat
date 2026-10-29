@@ -33,6 +33,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   on top measured no better and is not set.
 - The workspace's tests pass on arm64 and on x86_64 under the translation layer, 853 each, and
   on Linux and Windows as before; each new check failed when broken.
+### Corrected after CI
+- **The soak's tests take turns.** The churn counts the process's threads and descriptors, and
+  the soak's other tests ran beside it: CI's x86_64 macOS runner counted 8 threads before the
+  churn and 6 after, the two that left being another test's loops, so a leak test failed on
+  threads that had gone. Reproduced on the development Mac with a longer churn, every time; with
+  the tests taking turns, none in sixteen runs, and Linux and Windows as before.
 
 ## 2026-10-29 - M0.4: macOS in CI and in the licence gate; M0 closed
 
