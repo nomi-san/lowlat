@@ -478,6 +478,21 @@ texture again at every draw, and drawing on one GPU while presenting to another'
 the process with every draw, its processor time climbing with it -- the figure was the climb's
 average. It opens a picture's textures once now.)
 
+### §4.3 On macOS (*planned 2026-10-29*, M1)
+
+**A picture of the handle kind is one IOSurface**, retained by the library for the lease.
+VideoToolbox decodes into surface-backed buffers from the library's own pool, and the frame
+describes the surface's planes with its own fields -- the layout, each plane's size and stride
+-- as it does on the other platforms. The application imports each plane into its own device by
+plane index at the format the layout gives it, so it needs no Core Video, and the decoded
+buffer, its pool and its colour attachments stay inside the library. Every graphics interface on
+the system imports a surface: Metal by plane, OpenGL, Vulkan through its Metal layer.
+
+**The lease ends when the application's own GPU work on the picture has completed**, not when
+that work was submitted: the surface goes back to the pool at the release and the decoder writes
+into it again. A picture of the planes kind is the same buffer's planes, locked for the lease and
+handed out where they lie, without a copy.
+
 ## §5 The decoder, and when a client asks for a keyframe
 
 **A decoder is built from the stream, not from the configuration.** The first access unit led
@@ -1034,6 +1049,23 @@ with the full range from a second host arrived in 3.6 ms. On a 2015 dual-core la
 the HEVC extension the table offers H.264 alone and an HEVC preference is masked to it; there
 every H.264 clip decodes bit for bit, and a 1440p stream at sixteen pictures a second was kept
 up with at 21 ms a picture, where the GPU's own decoders took 8.
+
+### §5.3 Backends, macOS, in order (*planned 2026-10-29*, M1)
+
+1. **VideoToolbox**, the system's decoder: the hardware where the Mac has it and the system's
+   software decoder where it does not, for H.264 and HEVC; ten-bit and full chroma where it
+   answers that it decodes them, asked at run time rather than read from the system's version,
+   so a Mac declares only what it decodes (D11's preferences). No GPU vendor's own decoder exists
+   on macOS.
+2. **The LGPL pair** on D14's terms, as on Linux (§5.1): nothing shipped, loaded at run time,
+   only an LGPL build, and a GPL one only in a build that allows it. A Mac's own pair is a
+   package manager's, and a bare name never reaches Homebrew's directory on Apple Silicon
+   (measured: the dynamic linker's own fallback is `/usr/local/lib` and `/usr/lib`), so the walk
+   is the variable, the application's directory, then the package managers' library directories
+   by full path, the architecture's own first -- `/opt/homebrew/lib`, `/usr/local/lib`,
+   `/opt/local/lib` -- with the files named `libavcodec.N.dylib`. A package manager's build for
+   one architecture does not open in a process of the other (measured under the translation
+   layer), so an x86_64 process finds a pair only where one was built for it.
 
 ## §6 Sound
 

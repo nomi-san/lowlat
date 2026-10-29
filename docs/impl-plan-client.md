@@ -1372,6 +1372,10 @@ Every segment the client sent to the relay carried the audio-video marking on th
   decoding first, then NVDEC, the pair, and the system's decoder in software only; the handle
   is one shared texture per plane, finished on the device before it can be acquired, so it
   needs no fence.*
+- **A macOS client** (*planned 2026-10-29 as M0 and M1, [impl-plan-macos.md](impl-plan-macos.md)*):
+  the kernel-queue receive path with the batched receive, VideoToolbox then the LGPL pair from the
+  package managers' directories, one IOSurface per picture as the handle kind, the toolkit's
+  Metal renderer; the client half alone, never a host.
 - **A second stream, the browser pipe, pen and touch, the microphone uplink.** Each is known
   and none is needed for a client that streams. *The microphone uplink built 2026-10-12
   (C5.25).*

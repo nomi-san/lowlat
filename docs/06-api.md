@@ -799,6 +799,12 @@ carries its own backing, so a picture still held stays valid on the device it wa
 Linux's vendor decoder takes both calls the same way, between planes and its descriptor and
 between its devices.
 
+**Planned for macOS** (*2026-10-29*, M1; [10 §4.3](10-client.md)): `lowlat_handle_kind` gains a
+kind for one IOSurface per picture, appended to `lowlat_frame` with the surface itself, which
+the library retains for the lease; the planes are described by the frame's existing fields and
+imported by plane index. A minor when built. The library is `liblowlat.dylib` and
+`liblowlat.a`, each universal over arm64 and x86_64, and carries the client half alone.
+
 **On Windows since W1.2** (*2026-09-27*): the library is `lowlat.dll` with its import library
 `lowlat.dll.lib`, the C runtime linked in statically, and it carries the client half alone --
 `lowlat_features` reports no host half there whatever the build asked for, and an application

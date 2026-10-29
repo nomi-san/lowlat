@@ -10,6 +10,7 @@ variant, process topology, and privilege requirement are settled; §3.2 lists wh
 | Linux host | primary target |
 | Windows host | planned, after Gate B |
 | Clients | any platform with an existing client; nothing to install |
+| macOS | this project's client only, planned 2026-10-29 ([§13](#13-macos)); never a host |
 
 Platform-specific code is confined to `lowlat-capture`, `lowlat-audio`, `lowlat-inject`, and the platform
 receive strategy in `lowlat-net` ([02 §6](02-io-shell.md)). Everything else is portable by
@@ -1043,3 +1044,28 @@ arrangement works at all, and three of its settings fail silently.
   cleared from every copy it takes.
 - **The allocation range bounds concurrent clients**: one relayed port each for as long as an
   attempt lives, released on a clean leave.
+
+## §13 macOS
+
+*Planned 2026-10-29* ([impl-plan-macos.md](impl-plan-macos.md)). **The client half only: there is
+no host on macOS and none is planned** ([00 D14](00-overview.md)), so the capture, encode,
+injection, daemon and driver crates build empty there.
+
+- **macOS 11 on arm64 and x86_64.** The library ships as one universal shared and static library,
+  each architecture built and tested on its own and the two joined; CI tests x86_64 under the
+  system's translation layer. An entry point newer than 11 is found at run time, since a symbol
+  linked by name and missing stops the load on an older system.
+- **Signing is ad hoc**, notarization only with a developer identity; an unsigned download is
+  quarantined by the system until the user allows it.
+- **The system's interfaces are generated bindings** over the macOS SDK's headers, checked into
+  the driver crate, as Windows's are.
+- **The socket's platform facts are [02 §5](02-io-shell.md)'s**: every v4-level option refused on a
+  dual-stack socket, the mark and the source per datagram on IPv4, and a port held for IPv4 by
+  another socket not stopping a dual-stack bind.
+- **A library installed on the machine is a package manager's**: the dynamic linker's own search
+  reaches `/usr/local/lib` and `/usr/lib` but not Homebrew's directory on Apple Silicon, so what
+  the library loads from the machine it finds by full path in the package managers' directories
+  ([10 §5.3](10-client.md)). A package manager's build for one architecture does not open in a
+  process of the other.
+- **A non-interactive shell does not read the login profile**, where the package manager puts
+  its paths, so scripts run over a remote shell name its tools by full path.

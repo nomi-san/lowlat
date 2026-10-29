@@ -354,6 +354,14 @@ for it, the per-unit path allocating nothing, the read-back's wait sleeping rath
 spinning, and a paced probe of that wait -- are hardware tests, run on a machine with GPUs
 and not on the runner.
 
+**macOS builds and tests on every commit too** (*planned 2026-10-29*,
+[impl-plan-macos.md](impl-plan-macos.md) M0.4), for every crate with a macOS side, arm64
+natively and x86_64 under the system's translation layer; the crates without one build empty.
+The loopback holds 127.0.0.1 alone there, so a test that reaches a wildcard-bound socket through
+another 127/8 address, as Linux allows, takes a macOS arm. The reference clips decode on the
+development Mac, and on the runner as far as the runner's system decodes them, which the job
+finds out when it is built.
+
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 
 **A red build is not merged.** There is no category of test in this repository that is

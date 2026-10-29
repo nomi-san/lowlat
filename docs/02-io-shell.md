@@ -91,7 +91,10 @@ whenever it rounds to zero. Monotonic only; a wall clock never appears in this c
 ## §3 Wakeups
 
 A header-level wait and notify pair over the platform futex: `FUTEX_WAIT` and `FUTEX_WAKE` on
-Linux, `WaitOnAddress` and `WakeByAddress` on Windows, `__ulock` on macOS.
+Linux, `WaitOnAddress` and `WakeByAddress` on Windows, and on macOS `os_sync_wait_on_address`
+and its wakes where the system has them (14.4 on), `__ulock` below that, both found at run time
+(*amended 2026-10-29*, [impl-plan-macos.md](impl-plan-macos.md) M1; never the portable table
+there).
 
 - **Producers MUST use our notify, never the standard library's.** A standard-library atomic
   notify keeps its own waiter registry and skips the kernel wake when it sees no registered
@@ -211,6 +214,29 @@ anywhere else, which the protocol recovers from as it does any loss -- once per 
 per datagram. The service is loaded at run time; without it, sends go unmarked and the session
 says so once. Linux marks the socket at open and has nothing to do here.
 
+**On macOS** (*planned 2026-10-29*, M1.1; each point measured on the development Mac against a
+control that showed the other answer). A dual-stack socket refuses every v4-level option --
+the type of service, the TTL, don't-fragment, the arrival address -- so the socket is set
+through its v6 options and the rest is per datagram:
+- **The hop limit carries to v4 sends**, so a mapping probe's lowered TTL works through it alone.
+- **The v6 traffic class marks v6 sends only**; a v4 send left with zero. A v4 datagram carries
+  the mark as a control message of its own send, which the system honours.
+- **The v6 don't-fragment option covers v4 sends too**: an oversized v4 datagram is refused
+  rather than split.
+- **The arrival address comes as v6 packet information**, a v4 arrival v4-mapped, and the
+  batched receive hands it back per datagram (§6). A v4 send is pinned to its source by a v4
+  packet-information control message; the v6 one is ignored for a v4 destination.
+- **A port held by another socket for IPv4 does not stop a dual-stack bind** -- that socket keeps
+  the v4 datagrams -- and the system's choice for port 0 does not avoid such ports either (553
+  of 3000 binds landed on one with 3000 held, what a blind pick gives). There is no exclusive-use
+  option, so an IPv4 socket is bound at the port first, for a walk and for port 0 alike, the
+  dual-stack socket at the port it got, and the IPv4 one closed: once the dual-stack socket holds
+  a port, an IPv4 bind to it is refused.
+- **The receive buffer is clamped**, not refused, to the system's limit (8 MiB by default), and
+  logged as granted like everywhere else.
+- **The relay's stream sets `SO_NOSIGPIPE`** at open, since the system has no per-send flag for
+  it: a library in another program's process must not raise a signal that program handles.
+
 **The relay's stream** (C11, built 2026-10-17; [03 §7.4](03-connectivity.md)). A TCP attempt's
 one socket is a stream to the relay, made the way the datagram socket is and set once at open:
 non-blocking, `TCP_NODELAY` on -- a pass's frames are staged and written together already (§6)
@@ -262,7 +288,7 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 |---|---|
 | Linux | `poll` plus `recvmmsg` in batches of 64 directly into slots, looping until drained |
 | Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port |
-| macOS | `kevent` with a user-event teardown filter, plus batched receive |
+| macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found (*planned 2026-10-29*, M1.1) |
 
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
 was the difference between zero and complete delivery of a keyframe burst on loopback.

@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M planned: the macOS client
+
+### Decided
+- macOS gets the client half alone, never a host, on arm64 and x86_64 from macOS 11, shipped
+  as one universal library, signed ad hoc ([impl-plan-macos.md](impl-plan-macos.md),
+  [00 D14](00-overview.md) amended, [07 §13](07-platforms.md)).
+- The platform seams first (M0), moving code and adding no behaviour, as W0 did; then the client
+  (M1): the IO shell, VideoToolbox and the demo, the handle, the desk, packaging.
+- The address wait is the system's public one where it exists and a private one below it, and
+  the receive the system's batched one, each found at run time with a fallback
+  ([02 §3, §6](02-io-shell.md)). The socket's v4 options are refused on a dual-stack socket
+  there, so the mark and the source go per datagram, don't-fragment through the v6 option, and an
+  IPv4 socket holds a port while the dual-stack one binds it ([02 §5](02-io-shell.md)).
+- VideoToolbox first, then the machine's own LGPL pair, found in the package managers' library
+  directories ([10 §5.3](10-client.md)); a picture of the handle kind is one IOSurface, imported
+  by plane ([10 §4.3](10-client.md), [06 §3b](06-api.md)).
+- The system's interfaces are generated bindings in the driver crate, and the demo keeps its
+  toolkit, patched for the handle kind and two keyboard faults.
+
 ## 2026-10-28 - The session's writes to the service carry the deadline; the demo's toolkit rebuilt on change
 
 ### Fixed
