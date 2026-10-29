@@ -58,6 +58,22 @@ const SETTLE_MS: u64 = 1_000;
 
 const SLOT: usize = 1400;
 const SLOTS: usize = 256;
+
+/// **One test of this file at a time**, each taking this for its run. What
+/// they count is the process's -- its threads, descriptors, resident memory,
+/// timeout wakes against the processor -- so a neighbour's threads coming and
+/// going are counted too: CI's x86_64 macOS runner read the churn's threads as
+/// 8 before and 6 after, the two that left being the staging test's loops,
+/// finished between the two counts.
+static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// This test's turn at the process; a neighbour that panicked holding it
+/// leaves nothing to protect.
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    ALONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 const CHANNEL: u8 = 1;
 const KEY: [u8; 32] = [0x31u8; 32];
 const LEFT: (&str, &str) = ("aaaa", "passwordforaaaa");
@@ -173,6 +189,8 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    let _alone = alone();
+
     let done = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&done);
 
@@ -237,6 +255,7 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
 
 #[test]
 fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
+    let _alone = alone();
     let duration_ms: f64 = std::env::var("LOWLAT_SOAK_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -478,6 +497,7 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
 /// nightly run is the real one.
 #[test]
 fn many_connect_and_teardown_cycles_leak_nothing() {
+    let _alone = alone();
     let cycles: u64 = std::env::var("LOWLAT_CHURN_CYCLES")
         .ok()
         .and_then(|v| v.parse().ok())
