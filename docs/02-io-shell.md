@@ -219,13 +219,17 @@ anywhere else, which the protocol recovers from as it does any loss -- once per 
 per datagram. The service is loaded at run time; without it, sends go unmarked and the session
 says so once. Linux marks the socket at open and has nothing to do here.
 
-**On macOS** (*planned 2026-10-29*, M1.1; each point measured on the development Mac against a
-control that showed the other answer). A dual-stack socket refuses every v4-level option --
+**On macOS** (*built 2026-10-29*, M1.1; each point measured on the development Mac against a
+control that showed the other answer, and each held by a test that fails without it). A dual-stack socket refuses every v4-level option --
 the type of service, the TTL, don't-fragment, the arrival address -- so the socket is set
 through its v6 options and the rest is per datagram:
 - **The hop limit carries to v4 sends**, so a mapping probe's lowered TTL works through it alone.
 - **The v6 traffic class marks v6 sends only**; a v4 send left with zero. A v4 datagram carries
-  the mark as a control message of its own send, which the system honours.
+  the mark as a control message of its own send, which the system honours. **The mark pays on a
+  wireless link, and EF alone**: with the Mac saturating its own upload, marked datagrams crossed
+  to the development machine and back in 10.2 ms at the median and 18.4 at the 99th percentile,
+  against 13.8 and 24.7 unmarked; the system's network service type added on top, video or voice,
+  measured no better, so it is not set. The mark reached the wire as set whatever the class.
 - **The v6 don't-fragment option covers v4 sends too**: an oversized v4 datagram is refused
   rather than split.
 - **The arrival address comes as v6 packet information**, a v4 arrival v4-mapped, and the
@@ -238,9 +242,12 @@ through its v6 options and the rest is per datagram:
   dual-stack socket at the port it got, and the IPv4 one closed: once the dual-stack socket holds
   a port, an IPv4 bind to it is refused.
 - **The receive buffer is clamped**, not refused, to the system's limit (8 MiB by default), and
-  logged as granted like everywhere else.
+  logged as granted like everywhere else; where a request is refused instead, it is asked again
+  for three quarters until it is taken.
 - **The relay's stream sets `SO_NOSIGPIPE`** at open, since the system has no per-send flag for
-  it: a library in another program's process must not raise a signal that program handles.
+  it: a library in another program's process must not raise a signal that program handles. **It
+  opens in the relay's own family**, not dual stack: a dual-stack stream refuses the v4 type of
+  service, and a stream has no per-send control message to carry it instead.
 
 **The relay's stream** (C11, built 2026-10-17; [03 §7.4](03-connectivity.md)). A TCP attempt's
 one socket is a stream to the relay, made the way the datagram socket is and set once at open:
@@ -293,7 +300,7 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 |---|---|
 | Linux | `poll` plus `recvmmsg` in batches of 64 directly into slots, looping until drained |
 | Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port |
-| macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found. The pass's deadline is a critical timer on the same queue, not the queue's own timeout, which the system coalesces (§2) (*planned 2026-10-29*, M1.1) |
+| macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found. The pass's deadline is a critical timer on the same queue, not the queue's own timeout, which the system coalesces (§2) (*built 2026-10-29*, M1.1) |
 
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
 was the difference between zero and complete delivery of a keyframe burst on loopback.
@@ -319,8 +326,18 @@ measures better than this: the plain port hands over a keyframe-sized burst of 2
 already queued on the socket in 1.8 ms at the median (2.6 at the 99th percentile), 695 ns a
 datagram, on the development machine.
 
+**On macOS the queue carries the wake and the deadline beside the socket.** The system clears
+the user event when a wait reports it, so whether work was announced is an armed flag, as on
+Windows: the first notify after a take triggers the event, the rest find the flag set, and a
+take costs no call. The deadline is a change in the call that waits, so it costs no call of its
+own. Measured on the development Mac: the batched receive hands over the same queued burst in
+3.1 ms at the median, 1.2 us a datagram, against 4.1 ms a datagram a call; a wake reaches the
+parked loop in 19 us at the median and 34 at the 99th percentile; a 5 ms deadline lands 50 us
+late at the median, where the queue's own timeout lands 600 to 1300 us late.
+
 **The relay's stream joins the same wait** (C11, built; §5). On Linux it is one more descriptor
-in the poll, watched for writing only while connecting or while a write is pending. On Windows the
+in the poll, watched for writing only while connecting or while a write is pending, and on macOS
+one more socket on the wake's queue, watched the same way. On Windows the
 stream's socket joins the loop's port under its own key -- the connect; a zero-length receive kept
 posted, which completes when bytes have arrived, the bytes then read with an ordinary receive, so
 nothing the system holds points into storage that moves; and a send from fixed staging that could
@@ -334,7 +351,9 @@ the stream is a socket of the platform module, not a kind of wake.
 
 **Send uses segmentation offload where available**: `UDP_SEGMENT` on Linux, the segment size
 as a control message on the message send on Windows, falling back to per-datagram send. One
-syscall per batch. This matters more as the datagram size rises, since the packet rate falls
+syscall per batch. macOS has none, and its batched send measured no cheaper per datagram than a
+send each -- 4.2 us either way on the development Mac, 7 percent less at 64 a call -- so there
+the batch sends a datagram a call from the start, with nothing refused or logged. This matters more as the datagram size rises, since the packet rate falls
 but the burst size does not. **On Windows a claimed source must be an address the host holds,
 and keeps the datagram on that address's interface**: one it does not hold is refused, and the
 loopback holds 127.0.0.1 and not the rest of 127/8.

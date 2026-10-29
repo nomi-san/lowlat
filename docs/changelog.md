@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M1.1: the network shell on macOS
+
+### Changed
+- **The IO shell runs on macOS** ([02 §5, §6](02-io-shell.md)): the wait is a kernel queue
+  carrying the socket, the wake as a user event beside an armed flag, and the pass's deadline as
+  a critical timer in the same call; the receive is the system's batched call, found by name,
+  with each datagram's arrival address, and a datagram a call where the call is not found.
+- **Every v4 send carries its own mark and source** as control messages, since the dual-stack
+  socket refuses the v4-level options; don't-fragment and the hop limit go through the v6
+  options, which cover v4 sends; an IPv4 socket holds a port while the dual-stack one binds it.
+- **One send a datagram on macOS**: the batch starts with offload off there, so nothing is
+  refused or logged.
+- **The relay's stream opens in the relay's own family**, so it can be marked, and raises no
+  broken-pipe signal.
+- **The port mapper runs on macOS**: the gateway is the routing table's answer for a destination
+  beyond the network, the machine's identifier the system's own, and its connection raises no
+  broken-pipe signal.
+### Measured
+- A queued burst of 2550 x 1200 B drains in 3.1 ms at the median through the batched receive and
+  4.1 a datagram a call; a wake reaches the parked loop in 19 us; a 5 ms deadline lands 50 us
+  late, where the queue's own timeout lands 600 to 1300 us late.
+- The batched send measured no cheaper per datagram than a send each: 4.2 us either way, 7
+  percent less at 64 a call.
+- Bursts sent over the LAN lost nothing at the Mac's socket in either receive; datagrams were lost
+  on the way, in both alike.
+- With the Mac saturating its own wireless upload, an EF-marked round trip took 10.2 ms at the
+  median and 18.4 at the 99th percentile against 13.8 and 24.7 unmarked; the network service type
+  on top measured no better and is not set.
+- The workspace's tests pass on arm64 and on x86_64 under the translation layer, 853 each, and
+  on Linux and Windows as before; each new check failed when broken.
+
 ## 2026-10-29 - M0.4: macOS in CI and in the licence gate; M0 closed
 
 ### Changed

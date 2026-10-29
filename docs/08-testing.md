@@ -359,7 +359,10 @@ and not on the runner.
 Windows form: the lints as errors and the tests, each architecture on a runner of its own, arm64
 natively and x86_64 under the system's translation layer; the crates without one build empty.
 The loopback holds 127.0.0.1 alone there, so a test that reaches a wildcard-bound socket through
-another 127/8 address, as Linux allows, takes a macOS arm. *Planned with the system's decoder*:
+another 127/8 address, as Linux allows, takes a macOS arm. It also delivers after the send has
+returned (*found 2026-10-29*, M1.1): a test that takes a burst in one call counts it queued
+first, by the system's own count of queued datagrams, and one that only needs the burst whole
+gathers it across waits, as on Windows. *Planned with the system's decoder*:
 the reference clips decode on the development Mac, and on the runner as far as the runner's
 system decodes them.
 

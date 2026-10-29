@@ -2,7 +2,8 @@
 
 **Status:** planned 2026-10-29 at its interview. macOS gets the client only: there is no host on
 macOS and none is planned. The platform seams (M0) come first and the client (M1) after them.
-*Amended 2026-10-29:* M0 built and closed the same day; M1 is next.
+*Amended 2026-10-29:* M0 built and closed the same day; M1 is next. *Amended 2026-10-29:* M1.1
+built, the network shell and the port mapper's platform side; M1.2 is next.
 
 ## Why the seams come first
 
@@ -119,7 +120,7 @@ and D14's amendment [00](00-overview.md).
 
 ### Steps
 
-- [ ] **M1.1 net**: the kernel-queue platform module ([02 §5, §6](02-io-shell.md)): the wait with
+- [x] **M1.1 net**: the kernel-queue platform module ([02 §5, §6](02-io-shell.md)): the wait with
   a user-event wake and its deadline a critical timer, the queue's own timeout being coalesced
   (found at M0.1); the batched receive with each datagram's arrival address; sends from the
   address a path was proven at; the expedited mark on IPv6 by the socket's class and on IPv4 per
@@ -127,7 +128,39 @@ and D14's amendment [00](00-overview.md).
   and for any port; the relay's stream never raising a broken-pipe signal. Checked by the
   shell's tests, which are the platform module's contract, with macOS arms where they lean on
   Linux's loopback, and by the soak; the receive, the wake and the mark measured, the mark over
-  Wi-Fi under upload load.
+  Wi-Fi under upload load. *Built 2026-10-29.* Decided at its interview: the port mapper's
+  platform side too -- the default gateway, the interface a search leaves by, a connection a stop
+  can cut short, the machine's name and identifier -- which the seam starts and this plan had not
+  named, so every system call the client stands on below the decoder comes in this step; and the
+  mark measured under the Mac's own upload, below. The wake is an armed flag beside a user event
+  on the queue, as Windows's is beside a posted entry, so a take costs no call; the deadline is a
+  one-shot critical timer armed in the call that waits. The batched receive is found by name,
+  with a datagram a call where it is not. **Sends are one call a datagram**: the system's batched
+  send takes a destination and each datagram's control messages, but measured no cheaper per
+  datagram -- 4.2 us either way, 1.7 percent less in batches of two and 7 at 64 -- and a client
+  stages one or two a pass. The relay's stream opens in the relay's own family, since a
+  dual-stack stream refuses the v4 mark and has no per-send control message to carry it. The
+  gateway is the routing table's answer for a destination beyond the network: a tunnel lists a
+  default of its own, scoped to itself, that ordinary traffic does not take. Checked by the
+  shell's and the mapper's tests with macOS arms -- the loopback holds 127.0.0.1 alone, and
+  delivers after the send has returned, so a test that takes a burst in one call counts it
+  queued first -- and by new checks of the mark in both families, don't-fragment, the guard
+  bind, the deadline's timer, both receives, the stream's family and its signal, the gateway's
+  answer, each failing when broken: 853 tests on each architecture, Windows and Linux as before.
+  Measured on the development Mac: a queued burst of 2550 x 1200 B drains in 3.1 ms at the
+  median batched and 4.1 a datagram a call, 1.2 and 1.6 us a datagram (2.9 and 4.4 ms on x86_64
+  under the translation layer); a wake reaches the parked loop in 19 us at the median and 34 at
+  the 99th percentile; a 5 ms deadline lands 50 us late at the median and 59 at the 99th. Bursts
+  of that size sent from the development machine over the LAN lost nothing at the Mac's socket,
+  in either receive, with 2 or 20 us of work a datagram; whole runs of datagrams were lost on
+  the way in both alike, on the wireless leg or before it, which is M1's gate's to look at, not
+  the socket's. **The mark is EF alone, by measurement**: with the Mac saturating its own
+  wireless upload, a round trip to the development machine took 10.2 ms at the median, 13.4 at
+  the 95th percentile and 18.4 at the 99th marked EF, against 13.8, 17.9 and 24.7 unmarked; the
+  system's network service type on top of EF, video or voice, measured no better (p95 16.4 and
+  15.7), so it is not set. The mark arrives on the wire as set whatever the class, and the
+  replies carried none, so the gain is the Mac's own leg. Idle, all four were the same. Another
+  station's upload contending for the air is still to measure.
 - [ ] **M1.2 the seam, VideoToolbox and the demo**: the seam and the library's client half on the
   shell, with the client's macOS modules (moved here from M0.3); VideoToolbox decoding H.264 and HEVC, ten-bit and full chroma where the system answers
   that it decodes them, its pictures leased as planes without a copy; the pair from the package
@@ -156,6 +189,8 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-29: M1.1 built: the network shell's macOS module and the port mapper's, the mapper
+  moved here at the step's interview; one send a datagram, by measurement.
 - 2026-10-29: M0.1 to M0.4 built, M0's gate passed and M0 closed; M0.3 corrected at the build,
   the library's client half moving to M1.2 with the seam it stands on.
 - 2026-10-29: planned at its interview: M0, the platform seams, and M1, the client; no host on
