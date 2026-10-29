@@ -2127,7 +2127,9 @@ mod tests {
                 let table = fake.table();
                 table.contains_key(&(PORT + 100)) && !table.contains_key(&PORT)
             });
-            assert_eq!(mapper.status().port, PORT + 100);
+            until("the moved port stated", || {
+                mapper.status().port == PORT + 100
+            });
             // Deleted, where waiting would have seen it lapse as well.
             let deleted = fake.calls("pcp-delete", PORT) + fake.calls("DeletePortMapping", PORT);
             assert_eq!(deleted, 1);
@@ -2162,7 +2164,7 @@ mod tests {
                 fake.table().keys().copied().collect::<Vec<_>>(),
                 vec![PORT, PORT + 1, PORT + 2]
             );
-            assert_eq!(mapper.status().port, PORT);
+            until("the range stated", || mapper.status().port == PORT);
             stopped(mapper, &fake);
         }
     }
@@ -2498,7 +2500,7 @@ mod tests {
         };
         let mapper = start_timed(&fake, PORT, timing);
         until("a PCP mapping", || fake.table().contains_key(&PORT));
-        assert_eq!(mapper.status().port, PORT);
+        until("the port stated", || mapper.status().port == PORT);
         std::thread::sleep(timing.look_floor);
         fake.restart_shifted(1);
         mapper.refresh();
