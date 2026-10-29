@@ -234,14 +234,7 @@ fn sleep_until(target: Instant) {
         std::thread::sleep(remaining);
         return;
     }
-    let timer = libc::kevent {
-        ident: 0,
-        filter: libc::EVFILT_TIMER,
-        flags: libc::EV_ADD | libc::EV_ONESHOT,
-        fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
-        data: isize::try_from(remaining.as_nanos()).unwrap_or(isize::MAX),
-        udata: core::ptr::null_mut(),
-    };
+    let timer = critical_timer(remaining);
     // SAFETY: one valid change and no event slots; returns once applied.
     let armed = unsafe {
         libc::kevent(
@@ -278,6 +271,20 @@ fn sleep_until(target: Instant) {
     // SAFETY: the descriptor came from kqueue above and is closed once.
     unsafe {
         libc::close(queue);
+    }
+}
+
+/// The change that arms the sleep: one shot, in nanoseconds, marked critical
+/// -- the one timed wait the system does not coalesce.
+#[cfg(target_os = "macos")]
+fn critical_timer(remaining: Duration) -> libc::kevent {
+    libc::kevent {
+        ident: 0,
+        filter: libc::EVFILT_TIMER,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
+        data: isize::try_from(remaining.as_nanos()).unwrap_or(isize::MAX),
+        udata: core::ptr::null_mut(),
     }
 }
 
@@ -351,14 +358,39 @@ mod tests {
         assert!(elapsed_ms(begin) >= 5.0);
     }
 
-    /// **The middle of ten landings, not one**: a sleep the system coalesces
-    /// lands an eighth to a quarter of 5 ms late, 600 us and more, every time,
-    /// where the critical timer and the spin land on the deadline. One sample
-    /// could be a preemption; the median cannot.
+    /// **The sleep arms a critical timer**, read from the change it arms
+    /// rather than from the clock. No landing time tells it from a coalesced
+    /// sleep everywhere: a shared CI runner preempted half of ten precise
+    /// sleeps, 0.3 to 1.8 ms late, and a coalesced sleep lands on time
+    /// whenever something else wakes the processor -- a quarter of twenty on
+    /// arm64 here, more than half under the translation layer. The landings
+    /// themselves are the measurement below.
     #[cfg(target_os = "macos")]
     #[test]
+    fn the_precise_sleep_arms_a_critical_timer() {
+        // The structure is packed, so its fields are read out by value.
+        let timer = critical_timer(Duration::from_micros(4900));
+        let (filter, flags, fflags, data) = (timer.filter, timer.flags, timer.fflags, timer.data);
+        assert_eq!(filter, libc::EVFILT_TIMER);
+        assert_eq!(flags, libc::EV_ADD | libc::EV_ONESHOT);
+        assert_eq!(
+            fflags,
+            libc::NOTE_NSECONDS | libc::NOTE_CRITICAL,
+            "a timer not marked critical is coalesced, an eighth to a quarter late"
+        );
+        assert_eq!(data, 4_900_000);
+    }
+
+    /// **A measurement, not a gate**: where twenty precise 5 ms sleeps land
+    /// on an idle Mac -- all within 7 us on both architectures, where the
+    /// coalesced sleep in their place landed up to 1.2 ms late. Run with
+    /// `cargo test -p lowlat-common --lib a_precise_sleep_lands -- --ignored
+    /// --nocapture`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "a measurement, run by hand on an idle Mac"]
     fn a_precise_sleep_lands_on_its_deadline() {
-        let mut late_us: Vec<f64> = (0..10)
+        let mut late_us: Vec<f64> = (0..20)
             .map(|_| {
                 let begin = Time::now();
                 precise_sleep(Duration::from_millis(5));
@@ -366,8 +398,9 @@ mod tests {
             })
             .collect();
         late_us.sort_by(f64::total_cmp);
+        println!("precise sleeps landed this late, in us: {late_us:?}");
         assert!(
-            late_us[5] < 200.0,
+            late_us[10] < 200.0,
             "precise sleeps landed this late, in us: {late_us:?}"
         );
     }
