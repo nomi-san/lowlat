@@ -72,7 +72,12 @@ Three rules. Each is a production scar.
 2. **Explicit sleeps use an absolute deadline.** On POSIX, `clock_nanosleep` with
    `CLOCK_MONOTONIC` and `TIMER_ABSTIME`, with the deadline built from `clock_gettime`. Never
    assume the language runtime's monotonic instant shares a base with `CLOCK_MONOTONIC`. On
-   Windows, a high-resolution waitable timer with a bounded spin finish.
+   Windows, a high-resolution waitable timer with a bounded spin finish. On macOS, a
+   kernel-queue timer marked critical, armed once (*2026-10-29*, M0.1): the system lets every
+   ordinary timed wait -- a sleep, an absolute one, a kernel queue's own timeout -- run late by
+   an eighth to a quarter of its length, up to 1 and 5 ms (measured: 2 ms landed 260 to 510 us
+   late), and a timer marked critical is exempt, 30 us late at the median and 60 at the 95th
+   percentile, inside the same spin finish.
 3. **On Windows, raise the timer resolution at SDK init and drop it at shutdown**, refcounted.
    It is per-process, so another application making the same request does not help us, and
    high-resolution waitable timers do not remove the need: completion-port timeouts, socket
@@ -288,7 +293,7 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 |---|---|
 | Linux | `poll` plus `recvmmsg` in batches of 64 directly into slots, looping until drained |
 | Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port |
-| macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found (*planned 2026-10-29*, M1.1) |
+| macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found. The pass's deadline is a critical timer on the same queue, not the queue's own timeout, which the system coalesces (§2) (*planned 2026-10-29*, M1.1) |
 
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
 was the difference between zero and complete delivery of a keyframe burst on loopback.

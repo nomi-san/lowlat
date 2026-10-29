@@ -15,11 +15,21 @@ macOS gets a named place -- a module of the same name per platform, never a trai
 
 ## Phase M0 - The platform seams
 
-- [ ] **M0.1 common**: the absolute sleep without the call macOS lacks, the sleep's overshoot
+- [x] **M0.1 common**: the absolute sleep without the call macOS lacks, the sleep's overshoot
   there measured to set the spin margin; the address wait on the system's own primitive
   ([02 §3](02-io-shell.md)); libraries loaded from the application's directory and the system's,
   and for the codec pair the package managers' ([10 §5.3](10-client.md)), never the current one or
-  a search path.
+  a search path. *Built 2026-10-29.* The sleep is a kernel-queue timer marked critical
+  ([02 §2](02-io-shell.md)): the system lets every ordinary timed wait run late by an eighth to a
+  quarter of its length (2 ms landed 260 to 510 us late), a critical timer 30 us at the median and
+  60 at the 95th percentile, so the spin margin stays 100 us. The address wait is the public pair
+  where found and the private one below it, each driven by name in a test; a wake reaches a waiter
+  parked in the kernel in 17 us at the median through either, no sooner than through the portable
+  table, so what they buy is a wait per address with no shared bucket. The loader refuses a bare
+  name on macOS, where the system's search for one takes the working directory (measured: a
+  library planted there opened). The common tests pass on arm64 and on x86_64 under the
+  translation layer, 65 each, and on Linux and Windows as before; each new check failed when
+  broken.
 - [ ] **M0.2 audio, drivers, decode**: the GPU vendors' runtimes and their bindings left out of
   macOS; the audio crate's capture, which is the host's, empty there, its codec unchanged.
 - [ ] **M0.3 client and library**: a macOS module, empty, for each of the client's per-platform
@@ -86,7 +96,8 @@ and D14's amendment [00](00-overview.md).
 ### Steps
 
 - [ ] **M1.1 net**: the kernel-queue platform module ([02 §5, §6](02-io-shell.md)): the wait with
-  a user-event wake; the batched receive with each datagram's arrival address; sends from the
+  a user-event wake and its deadline a critical timer, the queue's own timeout being coalesced
+  (found at M0.1); the batched receive with each datagram's arrival address; sends from the
   address a path was proven at; the expedited mark on IPv6 by the socket's class and on IPv4 per
   datagram; don't-fragment for both families; the port taken free in both families, for a walk
   and for any port; the relay's stream never raising a broken-pipe signal. Checked by the

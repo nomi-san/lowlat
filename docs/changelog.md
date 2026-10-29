@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-29 - M0.1: the shared primitives on macOS
+
+### Changed
+- **The precise sleep is a kernel-queue timer marked critical on macOS** ([02 §2](02-io-shell.md)),
+  armed once, where macOS lacks the absolute sleep Linux uses; the spin margin stays 100 us.
+- **The address wait uses the system's own primitive on macOS** ([02 §3](02-io-shell.md)): the
+  public pair where the system has it, the private one below, each found by name at run time;
+  the portable table is left to systems with neither.
+- **The loader refuses a bare name on macOS** ([07 §13](07-platforms.md)); a caller names the
+  file it means.
+
+### Measured
+- Every ordinary timed wait on macOS runs late by an eighth to a quarter of its length -- a
+  sleep, an absolute one, a kernel queue's timeout, at any thread priority or task role: 2 ms
+  landed 260 to 510 us late. A critical timer landed 30 us late at the median and 60 at the 95th
+  percentile; ten precise 5 ms sleeps land within 200 us at the median, and the coalesced sleep
+  put in their place landed 1.16 ms late.
+- A wake reached a waiter parked in the kernel in 17 us at the median through the public pair,
+  the private one and the portable table alike.
+- A library planted in the working directory opened by its bare name in an ordinary process.
+- The common tests pass on arm64 and on x86_64 under the translation layer, and on Linux and
+  Windows as before; each new check failed when broken.
+
 ## 2026-10-29 - M planned: the macOS client
 
 ### Decided

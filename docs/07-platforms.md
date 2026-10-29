@@ -1056,7 +1056,13 @@ injection, daemon and driver crates build empty there.
   system's translation layer. An entry point newer than 11 is found at run time, since a symbol
   linked by name and missing stops the load on an older system.
 - **Signing is ad hoc**, notarization only with a developer identity; an unsigned download is
-  quarantined by the system until the user allows it.
+  quarantined by the system until the user allows it. The hardened runtime, which notarization
+  requires, also refuses to load a library signed by neither the system nor the application's
+  own team (measured), so an application that loads the machine's codec pair under it takes the
+  entitlement that turns library validation off.
+- **Timed waits are coalesced**: the system lets a sleep or a timeout run late by an eighth to a
+  quarter of its length, up to 1 and 5 ms, unless it is a kernel-queue timer marked critical
+  ([02 §2](02-io-shell.md)).
 - **The system's interfaces are generated bindings** over the macOS SDK's headers, checked into
   the driver crate, as Windows's are.
 - **The socket's platform facts are [02 §5](02-io-shell.md)'s**: every v4-level option refused on a
@@ -1066,6 +1072,7 @@ injection, daemon and driver crates build empty there.
   reaches `/usr/local/lib` and `/usr/lib` but not Homebrew's directory on Apple Silicon, so what
   the library loads from the machine it finds by full path in the package managers' directories
   ([10 §5.3](10-client.md)). A package manager's build for one architecture does not open in a
-  process of the other.
+  process of the other. Nothing is opened by a bare name there at all: the system's search for
+  one takes the working directory (measured), so a library left beside a user's files would load.
 - **A non-interactive shell does not read the login profile**, where the package manager puts
   its paths, so scripts run over a remote shell name its tools by full path.
