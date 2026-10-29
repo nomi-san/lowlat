@@ -6,7 +6,7 @@
 //! allocation counter is the process's, so the zero-allocation run counts on
 //! its own thread after a warm-up.
 
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 // Fixtures build lengths and fill bytes from small counters; the truncating
 // casts are the obvious ones.
 #![allow(clippy::cast_possible_truncation)]
@@ -308,7 +308,7 @@ fn a_reset_ends_the_stream() {
 
 /// Close with no lingering, which the system sends as a reset.
 fn reset(socket: TcpStream) {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::fd::AsRawFd;
         let linger = libc::linger {

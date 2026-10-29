@@ -14,6 +14,10 @@ use windows_sys::Win32::Networking::WinSock as ws;
 use super::control;
 use super::socket::{Socket, last_error, to_storage};
 
+/// Whether the shared batch segments a run of datagrams in one call: the
+/// system splits one buffer, and one that cannot says so at the first burst.
+pub(crate) const OFFLOAD: bool = true;
+
 /// Room for the segment size beside a v6 packet information, each with its
 /// header and padding.
 const CONTROL_LEN: usize =

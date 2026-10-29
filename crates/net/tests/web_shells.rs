@@ -6,7 +6,7 @@
 //! native one. Same loop, second instantiation.
 
 // The loop is built where a platform's system calls are written.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 // Fixtures build bytes from loop counters and percentiles from lengths; the
 // truncating casts are the obvious ones.
 #![allow(

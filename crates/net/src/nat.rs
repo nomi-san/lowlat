@@ -138,6 +138,21 @@ mod tests {
         Some((addr, thread))
     }
 
+    /// An address on this machine for a second server, other than
+    /// 127.0.0.1: Linux and Windows answer on all of 127/8, and macOS holds
+    /// 127.0.0.1 alone, so there it is an address the machine holds beyond
+    /// the loopback.
+    fn second() -> Ipv4Addr {
+        #[cfg(not(target_os = "macos"))]
+        let second = Ipv4Addr::new(127, 0, 0, 2);
+        #[cfg(target_os = "macos")]
+        let second = crate::sys::interface_v4()
+            .into_iter()
+            .find(|ip| !ip.is_loopback())
+            .expect("a second server needs an address beyond the loopback");
+        second
+    }
+
     /// Distinct per call, which is all a test's identifiers need.
     fn seed() -> [u8; 16] {
         use std::sync::atomic::AtomicU8;
@@ -150,10 +165,9 @@ mod tests {
     /// both asked and answered.
     #[test]
     fn two_servers_that_agree_on_the_socket_itself_are_no_translation() {
-        let (Some((a, first)), Some((b, second))) = (
-            server(Ipv4Addr::LOCALHOST, 0, 1),
-            server(Ipv4Addr::new(127, 0, 0, 2), 0, 1),
-        ) else {
+        let (Some((a, first)), Some((b, second))) =
+            (server(Ipv4Addr::LOCALHOST, 0, 1), server(second(), 0, 1))
+        else {
             return;
         };
         let socket = Socket::open(0).unwrap();
@@ -171,10 +185,9 @@ mod tests {
     /// address.
     #[test]
     fn two_servers_that_see_two_ports_are_a_port_per_destination() {
-        let (Some((a, first)), Some((b, second))) = (
-            server(Ipv4Addr::LOCALHOST, 1, 1),
-            server(Ipv4Addr::new(127, 0, 0, 2), 2, 1),
-        ) else {
+        let (Some((a, first)), Some((b, second))) =
+            (server(Ipv4Addr::LOCALHOST, 1, 1), server(second(), 2, 1))
+        else {
             return;
         };
         let socket = Socket::open(0).unwrap();

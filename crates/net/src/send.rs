@@ -26,7 +26,7 @@ use std::io;
 use lowlat_core::conn::{Egress, Ttl};
 
 use crate::socket::{DEFAULT_TTL, PROBE_TTL_MAX, Socket};
-use crate::sys::{offload_send, offload_unsupported, pinned_send};
+use crate::sys::{OFFLOAD, offload_send, offload_unsupported, pinned_send};
 
 /// Staging buffer size.
 const SEND_BUF: usize = 64 * 1024;
@@ -59,9 +59,10 @@ pub(crate) struct Batch {
     /// The source the staged burst is pinned to, if any. Part of the batch
     /// key like the destination: one burst, one source.
     from: Option<IpAddr>,
-    /// Cleared for good when the kernel says it cannot segment at all. A
-    /// refusal about one batch -- a full buffer during a burst -- leaves it
-    /// set, and that batch alone takes the ordinary path.
+    /// Starts as the platform says ([`OFFLOAD`]), and is cleared for good
+    /// when the kernel says it cannot segment at all. A refusal about one
+    /// batch -- a full buffer during a burst -- leaves it set, and that batch
+    /// alone takes the ordinary path.
     offload: bool,
     /// Datagrams the path has refused since the last one it took.
     ///
@@ -101,7 +102,7 @@ impl Batch {
             to: None,
             ttl: Ttl::Default,
             from: None,
-            offload: true,
+            offload: OFFLOAD,
             refused: 0,
         }
     }
@@ -348,12 +349,12 @@ mod tests {
     /// A destination the system refuses at the call: a real send failure that
     /// needs no network state to produce, and one about the moment rather
     /// than the capability, so it says nothing about whether the system can
-    /// segment. Which one differs by platform: Linux refuses the limited
-    /// broadcast without the broadcast option; Windows sends it without a
-    /// word, and refuses the unspecified address instead, which Linux takes
-    /// as this host.
+    /// segment. Which one differs by platform: Linux and macOS refuse the
+    /// limited broadcast without the broadcast option; Windows sends it
+    /// without a word, and refuses the unspecified address instead, which
+    /// Linux takes as this host.
     fn refused() -> SocketAddr {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let ip = core::net::Ipv4Addr::BROADCAST;
         #[cfg(windows)]
         let ip = core::net::Ipv4Addr::UNSPECIFIED;
@@ -423,7 +424,7 @@ mod tests {
     /// 127.0.0.1 alone and keeps a claimed source on its own interface, so
     /// there the pin can only name what the system would have picked anyway,
     /// and what proves it is read is the refusal of a source the host does
-    /// not hold.
+    /// not hold. macOS holds 127.0.0.1 alone too, and is checked the same way.
     fn pin() -> (IpAddr, IpAddr) {
         #[cfg(target_os = "linux")]
         {
@@ -432,7 +433,7 @@ mod tests {
                 IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7)),
             )
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             (
                 IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
@@ -481,7 +482,7 @@ mod tests {
         // Here: a source the host does not hold is refused, so the claim was
         // read and checked -- an ignored one would have left from the
         // default and arrived.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let unheld = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7));
             push_pinned(
@@ -500,6 +501,26 @@ mod tests {
             );
             assert_eq!(arrived(&mut receiver, 200.0), 0, "the unheld claim arrived");
         }
+        // And here a source the machine holds beyond the loopback, where it
+        // has one, reaches a peer on the loopback as itself: the pin carried,
+        // not only read.
+        #[cfg(target_os = "macos")]
+        if let Some(held) = crate::sys::interface_v4()
+            .into_iter()
+            .find(|ip| !ip.is_loopback())
+        {
+            let held = IpAddr::V4(held);
+            push_pinned(&mut batch, &sender, to, Ttl::Default, Some(held), b"held");
+            batch.flush(&sender).expect("flush");
+            assert_eq!(arrived(&mut receiver, 1000.0), 1);
+            let (from, _, bytes) = receiver.iter().next().expect("datagram");
+            assert_eq!(bytes, b"held");
+            assert_eq!(
+                from.ip(),
+                held,
+                "the peer saw the system's source, not the pinned one"
+            );
+        }
     }
 
     /// A refusal about one batch must not cost offload for the session. Only
@@ -517,8 +538,9 @@ mod tests {
         push(&mut batch, &sender, to, Ttl::Default, &[2u8; 256]);
         batch.flush(&sender).expect("a refusal is not an error");
 
-        assert!(
+        assert_eq!(
             batch.offloading(),
+            OFFLOAD,
             "a refusal about one batch disabled offload for the session"
         );
         assert_eq!(batch.refused(), 2, "the fallback sends were not counted");
@@ -573,8 +595,9 @@ mod tests {
             1,
             "a kibibyte datagram joined a batch the kernel cannot segment"
         );
-        assert!(
+        assert_eq!(
             batch.offloading(),
+            OFFLOAD,
             "the oversized batch reached the kernel and cost offload"
         );
 
@@ -614,8 +637,9 @@ mod tests {
         }
         assert_eq!(batch.staged(), 8);
         batch.flush(&sender).expect("flush");
-        assert!(
+        assert_eq!(
             batch.offloading(),
+            OFFLOAD,
             "the kernel refused to segment, so this exercised the fallback"
         );
 
@@ -643,8 +667,9 @@ mod tests {
 
         // Without this the test passes identically on the fallback path, and
         // would keep passing if offload silently stopped working.
-        assert!(
+        assert_eq!(
             batch.offloading(),
+            OFFLOAD,
             "the kernel refused to segment, so this exercised the fallback"
         );
 

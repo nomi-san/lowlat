@@ -46,8 +46,9 @@ pub(crate) const WANT_RCVBUF: i32 = 64 * 1024 * 1024;
 pub(crate) const WANT_SNDBUF: i32 = 4 * 1024 * 1024;
 
 /// Expedited forwarding, on both families. A socket option where the system
-/// honours one; Windows ignores it and marks per destination instead.
-#[cfg(target_os = "linux")]
+/// honours one; Windows ignores it and marks per destination instead, and
+/// macOS takes it for v6 alone and on each v4 send.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const DSCP_EF: i32 = 0xB8;
 
 /// The TTL everything but a mapping probe leaves at.
@@ -326,7 +327,10 @@ mod tests {
                 .map(|(_, _, bytes)| bytes.to_vec())
                 .collect()
         };
-        #[cfg(windows)]
+        // macOS's loopback delivers after the send has returned, so a wait
+        // there can return with the burst part queued: gathered too, and the
+        // module's own test counts a burst queued before taking it in one call.
+        #[cfg(any(windows, target_os = "macos"))]
         let seen: Vec<Vec<u8>> = {
             let mut seen = Vec::new();
             let started = std::time::Instant::now();
@@ -382,7 +386,11 @@ mod tests {
         let (mut receiver, to) = receiver();
         let port = to.port();
 
+        // macOS holds 127.0.0.1 alone: another 127/8 address goes nowhere.
+        #[cfg(not(target_os = "macos"))]
         let v4_dest = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 11));
+        #[cfg(target_os = "macos")]
+        let v4_dest = IpAddr::V4(core::net::Ipv4Addr::LOCALHOST);
         sender
             .send_to(b"v4", SocketAddr::new(v4_dest, port))
             .expect("send");

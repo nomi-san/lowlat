@@ -6,6 +6,10 @@ use std::mem;
 
 use super::socket::{Socket, to_storage};
 
+/// Whether the shared batch segments a run of datagrams in one call: the
+/// kernel splits one buffer, and one that cannot says so at the first burst.
+pub(crate) const OFFLOAD: bool = true;
+
 /// Level and option for the segment size. Spelled out because the constant is
 /// not exposed by every libc revision we build against.
 const SOL_UDP: libc::c_int = 17;

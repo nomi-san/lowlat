@@ -18,7 +18,7 @@ mod wake;
 
 pub(crate) use addrs::interface_v4;
 pub(crate) use io::Io;
-pub(crate) use send::{offload_send, offload_unsupported, pinned_send};
+pub(crate) use send::{OFFLOAD, offload_send, offload_unsupported, pinned_send};
 pub use socket::Socket;
 pub(crate) use stream::StreamIo;
 pub use wake::{Wake, WakeHandle};

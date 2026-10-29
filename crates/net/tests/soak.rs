@@ -20,7 +20,7 @@
 //! per-run check and the ten- and sixty-minute soaks.
 
 // The loop is built where a platform's system calls are written.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -150,9 +150,9 @@ fn kernel_drops(port: u16) -> Option<u64> {
     Some(0)
 }
 
-/// Windows keeps no drop count per socket, so there is none to read; the
+/// Windows and macOS keep no drop count per socket that a test can read; the
 /// per-message sequence below is the loss check there.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn kernel_drops(_port: u16) -> Option<u64> {
     None
 }
@@ -487,8 +487,8 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     /// so the baseline is steady state rather than start-up.
     const WARM_CYCLES: u64 = 50;
 
-    // Descriptors on Linux and handles on Windows: what a cycle opens and must
-    // close, counted exactly on both.
+    // Descriptors on Linux and macOS and handles on Windows: what a cycle
+    // opens and must close, counted exactly on each.
     #[cfg(target_os = "linux")]
     fn descriptors() -> usize {
         std::fs::read_dir("/proc/self/fd")
@@ -552,6 +552,36 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
             CloseHandle(snapshot);
             count
         }
+    }
+    #[cfg(target_os = "macos")]
+    fn descriptors() -> usize {
+        std::fs::read_dir("/dev/fd").map(|d| d.count()).unwrap_or(0)
+    }
+    #[cfg(target_os = "macos")]
+    fn task() -> libc::proc_taskinfo {
+        // SAFETY: plain data; all zeroes is a valid value.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).expect("a small struct");
+        // SAFETY: this process's own task information, written into a
+        // structure of the size given.
+        unsafe {
+            libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDTASKINFO,
+                0,
+                (&raw mut info).cast(),
+                size,
+            )
+        };
+        info
+    }
+    #[cfg(target_os = "macos")]
+    fn threads() -> u64 {
+        u64::try_from(task().pti_threadnum).unwrap_or(0)
+    }
+    #[cfg(target_os = "macos")]
+    fn resident_kb() -> u64 {
+        task().pti_resident_size / 1024
     }
     #[cfg(windows)]
     fn resident_kb() -> u64 {
