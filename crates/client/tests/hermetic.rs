@@ -16,6 +16,7 @@
 //!
 //! Thirty simulated seconds by default; `LOWLAT_HERMETIC_MS` runs longer.
 
+#![cfg(any(target_os = "linux", windows))]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

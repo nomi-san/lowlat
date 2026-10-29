@@ -16,6 +16,10 @@
 //! output where every consumer can read it, and it disappears when real
 //! capture arrives with a handle of its own.
 
+// The host's alone, so it builds empty where no host runs (macOS,
+// docs/impl-plan-macos.md).
+#![cfg(any(target_os = "linux", windows))]
+
 // Each platform has its own backends (docs/impl-plan-windows.md); the frame,
 // the generator and what an output and its pointer are build everywhere.
 #[cfg(target_os = "linux")]

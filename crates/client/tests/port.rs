@@ -4,6 +4,8 @@
 //! The port is read off the attempt's host candidates, so the machine needs a
 //! private address to offer one.
 
+#![cfg(any(target_os = "linux", windows))]
+
 use std::net::UdpSocket;
 use std::num::NonZeroU16;
 use std::time::{Duration, Instant};

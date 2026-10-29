@@ -15,6 +15,8 @@
 //! installation -- against the library that ships there, which carries the
 //! client half alone.
 
+#![cfg(any(target_os = "linux", windows))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

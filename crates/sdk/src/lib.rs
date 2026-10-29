@@ -5,6 +5,11 @@
 //! the client half are features, so a build can carry one without the other
 //! and the header says which through the same names.
 
+// Neither half builds on macOS yet: the host's never runs there, and the
+// client's stands on the network shell's platform module, which macOS does not
+// have yet (docs/impl-plan-macos.md). The library builds empty there till then.
+#![cfg(any(target_os = "linux", windows))]
+
 pub mod abi;
 
 /// **The system libraries the library calls into, named inside it**, so an

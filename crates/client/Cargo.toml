@@ -33,7 +33,8 @@ miniz_oxide.workspace = true
 # dropped. Already in the graph beneath the credentials crate.
 zeroize = "1"
 
-[dev-dependencies]
+# The tests run where the client builds, with the host's crates beside it.
+[target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
 # The hermetic session's other end: the host crate's own framing and
 # negotiation, driven under the simulator against this client.
 lowlat-host.workspace = true

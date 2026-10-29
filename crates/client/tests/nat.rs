@@ -2,6 +2,8 @@
 //! servers' answers say of it, a probe refused while the port is taken, and
 //! an attempt that stops one and leaves what was known before.
 
+#![cfg(any(target_os = "linux", windows))]
+
 mod support;
 
 use std::net::Ipv4Addr;

@@ -8,6 +8,8 @@
 //! answers back, so the client's loop, its stream and its codec meet a relay
 //! that is not a third reading of the standard.
 
+#![cfg(any(target_os = "linux", windows))]
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::Arc;

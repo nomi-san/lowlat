@@ -2,6 +2,8 @@
 //! handle with the same seed walks past it then, before anything is mapped,
 //! and never maps, moves or deletes the first handle's entry.
 
+#![cfg(any(target_os = "linux", windows))]
+
 mod support;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};

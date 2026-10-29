@@ -13,15 +13,19 @@
 
 // The service is written once; what the session's side of it is, is the
 // platform's (docs/impl-plan-windows.md). The channel, the bus, the seat and
-// the tray are how Linux's session side is reached.
+// the tray are how Linux's session side is reached. No host runs on macOS
+// (docs/impl-plan-macos.md), so there it says so and exits.
+#[cfg(any(target_os = "linux", windows))]
 mod app;
 #[cfg(target_os = "linux")]
 mod channel;
 #[cfg(target_os = "linux")]
 mod dbus;
+#[cfg(any(target_os = "linux", windows))]
 mod display;
 #[cfg(target_os = "linux")]
 mod seat;
+#[cfg(any(target_os = "linux", windows))]
 mod service;
 #[cfg(target_os = "linux")]
 #[path = "session_side/linux.rs"]
@@ -36,6 +40,13 @@ mod windows_install;
 #[cfg(windows)]
 mod windows_service;
 
+#[cfg(any(target_os = "linux", windows))]
 fn main() {
     service::main();
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn main() {
+    eprintln!("lowlatd: no host runs on this platform");
+    std::process::exit(1);
 }

@@ -3,6 +3,9 @@
 //! The public surface is the C ABI in `lowlat-sdk`, which is the only crate
 //! that depends on this one for its boundary; the daemon uses it directly.
 
+// It builds empty where no host runs (macOS, docs/impl-plan-macos.md).
+#![cfg(any(target_os = "linux", windows))]
+
 // What is the platform's -- the display, and what a stream is built on -- is a
 // module per platform (docs/impl-plan-windows.md); the rest is written once.
 pub mod admission;

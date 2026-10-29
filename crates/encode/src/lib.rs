@@ -3,6 +3,10 @@
 //!
 //! See docs/05-host.md section 4.
 
+// The host's alone, so it builds empty where no host runs (macOS,
+// docs/impl-plan-macos.md).
+#![cfg(any(target_os = "linux", windows))]
+
 // Phase 5 lands the hardware backend; Phase 11 the software one.
 
 // The open and Vulkan backends are Linux's; the vendor's is on both, bound to

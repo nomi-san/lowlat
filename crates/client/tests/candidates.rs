@@ -3,6 +3,8 @@
 //! The repeat is read off a real attempt's host candidates, so the machine
 //! needs an address to offer one.
 
+#![cfg(any(target_os = "linux", windows))]
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::thread;
 use std::time::{Duration, Instant};

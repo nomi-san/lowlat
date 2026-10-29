@@ -9,6 +9,10 @@
 //!
 //! The public surface is the C ABI in `lowlat-sdk`; the seam is [`Client`].
 
+// The client stands on the network shell's platform module -- its socket, its
+// wake -- so it builds empty where that module does not exist yet (macOS,
+// docs/impl-plan-macos.md).
+#![cfg(any(target_os = "linux", windows))]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
