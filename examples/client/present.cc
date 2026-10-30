@@ -74,6 +74,25 @@ static std::atomic_uint _lat_max_us;
 static std::atomic_uint _lib_sum_us;
 static std::atomic_uint _lib_max_us;
 
+// The layouts by what drawing one asks: ten bits in sixteen, chroma at full
+// resolution, and each chroma component in a plane of its own.
+static bool deep(uint32_t format)
+{
+	return format == LOWLAT_FORMAT_P010 || format == LOWLAT_FORMAT_YUV444_16
+		|| format == LOWLAT_FORMAT_P410;
+}
+
+static bool full(uint32_t format)
+{
+	return format == LOWLAT_FORMAT_YUV444 || format == LOWLAT_FORMAT_YUV444_16
+		|| format == LOWLAT_FORMAT_NV24 || format == LOWLAT_FORMAT_P410;
+}
+
+static bool three_planes(uint32_t format)
+{
+	return format == LOWLAT_FORMAT_YUV444 || format == LOWLAT_FORMAT_YUV444_16;
+}
+
 // `LOWLAT_DUMP_FRAME=<path>` writes the tenth picture's planes, each row at
 // its own width with the pitch's padding left out, so the bytes a renderer
 // is handed can be looked at with another tool.
@@ -83,18 +102,18 @@ static void dump_once(const lowlat_frame *f)
 	const char *path = config::get().dump_frame;
 	if (path == NULL || ++seen != 10)
 		return;
-	bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
-	bool full = f->format == LOWLAT_FORMAT_YUV444 || f->format == LOWLAT_FORMAT_YUV444_16;
-	uint32_t row = f->width * (deep ? 2 : 1);
+	uint32_t row = f->width * (deep(f->format) ? 2 : 1);
 	FILE *out = fopen(path, "wb");
 	if (out == NULL)
 		return;
 	for (uint32_t p = 0; p < 3; p++) {
 		if (f->planes[p].data == NULL)
 			continue;
-		uint32_t rows = p == 0 || full ? f->height : f->height / 2;
+		uint32_t rows = p == 0 || full(f->format) ? f->height : f->height / 2;
+		// Full chroma in two planes: both components, side by side.
+		uint32_t bytes = p == 1 && full(f->format) && !three_planes(f->format) ? 2 * row : row;
 		for (uint32_t r = 0; r < rows; r++)
-			fwrite(f->planes[p].data + (size_t) r * f->planes[p].pitch, 1, row, out);
+			fwrite(f->planes[p].data + (size_t) r * f->planes[p].pitch, 1, bytes, out);
 	}
 	fclose(out);
 	printf("demo: dumped picture %ux%u format=%u full_range=%d to %s\n", f->width, f->height,
@@ -212,16 +231,14 @@ static void *present_loop(void *opaque) noexcept
 		// they are; a new picture, or one not loaded for a second, is loaded.
 		if (_showing) {
 			const lowlat_frame *f = &_shown;
-			bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
-			bool full = f->format == LOWLAT_FORMAT_YUV444 || f->format == LOWLAT_FORMAT_YUV444_16;
 			bool load = !_loaded || t - _loaded_ms >= 1000.0;
-			uint32_t sample = deep ? 2 : 1;
 			MTY_RenderDesc desc;
 			memset(&desc, 0, sizeof desc);
 			desc.format = !load ? MTY_COLOR_FORMAT_UNKNOWN
-				: full ? (deep ? MTY_COLOR_FORMAT_3PLANES_16 : MTY_COLOR_FORMAT_3PLANES)
-				: (deep ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
-			desc.chroma = full ? MTY_CHROMA_444 : MTY_CHROMA_420;
+				: three_planes(f->format)
+					? (deep(f->format) ? MTY_COLOR_FORMAT_3PLANES_16 : MTY_COLOR_FORMAT_3PLANES)
+					: (deep(f->format) ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
+			desc.chroma = full(f->format) ? MTY_CHROMA_444 : MTY_CHROMA_420;
 			desc.filter = MTY_FILTER_LINEAR;
 			// A handle is drawn from the toolkit's import of it, made once
 			// per allocation and kept while that allocation keeps coming:
@@ -249,9 +266,15 @@ static void *present_loop(void *opaque) noexcept
 				desc.imageWidth = f->width;
 				desc.imageHeight = f->height;
 			} else {
-				desc.imageWidth = f->planes[0].pitch / sample;
-				desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)
-					/ f->planes[0].pitch);
+				// Each plane where it lies, at its own pitch: in sequence in
+				// the library's own memory, apart and each aligned on its own
+				// in a buffer of the system's decoder on macOS.
+				for (uint32_t p = 0; p < 3; p++) {
+					desc.planes[p] = f->planes[p].data;
+					desc.pitches[p] = f->planes[p].pitch;
+				}
+				desc.imageWidth = f->width;
+				desc.imageHeight = f->height;
 			}
 			desc.cropWidth = f->width;
 			desc.cropHeight = f->height;

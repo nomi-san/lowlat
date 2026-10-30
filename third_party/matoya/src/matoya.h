@@ -515,6 +515,10 @@ typedef struct {
 	                        ///<   if unnecessary.
 	bool hardware;          ///< The image is an MTY_HardwareFrame: a picture in device memory,
 	                        ///<   imported rather than uploaded.
+	const uint8_t *planes[3]; ///< Each plane's own address where set, for planes that do not
+	                          ///<   lie in sequence after `image`.
+	uint32_t pitches[3];      ///< Each plane's own row length in bytes where set, in place of
+	                          ///<   the one derived from `imageWidth`.
 } MTY_RenderDesc;
 
 /// @brief A picture in device memory another interface exported, drawn on GL or Direct3D 11

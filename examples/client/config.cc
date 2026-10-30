@@ -36,13 +36,15 @@ static MTY_GFX gfx_named(const char *name)
 	return strcmp(name, "gl") == 0 ? MTY_GFX_GL
 		: strcmp(name, "vk") == 0 ? MTY_GFX_VK
 		: strcmp(name, "d3d11") == 0 ? MTY_GFX_D3D11
-		: strcmp(name, "d3d12") == 0 ? MTY_GFX_D3D12 : MTY_GFX_NONE;
+		: strcmp(name, "d3d12") == 0 ? MTY_GFX_D3D12
+		: strcmp(name, "metal") == 0 ? MTY_GFX_METAL : MTY_GFX_NONE;
 }
 
 const char *gfx_name(MTY_GFX gfx)
 {
 	return gfx == MTY_GFX_GL ? "gl" : gfx == MTY_GFX_VK ? "vk"
-		: gfx == MTY_GFX_D3D11 ? "d3d11" : gfx == MTY_GFX_D3D12 ? "d3d12" : "-";
+		: gfx == MTY_GFX_D3D11 ? "d3d11" : gfx == MTY_GFX_D3D12 ? "d3d12"
+		: gfx == MTY_GFX_METAL ? "metal" : "-";
 }
 
 bool draws_handles()
@@ -140,6 +142,8 @@ int read()
 #endif
 #if defined(_WIN32)
 	const char *gfx = env_or("LOWLAT_GFX", "d3d11");
+#elif defined(__APPLE__)
+	const char *gfx = env_or("LOWLAT_GFX", "metal");
 #else
 	const char *gfx = env_or("LOWLAT_GFX", "gl");
 #endif

@@ -87,6 +87,17 @@ climbing with it.
 | `src/matoya.h` | `MTY_HardwareFrame.texture`: each plane's texture by its shared handle, which with the frame's `id` is what the Direct3D 11 renderer takes as the image when `MTY_RenderDesc.hardware` is set |
 | `src/windows/gfx/d3d11.c` | up to eight imports kept, each a frame's planes opened on the renderer's device with their views, found by `id`, the oldest replaced by a new one; a draw takes references on the import's views and opens nothing; `mty_d3d11_valid_hardware_frame` reads the frame, and answers yes for none, every device opening the shared textures of its own GPU |
 
+A picture uploaded from memory is read where each plane lies, at each plane's own row length.
+Upstream takes one image with the planes in sequence and derives every plane's row length from
+one width, so a picture whose planes lie apart, or whose chroma rows are aligned on their own --
+as the system's decoder on macOS hands them out -- was drawn wrong, or had to be copied into
+that shape first.
+
+| file | change |
+|---|---|
+| `src/matoya.h` | `MTY_RenderDesc.planes` and `MTY_RenderDesc.pitches`: each plane's own address and row length in bytes, taken where set |
+| `src/gfx/fmt.h` | `fmt_reload_textures` uploads a plane from its own address at its own row length where the description gives them, and from the image in sequence as before where not; every renderer's upload goes through it |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 

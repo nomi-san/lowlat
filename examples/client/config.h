@@ -5,7 +5,7 @@
 // default), `LOWLAT_DEVICE` the decoder's device -- a render node, or on
 // Windows a GPU's identity as the table prints it (`luid:HIGH:LOW`); the
 // first that decodes by default -- `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
-// `software`, `system` (Windows' own decoder, in software), `none`. The decoder table is printed at start, one slot a
+// `software`, `system` (the system's own: Windows', in software, and macOS's), `none`. The decoder table is printed at start, one slot a
 // line with the unavailable ones saying why, and `LOWLAT_DECODER_INDEX`
 // picks a slot instead. The software row is the machine's own codec library, an LGPL
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
@@ -21,6 +21,8 @@
 // picture of textures opens where it is drawn and switching to handles moves
 // nothing; pictures moved to another GPU by the chord or a row, or found
 // again under a new identity after a device was lost, bring it after them.
+// On macOS planes are drawn through Metal, and no decoder there hands out
+// handles.
 // `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
 // the display's next refresh: the lowest latency, torn where a picture
 // lands mid-scan.

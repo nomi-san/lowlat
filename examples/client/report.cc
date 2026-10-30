@@ -10,6 +10,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
 #else
 #include <unistd.h>
 #endif
@@ -44,6 +46,16 @@ static char _mapped_address[LOWLAT_ADDRESS_MAX];
 static uint16_t _mapping_refusal;
 static uint32_t _mapping_refused_by;
 
+#if defined(__APPLE__)
+// The task's own accounting: what it has resident, and its footprint, which
+// is what the system charges it and what its memory pressure is judged by.
+static bool vm_info(task_vm_info_data_t *info)
+{
+	mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+	return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) info, &count) == KERN_SUCCESS;
+}
+#endif
+
 static uint64_t resident_mb()
 {
 #if defined(_WIN32)
@@ -53,6 +65,11 @@ static uint64_t resident_mb()
 	if (!GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof c))
 		return 0;
 	return (uint64_t) c.WorkingSetSize / (1024 * 1024);
+#elif defined(__APPLE__)
+	task_vm_info_data_t info;
+	if (!vm_info(&info))
+		return 0;
+	return (uint64_t) info.resident_size / (1024 * 1024);
 #else
 	FILE *f = fopen("/proc/self/statm", "r");
 	if (f == NULL)
@@ -76,6 +93,10 @@ void memory_words(char *out, size_t size)
 	if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &c, sizeof c))
 		committed = (uint64_t) c.PrivateUsage / (1024 * 1024);
 	snprintf(out, size, "rss_mb=%" PRIu64 " commit_mb=%" PRIu64, resident_mb(), committed);
+#elif defined(__APPLE__)
+	task_vm_info_data_t info;
+	uint64_t footprint = vm_info(&info) ? (uint64_t) info.phys_footprint / (1024 * 1024) : 0;
+	snprintf(out, size, "rss_mb=%" PRIu64 " footprint_mb=%" PRIu64, resident_mb(), footprint);
 #else
 	snprintf(out, size, "rss_mb=%" PRIu64, resident_mb());
 #endif
@@ -196,8 +217,9 @@ static void second()
 	const lowlat_decoder_info *row = session::decoder_row();
 	if (pic.width != 0) {
 		const char *colour = pic.format == LOWLAT_FORMAT_P010 ? "10bit"
-			: pic.format == LOWLAT_FORMAT_YUV444 ? "444"
-			: pic.format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
+			: pic.format == LOWLAT_FORMAT_YUV444 || pic.format == LOWLAT_FORMAT_NV24 ? "444"
+			: pic.format == LOWLAT_FORMAT_YUV444_16 || pic.format == LOWLAT_FORMAT_P410 ? "444 10bit"
+			: "8bit";
 		snprintf(title, sizeof title,
 			"lowlat | %ux%u %s %s%s%s | asked %s | %s %s %s%s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
 			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f/%.1f Mbit/s | "

@@ -50,7 +50,11 @@ static bool fmt_reload_textures(struct gfx *gfx, MTY_Device *device, MTY_Context
 		// The second plane of two plane formats is always packed
 		uint8_t pack = x == 1 && planes == 2 ? 2 : 1;
 
-		if (!refresh_resource(gfx, device, context, desc->format, x, image, desc->imageWidth / wdiv,
+		// A plane given its own address and row length is read there, at that length
+		const uint8_t *plane = desc->planes[x] ? desc->planes[x] : image;
+		uint32_t full_w = desc->pitches[x] ? desc->pitches[x] / (pack * bpp) : desc->imageWidth / wdiv;
+
+		if (!refresh_resource(gfx, device, context, desc->format, x, plane, full_w,
 			desc->cropWidth / wdiv, desc->cropHeight / hdiv, pack * bpp))
 			return false;
 
