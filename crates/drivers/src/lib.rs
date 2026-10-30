@@ -40,3 +40,7 @@ pub mod va;
 /// Intel's own video runtime, reached on Windows alone.
 #[cfg(windows)]
 pub mod vpl;
+/// The system's video decoder and the frameworks beneath it, reached on macOS
+/// alone.
+#[cfg(target_os = "macos")]
+pub mod vt;

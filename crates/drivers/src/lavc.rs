@@ -223,11 +223,20 @@ pub struct Lavc {
 }
 
 /// The files a pair of the given majors is, as this platform names them.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn file_names(avutil: u32, avcodec: u32) -> (String, String) {
     (
         format!("libavutil.so.{avutil}"),
         format!("libavcodec.so.{avcodec}"),
+    )
+}
+
+/// The files a pair of the given majors is, as this platform names them.
+#[cfg(target_os = "macos")]
+fn file_names(avutil: u32, avcodec: u32) -> (String, String) {
+    (
+        format!("libavutil.{avutil}.dylib"),
+        format!("libavcodec.{avcodec}.dylib"),
     )
 }
 
@@ -244,7 +253,34 @@ fn file_names(avutil: u32, avcodec: u32) -> (String, String) {
 #[derive(Debug, Clone)]
 enum Place {
     Directory(PathBuf),
+    /// The linker's own search for a name, which macOS never takes.
+    #[cfg(not(target_os = "macos"))]
     Default,
+}
+
+/// Where the walk looks after the executable's own directory: the linker's
+/// own search for the name.
+#[cfg(not(target_os = "macos"))]
+fn installed() -> Vec<Place> {
+    vec![Place::Default]
+}
+
+/// Where the walk looks after the executable's own directory: the package
+/// managers' library directories, by full path, the architecture's own
+/// first. The linker's own search for a bare name reaches none of Homebrew's
+/// on Apple Silicon and takes the working directory, so it is never asked;
+/// and a package manager's build for one architecture does not open in a
+/// process of the other, which leaves that place absent.
+#[cfg(target_os = "macos")]
+fn installed() -> Vec<Place> {
+    let dirs = if cfg!(target_arch = "aarch64") {
+        ["/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib"]
+    } else {
+        ["/usr/local/lib", "/opt/homebrew/lib", "/opt/local/lib"]
+    };
+    dirs.into_iter()
+        .map(|dir| Place::Directory(PathBuf::from(dir)))
+        .collect()
 }
 
 impl Place {
@@ -253,6 +289,7 @@ impl Place {
             Self::Directory(dir) => {
                 CString::new(dir.join(file).into_os_string().into_encoded_bytes()).ok()
             }
+            #[cfg(not(target_os = "macos"))]
             Self::Default => CString::new(file).ok(),
         }
     }
@@ -260,6 +297,7 @@ impl Place {
     fn origin(&self) -> Origin {
         match self {
             Self::Directory(dir) => Origin::Directory(dir.clone()),
+            #[cfg(not(target_os = "macos"))]
             Self::Default => Origin::Default,
         }
     }
@@ -319,14 +357,14 @@ impl Lavc {
         let places: Vec<Place> = match named {
             Some(dir) => vec![Place::Directory(dir)],
             None => {
-                let mut places = Vec::with_capacity(2);
+                let mut places = Vec::with_capacity(4);
                 if let Some(beside) = std::env::current_exe()
                     .ok()
                     .and_then(|exe| exe.parent().map(Path::to_path_buf))
                 {
                     places.push(Place::Directory(beside));
                 }
-                places.push(Place::Default);
+                places.extend(installed());
                 places
             }
         };
@@ -376,6 +414,7 @@ impl Lavc {
                     "decode: libavcodec refused, major={major} reason={refusal} from={}",
                     match place {
                         Place::Directory(dir) => dir.display().to_string(),
+                        #[cfg(not(target_os = "macos"))]
                         Place::Default => "the default search".to_string(),
                     }
                 );
@@ -600,6 +639,63 @@ mod tests {
             .collect()
     }
 
+    /// The codec libraries among the images the dynamic linker has loaded.
+    #[cfg(target_os = "macos")]
+    fn mapped() -> Vec<String> {
+        // The dynamic linker's own, in every process.
+        unsafe extern "C" {
+            fn _dyld_image_count() -> u32;
+            fn _dyld_get_image_name(index: u32) -> *const c_char;
+        }
+        // SAFETY: the linker's own count and names, read while nothing here
+        // loads or unloads an image.
+        let names = (0..unsafe { _dyld_image_count() }).filter_map(|i| {
+            let name = unsafe { _dyld_get_image_name(i) };
+            (!name.is_null()).then(|| {
+                unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        });
+        names
+            .filter(|n| n.contains("libavcodec") || n.contains("libavutil"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// **A Mac's pair is named as its package managers install it and looked
+    /// for by full path**: the package managers' library directories, the
+    /// architecture's own first, and never a bare name, which the system's
+    /// search takes in the working directory.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_macs_pair_is_looked_for_in_the_package_managers_directories() {
+        assert_eq!(
+            file_names(59, 61),
+            (
+                "libavutil.59.dylib".to_string(),
+                "libavcodec.61.dylib".to_string()
+            )
+        );
+        let dirs: Vec<PathBuf> = installed()
+            .into_iter()
+            .map(|place| match place {
+                Place::Directory(dir) => dir,
+            })
+            .collect();
+        let own = if cfg!(target_arch = "aarch64") {
+            "/opt/homebrew/lib"
+        } else {
+            "/usr/local/lib"
+        };
+        assert_eq!(dirs.first().map(PathBuf::as_path), Some(Path::new(own)));
+        for dir in ["/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib"] {
+            assert!(dirs.iter().any(|d| d == Path::new(dir)), "{dir} not walked");
+        }
+        assert!(dirs.iter().all(|d| d.is_absolute()));
+    }
+
     /// **The GPL is loaded only by a build that says so.** The LGPL answers
     /// are taken by every build, the GPL ones only with the `gpl-libavcodec`
     /// feature, and a build that answers `nonfree` by none.
@@ -618,7 +714,7 @@ mod tests {
     /// search finds is accepted with an answer this build loads or refused
     /// with any other, and a refused pair leaves nothing new in the process
     /// map.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_default_search_answers_with_its_own_licence() {
         let before = mapped();

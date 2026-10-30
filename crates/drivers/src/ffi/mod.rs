@@ -192,3 +192,25 @@ pub mod va;
 
 #[cfg(target_os = "linux")]
 pub mod drm;
+
+/// The system's video decoder and the frameworks beneath it, from the macOS
+/// SDK's own headers (`scripts/gen-vt-bindings.sh`), which exist on macOS
+/// alone. Its entry points are generated as the types of pointers to them.
+#[allow(
+    dead_code,
+    unused_imports,
+    unnecessary_transmutes,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    missing_debug_implementations,
+    unreachable_pub,
+    clippy::all,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::useless_transmute
+)]
+#[cfg(target_os = "macos")]
+#[path = "macos/vt.rs"]
+pub mod vt;
