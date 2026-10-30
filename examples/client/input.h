@@ -4,7 +4,9 @@
 //
 // The chords are Ctrl+Shift and a letter, never sent: the release that
 // follows one is sent and names a key the host never saw down, which it
-// drops. A bare GUI key is the desktop's unless the keyboard is grabbed.
+// drops. Off macOS a bare GUI key is the desktop's unless the keyboard is
+// grabbed; on macOS Command is sent as the GUI key, and Caps Lock as a press
+// and a release each time the lock changes.
 
 #pragma once
 
@@ -28,12 +30,15 @@ void host_relative(const lowlat_relative_event *r);
 void forget_session();
 
 // What went to the library in the second, by kind, so the host's own count
-// of what it received can be read against this; read and cleared.
+// of what it received can be read against this; read and cleared. And how
+// many keys the host was last told are down -- a count, never which -- which
+// is zero again once the hands are off the keyboard.
 struct Second {
 	uint32_t keys;
 	uint32_t buttons;
 	uint32_t wheels;
 	uint32_t motions;
+	uint32_t keys_held;
 };
 Second take_second();
 // Every motion sent, never cleared, for the per-picture line to say how

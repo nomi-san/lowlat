@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include <atomic>
+#include <bitset>
 
 #include "app.h"
 #include "keys.h"
@@ -24,6 +25,9 @@ static uint32_t _buttons;
 static uint32_t _wheels;
 static uint32_t _motions;
 static std::atomic_uint _motions_total;
+// The usage codes last sent down and not yet up: a press the library took
+// sets one, any release clears it, and so does letting go of everything.
+static std::bitset<256> _held;
 
 // The toolkit's modifier bits, in the wire's numbering.
 static uint32_t mods_of(MTY_Mod m)
@@ -125,14 +129,36 @@ void key(const MTY_KeyEvent *k)
 				break;
 		}
 	}
+#if !defined(__APPLE__)
 	// A bare GUI key is the desktop's unless the keyboard is grabbed: sent
-	// then, the host would be left holding the modifier the desktop took.
+	// then, the host would be left holding the modifier the desktop took. On
+	// macOS it is Command, sent as the GUI key: the system's own Command
+	// chords never reach the window, and its losing the focus lets go of
+	// everything.
 	if ((k->key == MTY_KEY_LWIN || k->key == MTY_KEY_RWIN) && !_grabbed)
 		return;
+#endif
 	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
 		return;
-	sent(lowlat_client_send_key(session::client(), KEY_USAGE[k->key], mods_of(k->mod), k->pressed),
-		&_keys);
+	uint16_t usage = KEY_USAGE[k->key];
+#if defined(__APPLE__)
+	// The window reports Caps Lock as the lock's state, down as it goes on
+	// and up as it goes off; a host that toggles on a press would toggle
+	// once every two. Each change goes as a press and a release, the mask
+	// carrying the new state.
+	if (k->key == MTY_KEY_CAPS) {
+		uint32_t mods = mods_of(k->mod);
+		sent(lowlat_client_send_key(session::client(), usage, mods, true), &_keys);
+		sent(lowlat_client_send_key(session::client(), usage, mods, false), &_keys);
+		return;
+	}
+#endif
+	lowlat_status s = lowlat_client_send_key(session::client(), usage, mods_of(k->mod), k->pressed);
+	sent(s, &_keys);
+	if (!k->pressed)
+		_held.reset(usage);
+	else if (s == LOWLAT_OK)
+		_held.set(usage);
 }
 
 void button(const MTY_ButtonEvent *b)
@@ -155,8 +181,10 @@ void motion(const MTY_MotionEvent *m)
 
 void focus(bool focused)
 {
-	if (!focused)
+	if (!focused) {
 		lowlat_client_send_release_all(session::client());
+		_held.reset();
+	}
 	apply_relative();
 }
 
@@ -173,6 +201,7 @@ void host_relative(const lowlat_relative_event *r)
 
 void forget_session()
 {
+	_held.reset();
 	if (_relative) {
 		_relative = false;
 		apply_relative();
@@ -181,7 +210,7 @@ void forget_session()
 
 Second take_second()
 {
-	Second s = {_keys, _buttons, _wheels, _motions};
+	Second s = {_keys, _buttons, _wheels, _motions, (uint32_t) _held.count()};
 	_keys = 0;
 	_buttons = 0;
 	_wheels = 0;

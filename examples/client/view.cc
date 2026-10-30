@@ -26,9 +26,10 @@ static int32_t _viewport[4];
 static MTY_Size _window_size;
 
 // The host's pointer picture, kept at its native size; the toolkit is
-// given it at the size it has in the drawn picture (the toolkit's own
-// cursor-size call is a no-op on this platform and on Windows, so the
-// resample is done here, as an established client does it). The target last
+// given it at the size it has in the drawn picture, in the drawable's pixels
+// (the toolkit's own cursor-size call is a no-op on Linux and Windows, so
+// the resample is done here, as an established client does it; on macOS the
+// toolkit draws an unsized cursor's pixels as the screen's). The target last
 // applied says when to redo it.
 static std::vector<uint8_t> _cursor_rgba;
 static uint32_t _cursor_width;
