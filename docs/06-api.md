@@ -568,7 +568,11 @@ pad already sent as states -- `LOWLAT_ERR_INVALID_ARGUMENT` either way, at the c
 written (`lowlat_pad_report_event { pad, kind, len, report }`, `kind`
 `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`), an output report already in the
 pad's own framing and a feature write in the USB form, **a pointer valid until the next
-`poll_events`** as the cursor's picture is; the application writes it to the pad.
+`poll_events`** as the cursor's picture is; the application writes it to the pad, in the order
+the events come. *Since M1.4 (2026-10-30), no change to the surface*: for a wireless DualSense
+the event also brings, once a connection, a report of the library's own resetting the pad's
+lights, which it takes no light write without, and behind it the host's light write from
+before, which the pad ignored ([10 §8](10-client.md)); `pad_reports_received` counts neither.
 `LOWLAT_EVENT_RUMBLE` is unchanged and still arrives for any pad a host rumbles that way.
 Status gains `pad_reports_sent`, `pad_reports_received` and `pad_reports_dropped` (received
 for a pad this client never sent as reports).

@@ -1109,7 +1109,16 @@ up with at 21 ms a picture, where the GPU's own decoders took 8.
    each keyframe of a host's does: a process's first costs 50 to 78 ms, a new one about 4 after
    it. Measured on an M2: every reference clip bit for bit on both architectures; the software
    decoder gets the multi-slice H.264 clip wrong, 12 of its 24 pictures, and is the only one of
-   the two that decodes MBAFF.
+   the two that decodes MBAFF. **The decode's speed follows the process's load** (*measured at
+   M1.4, 2026-10-30*): 2560x1440 decoded a picture every 16 ms, as a 60 Hz stream comes, took
+   4.0 to 4.8 ms at the median for H.264 and 6.2 to 7.4 at 4:4:4 ten-bit, against 1.9 to 2.0 and
+   2.4 with one thread kept busy beside it, on both architectures; back to back, 2.2 and 3.4.
+   Nothing else moved it -- the session's real-time and power-efficiency properties, the
+   decoding thread's class or a real-time policy for it, a latency-critical activity, a spin
+   around each decode, or a thread busy two thirds of the time -- so the chip clocks the decode
+   from the processor's sustained load, and a lighter client decodes slower: the handle kind's
+   slower decode at M1.3, and the translation layer's faster one. A core kept busy to hold the
+   clock up is not taken. A decode figure on this hardware is compared only at equal load.
 2. **The LGPL pair** on D14's terms, as on Linux (§5.1): nothing shipped, loaded at run time,
    only an LGPL build, and a GPL one only in a build that allows it. A Mac's own pair is a
    package manager's, and a bare name never reaches Homebrew's directory on Apple Silicon
@@ -1323,7 +1332,16 @@ else is the library's:
 - **The Bluetooth form is normalised to the USB form** on the way in (the identifier and
   checksum stripped, the calibration report's Bluetooth identifier rewritten), the transport
   remembered per pad, and what comes back is re-framed with the identifier and checksum a
-  wireless pad expects. The host sees one form.
+  wireless pad expects. The host sees one form. *Since M1.4 (2026-10-30)*: **a wireless
+  DualSense takes no light write after it connects until a report of its own resets its
+  lights**, which no host writes -- a host writes to a USB pad, which needs none -- and a reset
+  in the same report as a colour drops the colour (measured: the lightbar and the player lights
+  stayed on the pad's own blue through eight colour writes a second apart, and took every one
+  after a lone reset). So once a connection -- a pad back on another transport being a new one
+  -- at the first input report with the pad's clock past its connection's light animation (3.4
+  s; the clock counts from power-on), the library hands the application that reset as a write
+  of its own, and behind it the host's last light write from before, which the pad ignored;
+  the host's writes are framed as they are. The application writes them in order, as any other.
 - **Feature reports go first.** Calibration and firmware, read from the pad by the
   application and sent under the same call before the first input report; the host's
   driver asks for them when the device appears and scales the motion sensors by the
@@ -1361,6 +1379,18 @@ carries it in either of two bits; on the transition the library raises an event 
 application confines and hides its pointer -- a warp on the transition out, to the position
 the event carries in window coordinates, not on every update, or the pointer fights the
 application's own motion.
+
+**On macOS** (*M1.4, 2026-10-30*, the demo's toolkit; [impl-plan-macos.md](impl-plan-macos.md)):
+the window never hears a key let go while Command is held -- the system's dispatch drops the
+release -- so the toolkit's event loop hands it to the window itself; Command goes to the host
+as the GUI key, as an established Mac client sends it, the system's own Command chords never
+reaching the window and its losing the focus releasing everything; and Caps Lock goes as the
+window reports it, down as the lock goes on and up as it goes off, the mask carrying the new
+state, which a host that follows the mask takes as one change a press (sent as a press and a
+release at once, it tapped such a host twice). A captured pointer is the system's to let go:
+it gives the pointer back when the window loses the focus and takes it again on its return.
+The host's cursor is drawn at its pixels on the screen's, which on a 2x display is half its
+size in points, its hotspot with it.
 
 **Between the application's thread and the session's** the messages travel a fixed ring; a
 full ring drops the newest message and counts it, and never blocks the caller. A ring that
@@ -1458,6 +1488,16 @@ the application's thread: **a call that waits holds nothing another call needs**
 a departure had held the handle through its grace and both joins, half a second in which
 input, status and acquire made on any other thread waited too; the attempt is taken out
 under the lock now and left outside it).
+
+**On macOS the threads keep the class they start in** (*measured at M1.4, 2026-10-30*, an
+M2): every thread starts at the default class, whatever its creator's. A wake through the
+address wait takes about 10 us at the median and 20 at the 95th percentile idle, at every
+class; with every core busy, a default-class wake's 95th percentile reached 2.3 ms where a
+user-interactive one stayed near 3 us. But a short burst every 16 ms -- a client's
+per-picture shape -- runs on the efficiency cores at every class, the real-time policy
+included, and no class moves the decode (§5.3). So no class is raised inside the library,
+which keeps every rule of [02](02-io-shell.md); a client is seldom on a machine with every core
+busy.
 
 ## §11 The relay
 

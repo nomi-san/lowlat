@@ -377,7 +377,14 @@ hardware decodes the clip and say so where it does not, and a software session i
 and export nothing, since the system's software decoder writes into a buffer it has handed out --
 which the planes kind's check, comparing what is in the held picture, found on CI's virtual Mac.
 A second reflexive server listens at an address the machine holds beyond the loopback and reports
-the one the first sees, as a translator would.
+the one the first sees, as a translator would. *Since M1.4* a wireless DualSense's lights are
+checked to be reset once a connection, a report of its own, at the first input report past the
+pad's light animation, with the host's earlier light write behind it and nothing again after, a
+pad on USB never and one back on another transport anew; the hermetic session sees that reset
+ahead of the host's writes. The desk is checked by hand at the development Mac, and the demo's
+line counts the keys the host was last told are down, a number and never which, so a release
+that never came stays on it: up for minutes under Command chords before the toolkit's fix,
+never past one second after.
 The library's gates run there in their macOS arms: the header compiled by the system's compiler
 as C and as C++, alone and with the host hidden, declaring no host either way; the shared
 library's exports, every one prefixed once the underscore the system's linker adds is taken

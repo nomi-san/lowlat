@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-30 - M1.4: the desk on macOS
+
+### Fixed
+- **The host's cursor on macOS** (the demo's toolkit): drawn at its pixels on the screen's, where
+  a 2x display showed it at twice its size with the click off by as much, and kept over the
+  window, where the system's own arrow had come back on almost any move.
+- **A key let go while Command is held comes up**: the system's dispatch drops that release,
+  and the toolkit's event loop hands it to the window ([10 §8](10-client.md)).
+- **A wireless DualSense's lights follow the host** ([10 §8](10-client.md)): once connected the
+  pad takes no light write until a report of its own resets its lights, so the library hands
+  the application that reset once a connection, and the host's earlier light write behind it.
+### Changed
+- **The demo sends Command as the GUI key on macOS**, as an established Mac client does, and
+  Caps Lock as the window reports it, one message a change: the press and release the plan had
+  made of it tapped a host that follows the mask twice.
+- **The demo's line counts the keys the host was last told are down**, a number, never which.
+### Measured
+- The decode's speed follows the process's load: 1440p paced at 16 ms, 4.0 to 4.8 ms for H.264
+  and 6.2 to 7.4 at 4:4:4 ten-bit, 1.9 to 2.0 and 2.4 beside a busy thread; nothing a client can
+  set moves it ([10 §5.3](10-client.md)).
+- Thread classes: every thread starts at the default; a short periodic burst runs on the
+  efficiency cores at any class. App Nap takes a hidden client without sound and the session's
+  figures do not change; no class raised, no activity held ([07 §13](07-platforms.md)).
+- Sound plays under the translation layer through SDL.
+
 ## 2026-10-30 - M1.3: the handle on macOS
 
 ### Added

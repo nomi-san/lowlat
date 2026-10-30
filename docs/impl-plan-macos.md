@@ -103,7 +103,10 @@ and D14's amendment [00](00-overview.md).
   handle kind drawn by its Metal renderer, which refuses them as shipped; key releases caught
   while Command is held, which the toolkit's window never hears, so a host sees the key held
   ([05 §7](05-host.md)); and Caps Lock, which the toolkit reports as the lock's state, sent by
-  the demo as a press and a release, so a host toggles once a press.
+  the demo as a press and a release, so a host toggles once a press. *Reversed at M1.4
+  (2026-10-30)*: sent back to back, both carrying the lock's new state, the release reached a
+  host that follows the mask before its own tap for the press had landed, and it tapped again;
+  the demo sends Caps Lock as the window reports it, one message a change, which both hosts take.
 - **A picture of the handle kind is one IOSurface**, retained by the library for the lease, its
   planes described by the frame's own fields and imported by plane. Every graphics interface on
   the system imports one, so the application needs no Core Video, and the decoder's buffers,
@@ -221,17 +224,43 @@ and D14's amendment [00](00-overview.md).
   (p95 32 against 56); a picture reached the screen in 11.0 against 18.1 ms at the median for
   H.264, 20.6 against 23.2 at 4:4:4 ten-bit, 19.0 against 22.0 under the translation layer. The
   decode itself measured slower by handle -- 2.5 against 2.3 ms at the median for H.264, 2.8
-  against 2.2 at 4:4:4 ten-bit, 2.5 against 1.1 under the translation layer -- likely the
-  system's clocks following the processor's lighter load, not proven. **CI's virtual Mac then
+  against 2.2 at 4:4:4 ten-bit, 2.5 against 1.1 under the translation layer -- the decode
+  following the process's load, measured at M1.4 ([10 §5.3](10-client.md)). **CI's virtual Mac then
   found the system's software decoder writing into a buffer it had handed out**: there the
   hardware refuses every first picture under the translation layer (status -19092) and the
   software decoder takes the stream, and a picture the queue held changed under it, retained and
   locked as it was; reproduced on the M2 with the software decoder forced, never with the
   hardware. A software session's pictures are copied into the queue's own slots now, as on every
   other platform, lent and exported pictures being the hardware's alone.
-- [ ] **M1.4 the desk**: the toolkit's two key faults mended; relative mode; the host's cursors;
-  pads, sound and the microphone through SDL, with the microphone's permission; the threads'
-  quality-of-service classes and the system's app napping decided by measurement.
+- [x] **M1.4 the desk**: the toolkit's two key faults mended; relative mode; the host's cursors;
+  pads, sound and the microphone through SDL; the threads' quality-of-service classes and the
+  system's app napping decided by measurement. *Built 2026-10-30.* Decided at its interview: the
+  microphone stays the demo's tone, as on every platform, so no capture and no permission (the
+  step had named one); the decode's speed following the process's load is recorded, not fought
+  (below); and two sittings at the development Mac around the build, the first on the code as it
+  stood with the new counters alone. **The toolkit's window**: an RGBA cursor given no size is
+  drawn at its pixels on the screen's -- its size in points its pixels over the backing scale,
+  the hotspot divided alike -- where it was twice its size on a 2x screen with the click off by
+  as much; the content view lays the application's cursor over itself, which the system's own
+  arrow had replaced on almost any move; and a key let go while Command is held is handed to the
+  window by the toolkit's own event loop, since the system's dispatch drops it, so it no longer
+  stays down. **The demo** sends Command as the GUI key, as an established Mac client does: a
+  bare GUI key is the desktop's elsewhere, but the system's own Command chords never reach the
+  window and its losing the focus lets go of everything; the line counts the keys the host was
+  last told are down. **Relative mode** needed nothing: the system lets go of the pointer when
+  the window loses the focus and takes it again on its return, and its whole-number deltas lost
+  nothing measured against the event's own. **A wireless DualSense's lights** were the one
+  fault in the library, found at the second sitting: once connected, the pad takes no light
+  write until a report of its own resets its lights, which no host writes, so the library hands
+  the application that reset once a connection and the host's earlier light write behind it
+  ([10 §8](10-client.md)). **Thread classes and App Nap: nothing set, by measurement**
+  ([07 §13](07-platforms.md)). Checked by the sittings -- the cursor beside the stock client
+  on the same host and display; the held count, up for minutes under Command chords on the code
+  as it stood and never past one second on the build; Caps Lock against both hosts; relative
+  mode across Command-Tab; a DualSense by USB and by Bluetooth against both hosts, power-cycled
+  mid-session; sound and the tone; App Nap with and without sound; and the x86_64 demo under
+  the translation layer with sound, input and the pad -- and by the library's new tests, each
+  failing when broken, Windows, Linux and both Mac architectures as before.
 - [ ] **M1.5 packaging**: the universal library, the header and the demo's application bundle in
   a zip from the build workflow, signed ad hoc.
 
@@ -250,6 +279,10 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-30: M1.4 built: the toolkit's macOS window keeps the host's cursor at its size and
+  hears every key let go; Command sent as the GUI key; a wireless DualSense's lights reset once
+  a connection; Caps Lock as the window reports it (the interview's press and release
+  reversed); thread classes and App Nap left as they are, by measurement; two sittings.
 - 2026-10-30: M1.3 built: the handle on macOS, each picture its IOSurface (minor 35), drawn
   through Metal by the demo; three alternating legs against planes.
 - 2026-10-30: M1.2 built: VideoToolbox, the client half and the demo on macOS; full chroma in

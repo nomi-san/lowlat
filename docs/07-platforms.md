@@ -1084,3 +1084,14 @@ injection, daemon and driver crates build empty there.
   one takes the working directory (measured), so a library left beside a user's files would load.
 - **A non-interactive shell does not read the login profile**, where the package manager puts
   its paths, so scripts run over a remote shell name its tools by full path.
+- **App Nap and the threads' classes are left as they are** (*measured at M1.4, 2026-10-30*).
+  The system naps a client whose window is hidden, minimized, covered or on another space
+  while it plays no sound, and a session there kept its figures -- the round trip at 2 ms, no
+  fragment late, the decode at 2.15 ms at the median -- the library's waits being a critical
+  timer, the kernel queue and the address wait, none of which a nap holds back; it wakes on the
+  window's return with no catch-up seen. A hidden window no longer paces its presents by the
+  display, so a client that presents while hidden draws as fast as pictures come, which cost
+  the demo two to three times the processor it used shown. No thread's class is raised
+  ([10 §10](10-client.md)).
+- **Under the translation layer an x86_64 client plays sound** through SDL's Core Audio backend
+  (measured, macOS 26): a sound path of an earlier client's crashed there.

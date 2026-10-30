@@ -902,8 +902,9 @@ releases the keys and the buttons held on the old way.
   system's keyboard driver reports them, and **the power key is not mapped**, so a guest cannot
   put the host to sleep or turn it off (*2026-10-15*).
 - **While a peer's mask holds Command -- the GUI bits, Windows or Super elsewhere -- none of its
-  other keys stays held** (*2026-10-26*). A macOS peer's window never hears a key let go while
-  Command is down, so it never sends that release, and a key left held is typed again by the
+  other keys stays held** (*2026-10-26*). An established macOS peer's window never hears a key
+  let go while Command is down, so it never sends that release (this project's client has sent
+  it since M1.4, [10 §8](10-client.md)), and a key left held is typed again by the
   host's own repeat -- the HID keyboard's, Linux's display server's -- until its next press (on
   the batch input call it stays down unseen). The mask says Command whatever the key codes say: a
   peer that swaps Command for Control swaps the codes alone (measured, a macOS client). So a key
