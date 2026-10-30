@@ -746,9 +746,10 @@ typedef enum lowlat_decoder {
     /// and licensed; 4:2:0 alone, planes alone. On macOS (minor 34)
     /// VideoToolbox, through the hardware where the Mac has it and the
     /// system's software decoder where it does not: H.264, and HEVC at eight
-    /// and ten bits and at full chroma where it decodes them; planes, handed
-    /// out where the decoder wrote them, or by handle each picture's surface
-    /// (minor 35). Refused as not in the build on
+    /// and ten bits and at full chroma where it decodes them; the hardware's
+    /// planes handed out where it wrote them, or by handle each picture's
+    /// surface (minor 35), and the software decoder's copied, since it writes
+    /// into a buffer it has handed out. Refused as not in the build on
     /// Linux.
     LOWLAT_DECODER_SYSTEM = 5,
 } lowlat_decoder;
@@ -763,7 +764,8 @@ typedef enum lowlat_frame_kind {
     /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
     /// texture per plane, which the open decoder exports on a system with a
     /// fence (Windows 10 1703 on); on macOS the picture's surface, which the
-    /// system's decoder exports (minor 35). A decoder that exports none
+    /// system's decoder exports where the hardware decodes it (minor 35). A
+    /// decoder that exports none
     /// refuses it at creation and at `lowlat_client_set_frame_kind` with
     /// `LOWLAT_ERR_DECODER_UNSUPPORTED`, and one chosen mid-session hands out
     /// planes while it runs (every frame says its kind).
@@ -836,7 +838,9 @@ typedef enum lowlat_handle_kind {
     /// its own device has finished reading it. `lowlat_frame.allocation` is
     /// the surface's identifier, unique among the surfaces alive: an import
     /// keeps its surface alive, so an identifier an application holds an
-    /// import for names no other surface.
+    /// import for names no other surface. Only the hardware's pictures leave
+    /// this way: the system's software decoder writes into a buffer it has
+    /// handed out, so its pictures are copied and come as planes.
     LOWLAT_HANDLE_IOSURFACE = 4,
 } lowlat_handle_kind;
 
@@ -2266,8 +2270,8 @@ typedef struct lowlat_frame {
 /// finished reading a picture.
 ///
 /// **None is the only kind in this version**: a picture of the planes kind
-/// was copied, or on macOS is the decoder's own buffer, which nothing writes
-/// while it is held; one of the handle kind was finished on the device
+/// was copied, or on macOS is the hardware decoder's own buffer, which nothing
+/// writes while it is held; one of the handle kind was finished on the device
 /// before the acquire returned. Either is reusable once released -- once the
 /// application's own device has finished reading it, for a picture of
 /// textures. The shape is fixed so a kind that needs one adds a kind rather
@@ -3686,8 +3690,8 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device -- or on macOS lies in the decoder's own
-/// buffer, which nothing writes while it is held -- and is reusable once
+/// the host or on the device -- or on macOS lies in the hardware decoder's
+/// own buffer, which nothing writes while it is held -- and is reusable once
 /// released. For a picture
 /// of textures, or of a surface, a released slot may be written by the next
 /// picture at once, so null says the application's device has finished

@@ -41,7 +41,8 @@ fn system() -> Available {
         name,
         driver: words(caps, hardware),
         caps,
-        handle: true,
+        // The hardware's pictures alone leave by handle.
+        handle: hardware.any(),
         max_h264: (0, 0),
         max_hevc: (0, 0),
     }
@@ -83,7 +84,12 @@ mod tests {
         assert_eq!(system.backend, Backend::System);
         assert!(system.available, "{}", system.driver);
         assert_eq!(system.name, "VideoToolbox [Apple]");
-        assert!(system.handle, "the system's decoder hands out no handle");
+        let (_, hardware) = videotoolbox::caps(lowlat_drivers::vt::load().unwrap());
+        assert_eq!(
+            system.handle,
+            hardware.any(),
+            "the handle is the hardware's"
+        );
         assert_eq!(
             probe(1).expect("the codec library's slot").backend,
             Backend::Software

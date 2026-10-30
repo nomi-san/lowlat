@@ -266,6 +266,17 @@ mod tests {
                 self.backend.feed(unit).unwrap();
             }
         }
+
+        /// Whether its pictures are the hardware's, which alone are lent: the
+        /// system's software decoder writes into a buffer it has handed out,
+        /// so the client copies its pictures instead. Said where it does not.
+        fn lends(&self) -> bool {
+            let lends = self.backend.hardware() == Some(true);
+            if !lends {
+                println!("the system's software decoder serves the clip here: copied, not lent");
+            }
+            lends
+        }
     }
 
     fn frame(picture: &lowlat_decode::Picture) -> Frame {
@@ -285,7 +296,11 @@ mod tests {
     #[test]
     fn a_lent_picture_is_published_where_it_lies() {
         let frames = Frames::new((4096, 4096), FrameKind::Planes);
-        let (picture, buffer) = Clip::open().next().expect("a picture");
+        let mut clip = Clip::open();
+        let (picture, buffer) = clip.next().expect("a picture");
+        if !clip.lends() {
+            return;
+        }
         assert_eq!(picture.format, Format::P410);
         let mut filling = frames.fill().unwrap();
         assert!(filling.lend(buffer), "the buffer was not lent");
@@ -311,6 +326,9 @@ mod tests {
         let frames = Frames::new((4096, 4096), FrameKind::Planes);
         let mut clip = Clip::open();
         let (picture, buffer) = clip.next().expect("a picture");
+        if !clip.lends() {
+            return;
+        }
         let mut filling = frames.fill().unwrap();
         assert!(filling.lend(buffer));
         filling.publish(frame(&picture));
@@ -347,6 +365,9 @@ mod tests {
         let frames = Frames::new((4096, 4096), FrameKind::Handle);
         let mut clip = Clip::open();
         let (picture, buffer) = clip.next().expect("a picture");
+        if !clip.lends() {
+            return;
+        }
         let surface = buffer.surface().expect("the buffer's surface");
         let mut filling = frames.fill().unwrap();
         assert!(filling.lend(buffer), "the buffer was not lent");
@@ -381,6 +402,9 @@ mod tests {
         let frames = Frames::new((4096, 4096), FrameKind::Handle);
         let mut clip = Clip::open();
         let (picture, buffer) = clip.next().expect("a picture");
+        if !clip.lends() {
+            return;
+        }
         let mut filling = frames.fill().unwrap();
         assert!(filling.lend(buffer));
         filling.publish(frame(&picture));

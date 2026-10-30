@@ -12,8 +12,10 @@ use crate::config::{Backend, Caps, Decoding, FrameKind};
 /// The decoder settled at creation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
-    /// The system's own decoder. Made again on the decode thread.
-    VideoToolbox,
+    /// The system's own decoder, `handles` where the hardware decodes, whose
+    /// pictures alone are handed out by handle. Made again on the decode
+    /// thread.
+    VideoToolbox { handles: bool },
     /// The machine's own codec library, from the directory named or from
     /// the search of its own. Opened again on the decode thread, which
     /// finds the same pair the probe found.
@@ -24,25 +26,28 @@ impl Opened {
     /// The backend this is, as a configuration names it.
     pub fn backend(&self) -> Backend {
         match self {
-            Self::VideoToolbox => Backend::System,
+            Self::VideoToolbox { .. } => Backend::System,
             Self::Software(_) => Backend::Software,
         }
     }
 
     /// Whether it hands pictures out as a handle: the system's decoder does,
-    /// each its surface.
+    /// each its surface, where the hardware decodes. The system's software
+    /// decoder writes into a buffer it has handed out, so its pictures are
+    /// copied and none leaves as a handle.
     pub fn exports(&self) -> bool {
-        matches!(self, Self::VideoToolbox)
+        matches!(self, Self::VideoToolbox { handles: true })
     }
 }
 
 /// The system's own decoder: what it decodes here, a session made and
-/// dropped for each combination to ask.
-pub(crate) fn probe_system() -> Result<Caps, DecoderStage> {
+/// dropped for each combination to ask, and whether the hardware decodes any
+/// of it.
+pub(crate) fn probe_system() -> Result<(Caps, bool), DecoderStage> {
     let vt = lowlat_drivers::vt::load().map_err(|_| DecoderStage::Runtime)?;
-    let (caps, _) = videotoolbox::caps(vt);
+    let (caps, hardware) = videotoolbox::caps(vt);
     if caps.any() {
-        Ok(caps)
+        Ok((caps, hardware.any()))
     } else {
         Err(DecoderStage::Profile)
     }
@@ -61,8 +66,12 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
         // The codec library's pictures are planes in the queue's own slots.
         (FrameKind::Handle, Backend::Software) => Err(Error::Decoder(DecoderStage::Unsupported)),
         (_, Backend::System) | (FrameKind::Handle, Backend::Auto) => {
-            let caps = probe_system().map_err(Error::Decoder)?;
-            Ok((Some(Opened::VideoToolbox), caps))
+            let (caps, handles) = probe_system().map_err(Error::Decoder)?;
+            // A handle is the hardware's alone.
+            if decoding.kind == FrameKind::Handle && !handles {
+                return Err(Error::Decoder(DecoderStage::Unsupported));
+            }
+            Ok((Some(Opened::VideoToolbox { handles }), caps))
         }
         (FrameKind::Planes, Backend::Software) => {
             let dir = software_dir(&decoding.device);
@@ -71,7 +80,7 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
         }
         (FrameKind::Planes, Backend::Auto) => {
             let last = match probe_system() {
-                Ok(caps) => return Ok((Some(Opened::VideoToolbox), caps)),
+                Ok((caps, handles)) => return Ok((Some(Opened::VideoToolbox { handles }), caps)),
                 Err(stage) => stage,
             };
             match probe_software(None) {
@@ -111,21 +120,36 @@ mod tests {
         }
     }
 
-    /// **A handle is the system's decoder's**, asked for by name or settled
-    /// on by the automatic order, and it says it hands one out; the codec
-    /// library says not.
+    /// **A handle is the system's decoder's where the hardware decodes**,
+    /// asked for by name or settled on by the automatic order, and refused
+    /// where only the system's software decoder does, whose pictures are
+    /// copied; the codec library never hands one out.
     #[test]
-    fn a_handle_is_the_systems_decoders() {
+    fn a_handle_is_the_hardwares() {
+        let (_, handles) = probe_system().expect("the system's decoder");
         for backend in [Backend::Auto, Backend::System] {
             let decoding = Decoding {
                 backend,
                 kind: FrameKind::Handle,
                 ..Decoding::default()
             };
-            let (opened, _) = choose(&decoding).expect("a decoder");
-            assert_eq!(opened, Some(Opened::VideoToolbox), "{backend:?}");
+            match choose(&decoding) {
+                Ok((opened, _)) => {
+                    assert!(handles, "a handle with no hardware");
+                    assert_eq!(
+                        opened,
+                        Some(Opened::VideoToolbox { handles: true }),
+                        "{backend:?}"
+                    );
+                }
+                Err(e) => {
+                    assert!(!handles, "refused with the hardware there: {e:?}");
+                    assert!(matches!(e, Error::Decoder(DecoderStage::Unsupported)));
+                }
+            }
         }
-        assert!(Opened::VideoToolbox.exports());
+        assert!(Opened::VideoToolbox { handles: true }.exports());
+        assert!(!Opened::VideoToolbox { handles: false }.exports());
         assert!(!Opened::Software(None).exports());
     }
 
@@ -134,7 +158,10 @@ mod tests {
     #[test]
     fn the_automatic_order_settles_on_the_systems_decoder() {
         let (opened, caps) = choose(&Decoding::default()).expect("a decoder");
-        assert_eq!(opened, Some(Opened::VideoToolbox));
+        assert!(
+            matches!(opened, Some(Opened::VideoToolbox { .. })),
+            "{opened:?}"
+        );
         assert!(caps.h264 && caps.hevc, "{caps:?}");
     }
 }
