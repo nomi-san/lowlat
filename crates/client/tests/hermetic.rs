@@ -2121,13 +2121,19 @@ fn a_pads_own_reports_reach_the_host_and_its_writes_come_back() {
             back.push((pad, kind, report[..usize::from(len)].to_vec()));
         }
     }
-    assert_eq!(back.len(), 3);
+    // The wireless DualSense's first input report brought the reset of its
+    // lights, ahead of what the host wrote, which follows it in sequence.
+    assert_eq!(back.len(), 4);
+    assert_eq!(back[0].0, 7);
+    assert_eq!(back[0].1, OutputKind::Output);
+    assert_eq!(&back[0].2[..5], &[0x31, 0x00, 0x10, 0, 0x08]);
+    let back = &back[1..];
     assert_eq!(back[0].0, 3);
     assert_eq!(back[0].1, OutputKind::Output);
     assert_eq!(back[0].2, out.to_vec());
     assert_eq!(back[1].0, 7);
     assert_eq!(back[1].2.len(), pad::BT_OUTPUT_LEN);
-    assert_eq!(&back[1].2[..3], &[0x31, 0x00, 0x10]);
+    assert_eq!(&back[1].2[..3], &[0x31, 0x10, 0x10]);
     assert_eq!(&back[1].2[3..50], &out[1..]);
     assert_eq!(back[2], (3, OutputKind::Feature, out.to_vec()));
     assert_eq!(

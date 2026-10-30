@@ -257,12 +257,22 @@ impl Wire {
 
 /// What is remembered of a pad sent as its own report: the product, how it
 /// is attached, and the sequence a wireless DualSense's output reports
-/// carry.
+/// carry. And for a wireless DualSense, whether its lights have been reset
+/// since it connected, and the host's last light write before they were.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Raw {
     product: Product,
     transport: pad::Transport,
     seq: u8,
+    settled: bool,
+    lights: Option<Lights>,
+}
+
+/// A light write a wireless DualSense ignored, kept to be written again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lights {
+    report: [u8; pad::DS5_OUTPUT_LEN],
+    len: usize,
 }
 
 /// One pad the application has named: the last state sent for it, and what
@@ -541,6 +551,20 @@ impl Mapper {
                 let len =
                     pad::frame_output(raw.product, raw.transport, raw.seq, report, out).ok()?;
                 raw.seq = raw.seq.wrapping_add(1) & 0x0F;
+                if raw.product == Product::DualSense
+                    && raw.transport == pad::Transport::Bluetooth
+                    && !raw.settled
+                    && pad::ds5_sets_lights(report)
+                {
+                    let mut kept = [0u8; pad::DS5_OUTPUT_LEN];
+                    if let Some(dst) = kept.get_mut(..report.len()) {
+                        dst.copy_from_slice(report);
+                        raw.lights = Some(Lights {
+                            report: kept,
+                            len: report.len(),
+                        });
+                    }
+                }
                 Some(len)
             }
             pad::OutputKind::Feature => {
@@ -549,6 +573,50 @@ impl Mapper {
                 Some(report.len())
             }
         }
+    }
+
+    /// A wireless DualSense takes no light write after it connects until a
+    /// report resets its lights, which a host's writes never do. So once a
+    /// connection, at the first input report with the pad's clock past its
+    /// connection's light animation, the pad is handed a report resetting
+    /// the lights, and behind it the host's last light write from before,
+    /// which the pad ignored; what the host writes after goes as it is. In
+    /// order, the reports to hand out, each framed in `out`.
+    pub(crate) fn settle_lights(
+        &mut self,
+        pad: u32,
+        report: &[u8; pad::INPUT_LEN],
+        out: &mut [[u8; pad::REPORT_MAX]; 2],
+    ) -> [Option<usize>; 2] {
+        let Some(raw) = self
+            .pads
+            .iter_mut()
+            .flatten()
+            .find(|s| s.id == pad)
+            .and_then(|slot| slot.raw.as_mut())
+        else {
+            return [None, None];
+        };
+        if raw.product != Product::DualSense
+            || raw.transport != pad::Transport::Bluetooth
+            || raw.settled
+            || pad::ds5_clock(report) < pad::DS5_LIGHTS_SETTLED
+        {
+            return [None, None];
+        }
+        raw.settled = true;
+        let lights = raw.lights.take();
+        let [reset_out, lights_out] = out;
+        let mut frame = |report: &[u8], out: &mut [u8; pad::REPORT_MAX]| {
+            let len = pad::frame_output(raw.product, raw.transport, raw.seq, report, out).ok()?;
+            raw.seq = raw.seq.wrapping_add(1) & 0x0F;
+            Some(len)
+        };
+        let reset = frame(&pad::ds5_reset_lights(), reset_out);
+        let written = lights
+            .and_then(|lights| frame(lights.report.get(..lights.len)?, lights_out))
+            .filter(|_| reset.is_some());
+        [reset, written]
     }
 
     /// The slot for a pad, made if there is room.
@@ -575,10 +643,18 @@ impl Mapper {
             let (seq, known) = slot
                 .raw
                 .map_or((0, pad::Transport::Usb), |raw| (raw.seq, raw.transport));
+            let transport = transport.unwrap_or(known);
+            // A pad that came back on another transport is a new connection.
+            let (settled, lights) = slot
+                .raw
+                .filter(|raw| raw.transport == transport && raw.product == product)
+                .map_or((false, None), |raw| (raw.settled, raw.lights));
             slot.raw = Some(Raw {
                 product,
-                transport: transport.unwrap_or(known),
+                transport,
                 seq,
+                settled,
+                lights,
             });
         }
     }
@@ -1122,6 +1198,85 @@ mod tests {
             m.frame_output(4, pad::OutputKind::Output, &wrong, &mut framed),
             None
         );
+    }
+
+    /// A wireless DualSense takes no light write after it connects until a
+    /// report of its own resets its lights: at the first input report with the
+    /// pad's clock past its connection's light animation it is handed that
+    /// reset, once a connection, and behind it the host's last light write
+    /// from before; later writes go as they are. A pad on USB never is, and
+    /// one back on another transport is a new connection.
+    #[test]
+    fn a_wireless_dualsense_has_its_lights_reset_once_a_connection() {
+        let at = |clock: u32| {
+            let mut input = *DS5_IDLE;
+            input[28..32].copy_from_slice(&clock.to_le_bytes());
+            input
+        };
+        let early = at(pad::DS5_LIGHTS_SETTLED - 3_000_000);
+        let late = at(pad::DS5_LIGHTS_SETTLED);
+        let mut lights = [0u8; pad::DS5_OUTPUT_MIN_LEN];
+        lights[0] = pad::DS5_OUTPUT_ID;
+        lights[2] = 0x14;
+        lights[44..48].copy_from_slice(&[0x04, 0, 64, 255]);
+        let mut motors = [0u8; pad::DS5_OUTPUT_MIN_LEN];
+        motors[0] = pad::DS5_OUTPUT_ID;
+        motors[1] = 0x03;
+        motors[3] = 200;
+        let mut framed = [0u8; pad::REPORT_MAX];
+        let mut again = [[0u8; pad::REPORT_MAX]; 2];
+        let wireless = pad::Transport::Bluetooth;
+        let output = pad::OutputKind::Output;
+
+        let nothing = [None, None];
+        let reset = [Some(pad::BT_OUTPUT_LEN), None];
+        let both = [Some(pad::BT_OUTPUT_LEN); 2];
+
+        // A light write while the animation plays is kept, and handed out
+        // again behind the reset, in sequence after the two before.
+        let mut m = Mapper::default();
+        m.encode_report(5, Product::DualSense, ReportKind::Input, wireless, &early);
+        assert_eq!(m.settle_lights(5, &early, &mut again), nothing);
+        assert!(m.frame_output(5, output, &lights, &mut framed).is_some());
+        assert!(m.frame_output(5, output, &motors, &mut framed).is_some());
+        assert_eq!(m.settle_lights(5, &early, &mut again), nothing);
+        assert_eq!(m.settle_lights(5, &late, &mut again), both);
+        assert_eq!(&again[0][..5], &[0x31, 0x20, 0x10, 0, 0x08]);
+        assert_eq!(again[1][1] >> 4, 3);
+        assert_eq!(&again[1][3..50], &lights[1..]);
+        assert_eq!(m.settle_lights(5, &late, &mut again), nothing);
+        // A write after it goes as it is and is not kept.
+        assert!(m.frame_output(5, output, &lights, &mut framed).is_some());
+        assert_eq!(&framed[3..50], &lights[1..]);
+        assert_eq!(m.settle_lights(5, &late, &mut again), nothing);
+
+        // Past the animation at its first report: the reset alone, at once.
+        m.encode_report(6, Product::DualSense, ReportKind::Input, wireless, &late);
+        assert_eq!(m.settle_lights(6, &late, &mut again), reset);
+        assert_eq!(&again[0][..5], &[0x31, 0x00, 0x10, 0, 0x08]);
+        assert!(m.frame_output(6, output, &lights, &mut framed).is_some());
+        assert_eq!(framed[1] >> 4, 1);
+        assert_eq!(m.settle_lights(6, &late, &mut again), nothing);
+
+        // On USB, never.
+        let usb = pad::Transport::Usb;
+        m.encode_report(7, Product::DualSense, ReportKind::Input, usb, &early);
+        assert!(m.frame_output(7, output, &lights, &mut framed).is_some());
+        assert_eq!(m.settle_lights(7, &late, &mut again), nothing);
+
+        // Back on another transport is a new connection: reset again, and the
+        // light write kept before is gone.
+        let mut m = Mapper::default();
+        m.encode_report(8, Product::DualSense, ReportKind::Input, wireless, &early);
+        assert!(m.frame_output(8, output, &lights, &mut framed).is_some());
+        m.encode_report(8, Product::DualSense, ReportKind::Input, usb, &early);
+        m.encode_report(8, Product::DualSense, ReportKind::Input, wireless, &late);
+        assert_eq!(m.settle_lights(8, &late, &mut again), reset);
+        m.encode_report(9, Product::DualSense, ReportKind::Input, wireless, &late);
+        assert_eq!(m.settle_lights(9, &late, &mut again), reset);
+        m.encode_report(9, Product::DualSense, ReportKind::Input, usb, &late);
+        m.encode_report(9, Product::DualSense, ReportKind::Input, wireless, &late);
+        assert_eq!(m.settle_lights(9, &late, &mut again), reset);
     }
 
     /// The warp position is the picture position put back through the

@@ -411,15 +411,9 @@ fn pad_reports_round_trip_in_both_directions_and_framings() {
         )
         .expect("frame");
         assert_eq!(n, pad::BT_OUTPUT_LEN, "case {case}");
-        // A DualSense's light change also asks the pad to let go of its own
-        // lights: the one byte the framing changes.
-        let mut content = usb[1..olen].to_vec();
-        if product == Product::DualSense && content[1] & 0x14 != 0 {
-            content[1] |= 0x08;
-        }
         assert_eq!(
             &framed[3..3 + olen - 1],
-            &content[..],
+            &usb[1..olen],
             "case {case}: content"
         );
         let mut check = framed;

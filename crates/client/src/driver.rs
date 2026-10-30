@@ -33,7 +33,7 @@ use lowlat_core::{Error, conn};
 
 use crate::cursor::{Cache, Shape};
 use crate::event::{Event, Outcome};
-use crate::input::{Input, Mapper, MicFrame, Viewport};
+use crate::input::{Input, Mapper, MicFrame, ReportKind, Viewport};
 use crate::sound::{self, Packets};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
 use lowlat_core::pad;
@@ -495,6 +495,25 @@ impl Driver {
             self.telemetry
                 .pad_reports_sent
                 .fetch_add(1, Ordering::Relaxed);
+            // A wireless DualSense is handed the reset of its lights it takes
+            // no light write without, once a connection, and behind it the
+            // host's light write it ignored before.
+            if *kind == ReportKind::Input
+                && let Ok(usb) = <&[u8; pad::INPUT_LEN]>::try_from(report)
+            {
+                let mut framed = [[0u8; pad::REPORT_MAX]; 2];
+                let lens = self.mapper.settle_lights(*pad, usb, &mut framed);
+                for (len, report) in lens.into_iter().zip(framed) {
+                    if let Some(len) = len {
+                        self.emit.send(Event::PadReport {
+                            pad: *pad,
+                            kind: pad::OutputKind::Output,
+                            len: u8::try_from(len).unwrap_or(u8::MAX),
+                            report,
+                        });
+                    }
+                }
+            }
             return;
         }
         if let Some(wire) = self.mapper.encode(input) {
