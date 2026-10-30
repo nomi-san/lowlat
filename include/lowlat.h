@@ -53,7 +53,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 34
+#define LOWLAT_ABI_MINOR 35
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for macOS carries the client half alone.
@@ -747,7 +747,8 @@ typedef enum lowlat_decoder {
     /// VideoToolbox, through the hardware where the Mac has it and the
     /// system's software decoder where it does not: H.264, and HEVC at eight
     /// and ten bits and at full chroma where it decodes them; planes, handed
-    /// out where the decoder wrote them. Refused as not in the build on
+    /// out where the decoder wrote them, or by handle each picture's surface
+    /// (minor 35). Refused as not in the build on
     /// Linux.
     LOWLAT_DECODER_SYSTEM = 5,
 } lowlat_decoder;
@@ -761,8 +762,9 @@ typedef enum lowlat_frame_kind {
     /// into it, which the vendor decoder alone exports, so asking for it
     /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
     /// texture per plane, which the open decoder exports on a system with a
-    /// fence (Windows 10 1703 on). A decoder that exports none refuses it at
-    /// creation and at `lowlat_client_set_frame_kind` with
+    /// fence (Windows 10 1703 on); on macOS the picture's surface, which the
+    /// system's decoder exports (minor 35). A decoder that exports none
+    /// refuses it at creation and at `lowlat_client_set_frame_kind` with
     /// `LOWLAT_ERR_DECODER_UNSUPPORTED`, and one chosen mid-session hands out
     /// planes while it runs (every frame says its kind).
     LOWLAT_FRAME_HANDLE = 1,
@@ -822,6 +824,20 @@ typedef enum lowlat_handle_kind {
     /// is reused once its texture is freed, so an application that keeps its
     /// opens keys them by `lowlat_frame.allocation`.
     LOWLAT_HANDLE_D3D11_SHARED = 3,
+    /// The picture's `IOSurfaceRef` in `lowlat_frame.surface` (minor 35),
+    /// which every graphics interface on macOS imports: Metal by plane index
+    /// (`newTextureWithDescriptor:iosurface:plane:`), at the plane's own
+    /// width and height and the layout's format -- `R8` and `RG8`, or `R16`
+    /// and `RG16` with ten bits in the high bits; each plane's `pitch` is the
+    /// surface's and its `offset` zero. The decode is finished before the
+    /// acquire hands it out, so nothing is waited on. The surface is **the
+    /// library's for the lease** and goes back to the decoder at the release,
+    /// to be written by a later picture, so an application releases it once
+    /// its own device has finished reading it. `lowlat_frame.allocation` is
+    /// the surface's identifier, unique among the surfaces alive: an import
+    /// keeps its surface alive, so an identifier an application holds an
+    /// import for names no other surface.
+    LOWLAT_HANDLE_IOSURFACE = 4,
 } lowlat_handle_kind;
 
 typedef enum lowlat_fence_kind {
@@ -2240,6 +2256,10 @@ typedef struct lowlat_frame {
     /// GPU than the last says the decoder has moved. Filled only when `size`
     /// reaches it.
     uint64_t adapter;
+    /// The picture's `IOSurfaceRef`, for
+    /// `lowlat_handle_kind::LOWLAT_HANDLE_IOSURFACE`; null for every other
+    /// kind (minor 35). Filled only when `size` reaches it.
+    const void *surface;
 } lowlat_frame;
 
 /// A synchronisation object the application's device signals when it has
@@ -3669,9 +3689,10 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// the host or on the device -- or on macOS lies in the decoder's own
 /// buffer, which nothing writes while it is held -- and is reusable once
 /// released. For a picture
-/// of textures a released slot may be written by the next picture at once,
-/// so null says the application's device has finished reading it -- as a
-/// renderer that waits on its swap chain's latency after each present has.
+/// of textures, or of a surface, a released slot may be written by the next
+/// picture at once, so null says the application's device has finished
+/// reading it -- as a renderer that waits on its swap chain's latency after
+/// each present has.
 /// @returns `LOWLAT_OK` or `LOWLAT_ERR_INVALID_ARGUMENT`.
 ///
 /// @attention `cl` came from `lowlat_client_create`; `frame` points to a

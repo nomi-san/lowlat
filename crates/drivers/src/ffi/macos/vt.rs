@@ -207,6 +207,12 @@ const _: () = {
     ["Offset of field: CMTime::flags"][::std::mem::offset_of!(CMTime, flags) - 12usize];
     ["Offset of field: CMTime::epoch"][::std::mem::offset_of!(CMTime, epoch) - 16usize];
 };
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct __IOSurface {
+    _unused: [u8; 0],
+}
+pub type IOSurfaceRef = *mut __IOSurface;
 pub type CVOptionFlags = u64;
 pub type CVReturn = i32;
 pub const kCVReturnSuccess: _CVReturn = 0;
@@ -327,6 +333,7 @@ pub type CVPixelBufferLockFlags = CVOptionFlags;
 pub const kCVPixelBufferLock_ReadOnly: _bindgen_ty_1665 = 1;
 pub type _bindgen_ty_1665 = ::std::os::raw::c_uint;
 pub type CVPixelBufferRef = CVImageBufferRef;
+pub type IOSurfaceID = u32;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct opaqueCMFormatDescription {
@@ -601,6 +608,10 @@ pub type CVPixelBufferGetBaseAddressOfPlane = unsafe extern "C" fn(
 ) -> *mut ::std::os::raw::c_void;
 pub type CVPixelBufferGetBytesPerRowOfPlane =
     unsafe extern "C" fn(pixelBuffer: CVPixelBufferRef, planeIndex: usize) -> usize;
+pub type IOSurfaceGetID = unsafe extern "C" fn(buffer: IOSurfaceRef) -> IOSurfaceID;
+pub type IOSurfaceGetAllocSize = unsafe extern "C" fn(buffer: IOSurfaceRef) -> usize;
+pub type CVPixelBufferGetIOSurface =
+    unsafe extern "C" fn(pixelBuffer: CVPixelBufferRef) -> IOSurfaceRef;
 pub type CMVideoFormatDescriptionCreateFromH264ParameterSets = unsafe extern "C" fn(
     allocator: CFAllocatorRef,
     parameterSetCount: usize,

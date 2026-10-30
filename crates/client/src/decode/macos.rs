@@ -1,6 +1,7 @@
 //! The decoders a stream is opened on, on macOS: the system's own, whose
-//! pictures stay in its buffers and are lent to the queue's slots, or the
-//! machine's own codec library.
+//! pictures stay in its buffers and are lent to the queue's slots -- as
+//! planes, or by handle as their surfaces -- or the machine's own codec
+//! library.
 
 use lowlat_decode::{Fault, Format, Picture, software, videotoolbox};
 use lowlat_drivers::lavc::Lavc;
@@ -17,6 +18,9 @@ impl Backend for videotoolbox::Backend {
     fn timings(&self) -> (u32, u32) {
         (self.decode_us, self.readback_us)
     }
+    fn exports(&self) -> bool {
+        true
+    }
     fn lends(&self) -> bool {
         true
     }
@@ -28,8 +32,9 @@ impl Backend for videotoolbox::Backend {
         let Some((picture, buffer)) = self.take_buffer()? else {
             return Ok(None);
         };
-        // A buffer that will not lock is lost, as a picture that does not
-        // fit its slot is.
+        // In the kind the session asks for, the slot deciding per picture; a
+        // buffer that will not lock or has no surface is lost, as a picture
+        // that does not fit its slot is.
         Ok(filling.lend(buffer).then_some((picture, 0)))
     }
 }

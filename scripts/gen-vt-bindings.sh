@@ -37,6 +37,7 @@ cat > "$work/vt.h" <<'EOF'
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMedia/CoreMedia.h>
 #include <CoreVideo/CoreVideo.h>
+#include <IOSurface/IOSurfaceRef.h>
 #include <VideoToolbox/VideoToolbox.h>
 EOF
 
@@ -56,6 +57,7 @@ bindgen "$work/vt.h" \
     --allowlist-type 'CV(PixelBufferRef|ImageBufferRef|BufferRef|Return|OptionFlags|PixelBufferLockFlags)' \
     --allowlist-type 'VT(DecompressionSessionRef|SessionRef|DecodeFrameFlags|DecodeInfoFlags)' \
     --allowlist-type 'VTDecompressionOutputCallback(Record)?' \
+    --allowlist-type 'IOSurface(Ref|ID)' \
     `# The constants: the layouts asked for, the flags, the codes answered.` \
     --allowlist-var 'kCVPixelFormatType_(420|444)YpCbCr(8|10)BiPlanar(Video|Full)Range' \
     --allowlist-type '_CVReturn' \
@@ -71,6 +73,8 @@ bindgen "$work/vt.h" \
     --allowlist-function 'CVPixelBufferGet(PixelFormatType|Width|Height|PlaneCount)' \
     --allowlist-function 'CVPixelBufferGet(BytesPerRowOfPlane|BaseAddressOfPlane|HeightOfPlane)' \
     --allowlist-function 'CVPixelBuffer(LockBaseAddress|UnlockBaseAddress|Retain|Release)' \
+    `# A picture's surface, for the handle kind.` \
+    --allowlist-function 'CVPixelBufferGetIOSurface|IOSurfaceGet(ID|AllocSize)' \
     --allowlist-function 'VTDecompressionSession(Create|DecodeFrame|WaitForAsynchronousFrames)' \
     --allowlist-function 'VTDecompressionSession(Invalidate|CanAcceptFormatDescription)' \
     --allowlist-function 'VTSessionCopyProperty' \

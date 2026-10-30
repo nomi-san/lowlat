@@ -41,7 +41,7 @@ fn system() -> Available {
         name,
         driver: words(caps, hardware),
         caps,
-        handle: false,
+        handle: true,
         max_h264: (0, 0),
         max_hevc: (0, 0),
     }
@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(system.backend, Backend::System);
         assert!(system.available, "{}", system.driver);
         assert_eq!(system.name, "VideoToolbox [Apple]");
-        assert!(!system.handle);
+        assert!(system.handle, "the system's decoder hands out no handle");
         assert_eq!(
             probe(1).expect("the codec library's slot").backend,
             Backend::Software

@@ -29,9 +29,10 @@ impl Opened {
         }
     }
 
-    /// Whether it hands pictures out as a handle: no decoder here does.
+    /// Whether it hands pictures out as a handle: the system's decoder does,
+    /// each its surface.
     pub fn exports(&self) -> bool {
-        false
+        matches!(self, Self::VideoToolbox)
     }
 }
 
@@ -50,15 +51,16 @@ pub(crate) fn probe_system() -> Result<Caps, DecoderStage> {
 /// The decoder a configuration settles on, probed once here, with what it
 /// decodes. **Strict where a kind is named**: the system's decoder or the
 /// codec library, or the stage is the answer. **In order where none is**:
-/// the system's decoder, which every Mac has, then the codec library.
+/// the system's decoder, which every Mac has, then the codec library -- the
+/// system's alone for a handle, which only it hands out.
 pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Error> {
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
         // The open stack and the vendors' interfaces are other systems'.
         (_, Backend::Vaapi | Backend::Nvdec) => Err(Error::Decoder(DecoderStage::Unsupported)),
-        // No decoder here hands pictures out as a handle.
-        (FrameKind::Handle, _) => Err(Error::Decoder(DecoderStage::Unsupported)),
-        (FrameKind::Planes, Backend::System) => {
+        // The codec library's pictures are planes in the queue's own slots.
+        (FrameKind::Handle, Backend::Software) => Err(Error::Decoder(DecoderStage::Unsupported)),
+        (_, Backend::System) | (FrameKind::Handle, Backend::Auto) => {
             let caps = probe_system().map_err(Error::Decoder)?;
             Ok((Some(Opened::VideoToolbox), caps))
         }
@@ -84,16 +86,14 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
 mod tests {
     use super::*;
 
-    /// **The other systems' interfaces are not in a macOS build**, and no
-    /// decoder here hands out a handle: each refused as such, before anything
-    /// is probed.
+    /// **The other systems' interfaces are not in a macOS build**, and the
+    /// codec library hands out no handle: each refused as such, before
+    /// anything is probed.
     #[test]
-    fn the_other_systems_kinds_and_the_handle_are_refused() {
+    fn the_other_systems_kinds_and_the_libraries_handle_are_refused() {
         for (backend, kind) in [
             (Backend::Vaapi, FrameKind::Planes),
-            (Backend::Nvdec, FrameKind::Planes),
-            (Backend::Auto, FrameKind::Handle),
-            (Backend::System, FrameKind::Handle),
+            (Backend::Nvdec, FrameKind::Handle),
             (Backend::Software, FrameKind::Handle),
         ] {
             let decoding = Decoding {
@@ -109,6 +109,24 @@ mod tests {
                 "{backend:?} {kind:?}"
             );
         }
+    }
+
+    /// **A handle is the system's decoder's**, asked for by name or settled
+    /// on by the automatic order, and it says it hands one out; the codec
+    /// library says not.
+    #[test]
+    fn a_handle_is_the_systems_decoders() {
+        for backend in [Backend::Auto, Backend::System] {
+            let decoding = Decoding {
+                backend,
+                kind: FrameKind::Handle,
+                ..Decoding::default()
+            };
+            let (opened, _) = choose(&decoding).expect("a decoder");
+            assert_eq!(opened, Some(Opened::VideoToolbox), "{backend:?}");
+        }
+        assert!(Opened::VideoToolbox.exports());
+        assert!(!Opened::Software(None).exports());
     }
 
     /// **The automatic order settles on the system's decoder**, which every

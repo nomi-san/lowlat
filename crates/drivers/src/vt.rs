@@ -10,7 +10,8 @@
 //!
 //! The rest is ownership: an object the frameworks hand over with a reference
 //! is given it back when its holder drops, and a decoded picture's buffer is
-//! held, locked for reading, for as long as anything reads its planes.
+//! held, locked for reading, for as long as anything reads its planes -- or
+//! held alone while another device reads its surface.
 
 use core::ffi::{CStr, c_void};
 use core::fmt;
@@ -27,12 +28,13 @@ use crate::ffi::vt::{
     CMVideoFormatDescriptionCreateFromH264ParameterSets,
     CMVideoFormatDescriptionCreateFromHEVCParameterSets, CVPixelBufferGetBaseAddressOfPlane,
     CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
-    CVPixelBufferLockBaseAddress, CVPixelBufferRef, CVPixelBufferRelease, CVPixelBufferRetain,
-    CVPixelBufferUnlockBaseAddress, OSType, VTDecompressionSessionCanAcceptFormatDescription,
-    VTDecompressionSessionCreate, VTDecompressionSessionDecodeFrame,
-    VTDecompressionSessionInvalidate, VTDecompressionSessionWaitForAsynchronousFrames,
-    VTSessionCopyProperty, kCVPixelBufferLock_ReadOnly, kCVReturnSuccess,
+    CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount,
+    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferRef, CVPixelBufferRelease,
+    CVPixelBufferRetain, CVPixelBufferUnlockBaseAddress, IOSurfaceGetAllocSize, IOSurfaceGetID,
+    OSType, VTDecompressionSessionCanAcceptFormatDescription, VTDecompressionSessionCreate,
+    VTDecompressionSessionDecodeFrame, VTDecompressionSessionInvalidate,
+    VTDecompressionSessionWaitForAsynchronousFrames, VTSessionCopyProperty,
+    kCVPixelBufferLock_ReadOnly, kCVReturnSuccess,
 };
 
 const CORE_FOUNDATION: &CStr =
@@ -40,6 +42,7 @@ const CORE_FOUNDATION: &CStr =
 const CORE_MEDIA: &CStr = c"/System/Library/Frameworks/CoreMedia.framework/CoreMedia";
 const CORE_VIDEO: &CStr = c"/System/Library/Frameworks/CoreVideo.framework/CoreVideo";
 const VIDEO_TOOLBOX: &CStr = c"/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox";
+const IO_SURFACE: &CStr = c"/System/Library/Frameworks/IOSurface.framework/IOSurface";
 
 /// Why the frameworks could not be had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +92,10 @@ pub struct Vt {
     pub buffer_unlock: CVPixelBufferUnlockBaseAddress,
     pub buffer_retain: CVPixelBufferRetain,
     pub buffer_release: CVPixelBufferRelease,
+    /// A buffer's surface, and the surface's identity and size.
+    pub buffer_surface: CVPixelBufferGetIOSurface,
+    pub surface_id: IOSurfaceGetID,
+    pub surface_size: IOSurfaceGetAllocSize,
     pub session_create: VTDecompressionSessionCreate,
     pub session_decode: VTDecompressionSessionDecodeFrame,
     pub session_wait: VTDecompressionSessionWaitForAsynchronousFrames,
@@ -115,7 +122,7 @@ pub struct Vt {
     pub enable_hardware_key: CFStringRef,
     pub using_hardware_key: CFStringRef,
     /// Last, so the frameworks outlive every address taken from them.
-    _libraries: [Library; 4],
+    _libraries: [Library; 5],
 }
 
 // SAFETY: the entry points are code addresses, and the constants are objects
@@ -156,11 +163,12 @@ unsafe fn constant<T: Copy>(library: &Library, name: &CStr) -> Option<T> {
 impl Vt {
     fn open() -> Result<Self> {
         let open = |path| Library::open(path).ok_or(Error::Unavailable);
-        let (cf, cm, cv, vt) = (
+        let (cf, cm, cv, vt, io) = (
             open(CORE_FOUNDATION)?,
             open(CORE_MEDIA)?,
             open(CORE_VIDEO)?,
             open(VIDEO_TOOLBOX)?,
+            open(IO_SURFACE)?,
         );
         let missing = Error::MissingSymbol;
         // SAFETY: each type is the SDK's declaration of the entry point of that
@@ -207,6 +215,9 @@ impl Vt {
                     .ok_or(missing)?,
                 buffer_retain: cv.symbol(c"CVPixelBufferRetain").ok_or(missing)?,
                 buffer_release: cv.symbol(c"CVPixelBufferRelease").ok_or(missing)?,
+                buffer_surface: cv.symbol(c"CVPixelBufferGetIOSurface").ok_or(missing)?,
+                surface_id: io.symbol(c"IOSurfaceGetID").ok_or(missing)?,
+                surface_size: io.symbol(c"IOSurfaceGetAllocSize").ok_or(missing)?,
                 session_create: vt.symbol(c"VTDecompressionSessionCreate").ok_or(missing)?,
                 session_decode: vt
                     .symbol(c"VTDecompressionSessionDecodeFrame")
@@ -248,7 +259,7 @@ impl Vt {
                     c"kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder",
                 )
                 .ok_or(missing)?,
-                _libraries: [cf, cm, cv, vt],
+                _libraries: [cf, cm, cv, vt, io],
             })
         }
     }
@@ -355,6 +366,36 @@ impl PixelBuffer {
         unsafe { (self.vt.buffer_planes)(self.buffer.as_ptr()) }
     }
 
+    /// Plane `index`'s bytes from one row to the next, which reading needs no
+    /// lock for; none for a plane the layout lacks.
+    pub fn pitch(&self, index: usize) -> Option<usize> {
+        // SAFETY: as above, and a plane the layout has.
+        (index < self.planes())
+            .then(|| unsafe { (self.vt.plane_pitch)(self.buffer.as_ptr(), index) })
+    }
+
+    /// The surface behind the buffer, valid for as long as the buffer is held;
+    /// none for a buffer that has none.
+    pub fn surface(&self) -> Option<Surface> {
+        // SAFETY: a live buffer; the surface is the buffer's own, not given.
+        let surface = unsafe { (self.vt.buffer_surface)(self.buffer.as_ptr()) };
+        if surface.is_null() {
+            return None;
+        }
+        // SAFETY: a live surface, which the buffer keeps.
+        let (id, size) = unsafe {
+            (
+                (self.vt.surface_id)(surface),
+                (self.vt.surface_size)(surface),
+            )
+        };
+        Some(Surface {
+            surface: surface.cast_const().cast(),
+            id,
+            size,
+        })
+    }
+
     /// Locked for reading: the planes' addresses are valid from here until the
     /// lock drops. The buffer back where the framework refused.
     pub fn lock(self) -> core::result::Result<Locked, Self> {
@@ -375,6 +416,15 @@ impl Drop for PixelBuffer {
         // SAFETY: the holder's reference, given back once.
         unsafe { (self.vt.buffer_release)(self.buffer.as_ptr()) };
     }
+}
+
+/// The surface behind a buffer: its address, its identifier, unique among the
+/// surfaces alive, and its whole allocation in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Surface {
+    pub surface: *const c_void,
+    pub id: u32,
+    pub size: usize,
 }
 
 /// A buffer locked for reading, its planes where they lie.
@@ -426,7 +476,7 @@ mod tests {
     use super::*;
 
     /// **Every name the table needs resolves**, entry points and constants
-    /// alike, from the four frameworks opened by path: a name the system does
+    /// alike, from the five frameworks opened by path: a name the system does
     /// not export fails the load whole rather than leaving something to call
     /// that is not there. A constant read through the table is the
     /// framework's own object.
