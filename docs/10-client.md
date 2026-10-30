@@ -478,19 +478,35 @@ texture again at every draw, and drawing on one GPU while presenting to another'
 the process with every draw, its processor time climbing with it -- the figure was the climb's
 average. It opens a picture's textures once now.)
 
-### §4.3 On macOS (*planned 2026-10-29*, M1; *the planes built 2026-10-30*, M1.2)
+### §4.3 On macOS (*planned 2026-10-29*, M1; *built 2026-10-30*, the planes at M1.2 and the handle at M1.3)
 
 **A picture of the handle kind is one IOSurface**, retained by the library for the lease.
-VideoToolbox decodes into surface-backed buffers from the library's own pool, and the frame
-describes the surface's planes with its own fields -- the layout, each plane's size and stride
--- as it does on the other platforms. The application imports each plane into its own device by
-plane index at the format the layout gives it, so it needs no Core Video, and the decoded
-buffer, its pool and its colour attachments stay inside the library. Every graphics interface on
-the system imports a surface: Metal by plane, OpenGL, Vulkan through its Metal layer.
+VideoToolbox decodes into buffers backed by surfaces from its own pool, and the frame describes
+the surface's planes with its own fields -- the layout, each plane's size and stride -- as it
+does on the other platforms. The application imports each plane into its own device by plane
+index at the format the layout gives it, so it needs no Core Video, and the decoded buffer, its
+pool and its colour attachments stay inside the library. Every graphics interface on the system
+imports a surface: Metal by plane, OpenGL, Vulkan through its Metal layer.
 
 **The lease ends when the application's own GPU work on the picture has completed**, not when
 that work was submitted: the surface goes back to the pool at the release and the decoder writes
 into it again.
+
+*As built (M1.3)*: a picture asked for by handle is the decoder's own buffer held in its slot,
+unlocked, until the ring lends the slot again -- the rule the planes kind keeps, below -- and the
+frame carries the buffer's surface, the kind followed per picture. Its allocation is the
+surface's identifier, which an import keeps from naming another: measured, an identifier comes
+back the moment its surface is freed, and never while a texture made from it lives. A plane
+imports in about 20 us on an M2, 30 under the translation layer, where the planes kind's upload
+of the same 1440p picture into textures costs 0.75 to 1.65 ms, 3.0 to 5.1 under the translation
+layer; the decoder's pool holds the pictures held and one more, five surfaces for the queue's
+four. The demo's toolkit imports a picture's planes once per allocation, keeping eight, and its
+present waits for the GPU on the queue it drew on, so a picture it releases at the next acquire
+is no longer being read. On ten-minute legs alternating the kinds every 30 seconds against this
+project's host at 1080p and 60, the process took 25 percent of a core by handle against 35 by
+planes, 31 against 39 under the translation layer, and a picture reached the screen 2.6 to 7 ms
+sooner at the median; the decode measured 0.2 to 1.4 ms slower by handle, likely the system's
+clocks following the lighter load.
 
 **A picture of the planes kind is the decoder's own buffer** (*built 2026-10-30*, M1.2), lent to
 the queue's slot being filled, locked for reading from its publish until the ring lends that

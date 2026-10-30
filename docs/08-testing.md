@@ -369,8 +369,12 @@ said, since that decoder gets it wrong -- each clip saying which served it, and 
 the hardware refused its first picture and the software decoder took the stream, so the runner
 decodes as far as its own system does; the move to the software decoder is checked by making a
 first picture fail, the per-unit path allocates nothing, and the hand-over from the framework's
-thread is model-checked. A second reflexive server listens at an address
-the machine holds beyond the loopback and reports the one the first sees, as a translator would.
+thread is model-checked. *Since M1.3* a picture by handle is checked to be its surface -- the
+identifier and size the surface's, the planes at its pitches with no offsets, no address handed
+out -- to keep its surface while it is held as the decoder goes on, and to follow the kind at the
+next picture, and the boundary to carry the surface whole. A second reflexive server listens at
+an address the machine holds beyond the loopback and reports the one the first sees, as a
+translator would.
 The library's gates run there in their macOS arms: the header compiled by the system's compiler
 as C and as C++, alone and with the host hidden, declaring no host either way; the shared
 library's exports, every one prefixed once the underscore the system's linker adds is taken

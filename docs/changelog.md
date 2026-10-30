@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-30 - M1.3: the handle on macOS
+
+### Added
+- **A picture by handle on macOS is its IOSurface** ([06 §3b](06-api.md), minor 35):
+  `LOWLAT_HANDLE_IOSURFACE` and `lowlat_frame.surface`, each plane imported by its index, the
+  allocation the surface's identifier, the kind followed per picture with no keyframe.
+- **The demo draws handles through Metal**, and its line each second carries the kind on screen
+  and the process's processor time.
+### Changed
+- **The toolkit's Metal renderer imports a surface's planes** once per allocation, keeping eight,
+  bound for the draw alone.
+### Measured
+- A plane imports in about 20 us; the planes kind's upload of a 1440p picture costs 0.75 to
+  1.65 ms, 3.0 to 5.1 under the translation layer.
+- Alternating the kinds every 30 seconds at 1080p: 25 percent of a core by handle against 35 by
+  planes, 31 against 39 under the translation layer, and a picture on screen 2.6 to 7 ms sooner
+  at the median; the decode 0.2 to 1.4 ms slower by handle.
+
 ## 2026-10-30 - M1.2: the system's decoder and the demo on macOS
 
 ### Added

@@ -65,7 +65,8 @@ architectures (`PKG_CONFIG_PATH=<prefix>/lib/pkgconfig make`); the toolkit and
 SDL link through the system's frameworks, and the C++ runtime is the
 system's. The library is `liblowlat.dylib`, found through the demo's run path,
 and carries the client half alone. Pictures are drawn through Metal, as
-planes: the system's decoder hands out none by handle yet. There the toolkit's
+planes or, with `LOWLAT_HANDLE`, by handle: each picture's surface, its planes
+imported by index, which the system's decoder alone hands out. There the toolkit's
 websocket reader is the system's, which hands an empty message out as one and
 ends at the close with an error rather than as done; `make check` holds it to
 the rest, and the signaling skips the one and takes the other as the close.
@@ -129,12 +130,14 @@ room; unset, the demo asks nothing of the person's monitor. `LOWLAT_HANDLE`
 asks for pictures as device handles, which the
 toolkit's renderer imports and draws with nothing copied through this
 process; only a decoder whose row says "handles" opens that way, and only GL
-on Linux and Direct3D 11 on Windows draw them. A handle opens on its own GPU,
+on Linux, Direct3D 11 on Windows and Metal on macOS draw them. A handle opens on its own GPU,
 so on Windows the decoder is created on the GPU the demo draws on when nothing
 names one -- by handle always, by planes too where a hardware decoder is
 listed there, so switching to handles moves nothing -- and pictures moved to
 another GPU, by the chord or a row picked there, bring the renderer after
-them, as does a device lost and found again under a new identity.
+them, as does a device lost and found again under a new identity. The line
+each second says which kind the picture on screen came as (`kind`), and the
+process's processor time over that second as a share of one core (`cpu`).
 
 `LOWLAT_PAD_RAW` sends a DualShock 4 or a DualSense as its own report
 ([docs/10-client.md](../../docs/10-client.md) section 8), on every platform:

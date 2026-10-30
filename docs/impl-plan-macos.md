@@ -201,8 +201,28 @@ and D14's amendment [00](00-overview.md).
   at 59 pictures a second, the decode 1.1 ms, 37 percent of a core and 106 MB. The host's cursor
   drawn at twice its size on the Mac's 2x display, and the system's arrow coming back on some
   moves, are M1.4's.
-- [ ] **M1.3 the handle**: one IOSurface per picture, appended to the frame ([06 §3b](06-api.md));
-  the demo's renderer importing it by plane. Measured against planes.
+- [x] **M1.3 the handle**: one IOSurface per picture, appended to the frame ([06 §3b](06-api.md));
+  the demo's renderer importing it by plane. Measured against planes. *Built 2026-10-30.* Decided
+  at its interview: minor 35, 34 being on the remote by then; `allocation` the surface's
+  identifier, unique among the surfaces alive and kept from naming another by an import, which
+  retains its surface (measured: an identifier comes back the moment its surface is freed, never
+  while a texture made from it lives); and the legs below. A picture asked for by handle is the
+  decoder's own buffer held in its slot until the slot is lent again -- the rule the planes kind
+  keeps -- the kind followed per picture; IOSurface.framework is the fifth framework opened by
+  path. The toolkit's Metal renderer imports a picture's planes by index once per allocation,
+  eight kept, bound for the draw alone; its present waits for the GPU on the queue it drew on, so
+  the demo's release at the next acquire needs no fence. The demo's line each second gained the
+  kind on screen and the process's processor time. Measured before the build: a plane imports in
+  about 20 us, where the planes kind's upload of a 1440p picture costs 0.75 to 1.65 ms, 3.0 to
+  5.1 under the translation layer. **Legs**, ten minutes each against this project's host on the
+  development machine at 1080p and 60, alternating the kinds every 30 seconds so both ran on one
+  path and one phase of the refresh: by handle the process took 25 percent of a core against 35
+  by planes, for H.264 and 4:4:4 ten-bit alike, and 31 against 39 under the translation layer
+  (p95 32 against 56); a picture reached the screen in 11.0 against 18.1 ms at the median for
+  H.264, 20.6 against 23.2 at 4:4:4 ten-bit, 19.0 against 22.0 under the translation layer. The
+  decode itself measured slower by handle -- 2.5 against 2.3 ms at the median for H.264, 2.8
+  against 2.2 at 4:4:4 ten-bit, 2.5 against 1.1 under the translation layer -- likely the
+  system's clocks following the processor's lighter load, not proven.
 - [ ] **M1.4 the desk**: the toolkit's two key faults mended; relative mode; the host's cursors;
   pads, sound and the microphone through SDL, with the microphone's permission; the threads'
   quality-of-service classes and the system's app napping decided by measurement.
@@ -224,6 +244,8 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-30: M1.3 built: the handle on macOS, each picture its IOSurface (minor 35), drawn
+  through Metal by the demo; three alternating legs against planes.
 - 2026-10-30: M1.2 built: VideoToolbox, the client half and the demo on macOS; full chroma in
   two planes and the layouts named by an enumeration (minor 34); the library found through the
   application's run path; eight sessions against both hosts.

@@ -821,10 +821,21 @@ the high bits of sixteen; `planes[2]` is null for both. **A picture of the plane
 the decoder's own buffer**, each plane at its own pitch, which the decoder aligns per plane: the
 chroma's pitch is its plane's own, not derived from the luma's.
 
-**Planned for macOS** (*2026-10-29*, M1.3; [10 §4.3](10-client.md)): `lowlat_handle_kind` gains
-a kind for one IOSurface per picture, appended to `lowlat_frame` with the surface itself, which
-the library retains for the lease; the planes are described by the frame's existing fields, the
-two-plane layouts above included, and imported by plane index. A minor when built.
+**The handle on macOS since M1.3** (*2026-10-30*, minor 35; [10 §4.3](10-client.md)):
+`lowlat_handle_kind` gains `LOWLAT_HANDLE_IOSURFACE` (4), one IOSurface per picture, and
+`lowlat_frame` gains `surface`, the picture's `IOSurfaceRef`. The system's decoder hands both
+kinds out, the kind followed per picture with no keyframe; `LOWLAT_DECODER_AUTO` with the handle
+kind settles on it, the codec library's pair refusing the kind, and its row in the table says
+`handle`. **A plane is imported by its index**, at the plane's own size and the layout's format --
+`R8` and `RG8`, or `R16` and `RG16` with ten bits in the high bits, the two-plane layouts above
+included -- so each plane's `pitch` is the surface's and its `offset` zero; `handle_size` is the
+surface's allocation and `adapter` zero, a surface opening on any device of the machine.
+**`allocation` is the surface's identifier** there rather than an ordinal: unique among the
+surfaces alive, and an import keeps its surface alive, so an identifier an application keys an
+import by names no other surface for as long as the import lasts. The decode is finished before
+the acquire hands a picture out, so the release fence keeps its one kind, and **the application
+releases a picture once its own device has finished reading it**: the surface goes back to the
+decoder at the release and is written by a later picture.
 
 **On Windows since W1.2** (*2026-09-27*): the library is `lowlat.dll` with its import library
 `lowlat.dll.lib`, the C runtime linked in statically, and it carries the client half alone --
@@ -1646,6 +1657,11 @@ at this minor, so no application built against an earlier one meets them. **The 
 named by an enumeration from this minor**, `lowlat_format`, as the frame kinds are, with the
 values the names had, still carried in `uint32_t` fields: a test of the preprocessor for one of
 the names no longer finds it, so an application asks the minor instead.
+
+**Minor 35** (2026-10-30) is the handle on macOS ([§3b](#3b-client)): `LOWLAT_HANDLE_IOSURFACE`
+(4), and `lowlat_frame.surface` appended after `adapter` on every platform, null wherever the
+kind is not the surface's. The frame grows by the field's size; a caller built against an
+earlier minor passes the size it knows and gets the fields it knows, as before.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
