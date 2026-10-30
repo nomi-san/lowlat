@@ -157,6 +157,14 @@ const BT_OUTPUT_AT: usize = 3;
 const DS4_BT_OUTPUT_CONTROL: u8 = 0xC0;
 /// A DualSense's wireless output report carries a tag after its sequence.
 const DS5_BT_OUTPUT_TAG: u8 = 0x10;
+/// A DualSense output report's second byte of valid flags, where the USB form
+/// has it: the lightbar's colour and the player lights apply when their bits
+/// are set. A wireless pad keeps the lights its connection animation left
+/// until a report also sets the reset bit, and ignores the others until then.
+const DS5_OUTPUT_FLAGS1_AT: usize = 2;
+const DS5_FLAG1_LIGHTBAR: u8 = 0x04;
+const DS5_FLAG1_RESET_LIGHTS: u8 = 0x08;
+const DS5_FLAG1_PLAYER_LIGHTS: u8 = 0x10;
 
 /// The largest report either way, either framing.
 pub const REPORT_MAX: usize = 78;
@@ -488,7 +496,8 @@ pub fn normalize_feature(
 /// A USB pad takes the report as it is. A wireless one takes it inside its own
 /// report: the identifier and control bytes ahead, the content where that
 /// report has it, the checksum last; a DualSense's also carries a sequence
-/// number the caller advances per report. Returns the length in `out`.
+/// number the caller advances per report, and a change to its lights the bit
+/// that makes it let go of its own. Returns the length in `out`.
 pub fn frame_output(
     product: Product,
     transport: Transport,
@@ -521,6 +530,12 @@ pub fn frame_output(
             let content = report.get(1..).ok_or(Error::ShortPacket)?;
             if let Some(dst) = out.get_mut(BT_OUTPUT_AT..BT_OUTPUT_AT + content.len()) {
                 dst.copy_from_slice(content);
+            }
+            if product == Product::DualSense
+                && let Some(flags) = out.get_mut(BT_OUTPUT_AT + DS5_OUTPUT_FLAGS1_AT - 1)
+                && *flags & (DS5_FLAG1_LIGHTBAR | DS5_FLAG1_PLAYER_LIGHTS) != 0
+            {
+                *flags |= DS5_FLAG1_RESET_LIGHTS;
             }
             if let Some(framed) = out.get_mut(..BT_OUTPUT_LEN) {
                 bt_seal(CRC_SEED_OUTPUT, framed);
@@ -1080,6 +1095,43 @@ mod tests {
             frame_output(Product::DualSense, Transport::Usb, 0, &over, &mut out),
             Err(Error::Malformed)
         );
+    }
+
+    /// A wireless DualSense ignores light writes until one also asks it to
+    /// let go of its own: a report that changes the lightbar or the player
+    /// lights carries that bit by Bluetooth, and nothing else is touched --
+    /// not a report without a light, not a USB pad, not a DualShock 4.
+    #[test]
+    fn a_wireless_dualsense_is_told_to_let_go_of_its_lights() {
+        let mut out = [0u8; REPORT_MAX];
+        for (lights, framed) in [(0x04u8, 0x0Cu8), (0x10, 0x18), (0x14, 0x1C), (0x15, 0x1D)] {
+            let mut usb = [0u8; DS5_OUTPUT_MIN_LEN];
+            usb[0] = DS5_OUTPUT_ID;
+            usb[1] = 0x03;
+            usb[2] = lights;
+            usb[45..48].copy_from_slice(&[0, 64, 255]);
+            let n =
+                frame_output(Product::DualSense, Transport::Bluetooth, 2, &usb, &mut out).unwrap();
+            assert_eq!(out[4], framed, "flags {lights:#04x}");
+            assert_eq!(&out[3..4], &usb[1..2]);
+            assert_eq!(&out[5..50], &usb[3..]);
+            assert!(bt_checked(CRC_SEED_OUTPUT, &out[..n]));
+            frame_output(Product::DualSense, Transport::Usb, 0, &usb, &mut out).unwrap();
+            assert_eq!(&out[..DS5_OUTPUT_MIN_LEN], &usb);
+        }
+        // The motors and the microphone light alone leave the flags as they are.
+        let mut usb = [0u8; DS5_OUTPUT_MIN_LEN];
+        usb[0] = DS5_OUTPUT_ID;
+        usb[1] = 0x03;
+        usb[2] = 0x01;
+        frame_output(Product::DualSense, Transport::Bluetooth, 3, &usb, &mut out).unwrap();
+        assert_eq!(out[4], 0x01);
+        let mut ds4 = [0u8; DS4_OUTPUT_LEN];
+        ds4[0] = DS4_OUTPUT_ID;
+        ds4[1] = 0x07;
+        ds4[2] = 0x04;
+        frame_output(Product::DualShock4, Transport::Bluetooth, 3, &ds4, &mut out).unwrap();
+        assert_eq!(&out[3..34], &ds4[1..]);
     }
 
     /// The feature reports the pads on the desk answered, recognised by
