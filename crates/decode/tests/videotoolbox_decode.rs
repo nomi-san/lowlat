@@ -215,10 +215,13 @@ fn decode_every_clip(make: impl Fn() -> Backend, software: bool) -> Vec<String> 
         let mut backend = make();
         backend.build(&header(codec, ten_bit)).expect("build");
         let ours = decode_units(&mut backend, &clip, codec, ten_bit, &common::units(&clip));
-        let how = match backend.hardware() {
-            Some(true) => "the hardware",
-            Some(false) => "the software decoder",
-            None => "no session",
+        let how = match (backend.hardware(), backend.hardware_refused()) {
+            (Some(true), _) => "the hardware".to_owned(),
+            (Some(false), Some(status)) => {
+                format!("the software decoder, the hardware having refused it ({status})")
+            }
+            (Some(false), None) => "the software decoder".to_owned(),
+            (None, _) => "no session".to_owned(),
         };
         if software {
             assert_eq!(
@@ -234,7 +237,7 @@ fn decode_every_clip(make: impl Fn() -> Backend, software: bool) -> Vec<String> 
             );
             continue;
         }
-        if let Err(e) = compare(&clip, &ours, &[&sums], how) {
+        if let Err(e) = compare(&clip, &ours, &[&sums], &how) {
             failed.push(format!("{clip}: {e}"));
         }
     }
@@ -276,14 +279,18 @@ fn a_rebuild_with_the_same_sets_keeps_the_session() {
         let ours = decode_units(&mut backend, clip, Codec::H265, false, &units);
         compare(clip, &ours, &[&format!("{clip}.sums")], "this session").expect("in order");
         backend.destroy();
-        assert_eq!(backend.sessions(), 1, "pass {pass} made another session");
+        // One session, and one more where the hardware refused the first
+        // picture and the software decoder took it.
+        let made = 1 + u32::from(backend.hardware_refused().is_some());
+        assert_eq!(backend.sessions(), made, "pass {pass} made another session");
     }
+    let made = 1 + u32::from(backend.hardware_refused().is_some());
     let clip = "fixtures/hevc-nvenc-main10";
     backend.build(&header(Codec::H265, true)).expect("build");
     let units = common::units(&format!("{clip}.bin"));
     let ours = decode_units(&mut backend, clip, Codec::H265, true, &units);
     compare(clip, &ours, &[&format!("{clip}.sums")], "a new session").expect("in order");
-    assert_eq!(backend.sessions(), 2, "other sets kept the session");
+    assert_eq!(backend.sessions(), made + 1, "other sets kept the session");
 }
 
 /// **A change of size mid-stream is followed**: two clips of different

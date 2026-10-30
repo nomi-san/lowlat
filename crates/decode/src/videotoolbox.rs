@@ -399,6 +399,8 @@ struct Session {
     format: Object,
     /// Whether the hardware decodes for it.
     hardware: bool,
+    /// Whether it has decoded a picture without an error.
+    answered: bool,
 }
 
 impl Drop for Session {
@@ -608,6 +610,7 @@ fn make_session(
         session,
         format,
         hardware,
+        answered: false,
     })
 }
 
@@ -665,7 +668,8 @@ struct Staged {
 pub struct Backend {
     vt: &'static Vt,
     codec: Codec,
-    /// The system's software decoder alone, for a check of it.
+    /// The system's software decoder alone: asked for, for a check of it,
+    /// or taken when a session the system chose failed its first picture.
     software: bool,
     h264: Box<h264::Stream>,
     hevc: Box<hevc::Stream>,
@@ -683,6 +687,8 @@ pub struct Backend {
     callback: Box<Callback>,
     /// Sessions made since this backend was.
     sessions: u32,
+    /// The status a session the system chose failed its first picture with.
+    refused: Option<i32>,
     /// The last decode's call and the last hand-over, in microseconds.
     pub decode_us: u32,
     pub readback_us: u32,
@@ -724,6 +730,7 @@ impl Backend {
                 picture: Handoff::new(),
             }),
             sessions: 0,
+            refused: None,
             decode_us: 0,
             readback_us: 0,
         }
@@ -733,6 +740,13 @@ impl Backend {
     /// never change, however often it is rebuilt.
     pub fn sessions(&self) -> u32 {
         self.sessions
+    }
+
+    /// The status a session the system chose failed its first picture with,
+    /// where one did and the software decoder took the stream; none
+    /// otherwise.
+    pub fn hardware_refused(&self) -> Option<i32> {
+        self.refused
     }
 
     /// As [`new`](Self::new), refusing the hardware: the system's software
@@ -1102,11 +1116,36 @@ impl Backend {
 
     /// The staged picture through the session: its picture, none where the
     /// decoder dropped it.
+    ///
+    /// **A session the system chose that fails its first picture is the
+    /// hardware refusing**, as one it cannot make is at the probe: the
+    /// software decoder takes the picture again, and this backend's sessions
+    /// from there. A stream the software decoder refuses too is refused as
+    /// before.
     fn decode_staged(&mut self, unit: &[u8], staged: Staged) -> Result<Option<PixelBuffer>> {
         self.ensure_session()?;
         let len = self.length_prefixed(unit, staged.slices)?;
         let started = Time::now();
-        let picture = self.decode_sample(len);
+        let mut picture = self.decode_sample(len);
+        if let Err(Error::Framework(status)) = picture
+            && !self.software
+            && self.session.as_ref().is_some_and(|s| !s.answered)
+        {
+            lowlat_common::log_warn!(
+                "decode: the system's decoder refused its first picture, status={status}; the \
+                 software decoder takes it"
+            );
+            self.software = true;
+            self.refused = Some(status);
+            self.session = None;
+            self.ensure_session()?;
+            picture = self.decode_sample(len);
+        }
+        if picture.is_ok()
+            && let Some(session) = self.session.as_mut()
+        {
+            session.answered = true;
+        }
         self.decode_us = micros(diff_ms(started, Time::now()));
         picture
     }
@@ -1283,6 +1322,50 @@ mod tests {
             assert!(named.contains(&(format, false)) && named.contains(&(format, true)));
         }
         assert_eq!(layout_of(0), None);
+    }
+
+    /// **A session the system chose that fails its first picture is the
+    /// hardware refusing**: the software decoder takes the picture, and the
+    /// backend's sessions from there. The failure is made by giving the
+    /// first session a description it was not made for.
+    #[test]
+    fn a_first_picture_refused_goes_to_the_software_decoder() {
+        let vt = lowlat_drivers::vt::load().unwrap();
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/fixtures/h264-ipp-cabac.bin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+        let unit = &bytes[4..4 + len];
+        let mut backend = Backend::new(vt, 1 << 20);
+        backend
+            .build(&VideoHeader {
+                frame_id: 1,
+                width: 0,
+                height: 0,
+                codec: Codec::H264,
+                rotation: lowlat_core::video::Rotation::None,
+                ten_bit: false,
+                locked: false,
+                announced: false,
+                metadata: false,
+            })
+            .unwrap();
+        // As `decode` does, the session made before the picture goes to it.
+        backend.store_sets(unit).unwrap();
+        let Ok(Ok(staged)) = backend.read(unit) else {
+            panic!("the first unit staged no picture");
+        };
+        backend.ensure_session().unwrap();
+        backend.session.as_mut().unwrap().format = describe(vt, Codec::H265, &PROBE_HEVC).unwrap();
+        let picture = backend
+            .decode_staged(unit, staged)
+            .expect("the software decoder took the picture");
+        assert!(picture.is_some(), "no picture came back");
+        assert_eq!(backend.hardware(), Some(false));
+        assert!(backend.hardware_refused().is_some());
+        assert_eq!(backend.sessions(), 2);
     }
 
     /// A set is kept by its kind and identifier: the same bytes again change
