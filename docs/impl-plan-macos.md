@@ -222,7 +222,13 @@ and D14's amendment [00](00-overview.md).
   H.264, 20.6 against 23.2 at 4:4:4 ten-bit, 19.0 against 22.0 under the translation layer. The
   decode itself measured slower by handle -- 2.5 against 2.3 ms at the median for H.264, 2.8
   against 2.2 at 4:4:4 ten-bit, 2.5 against 1.1 under the translation layer -- likely the
-  system's clocks following the processor's lighter load, not proven.
+  system's clocks following the processor's lighter load, not proven. **CI's virtual Mac then
+  found the system's software decoder writing into a buffer it had handed out**: there the
+  hardware refuses every first picture under the translation layer (status -19092) and the
+  software decoder takes the stream, and a picture the queue held changed under it, retained and
+  locked as it was; reproduced on the M2 with the software decoder forced, never with the
+  hardware. A software session's pictures are copied into the queue's own slots now, as on every
+  other platform, lent and exported pictures being the hardware's alone.
 - [ ] **M1.4 the desk**: the toolkit's two key faults mended; relative mode; the host's cursors;
   pads, sound and the microphone through SDL, with the microphone's permission; the threads'
   quality-of-service classes and the system's app napping decided by measurement.

@@ -740,7 +740,7 @@ and the one just acquired, so a swap has no gap -- and a third acquire is refuse
 fence the application's device signals when it has finished reading, which is what lets a
 decoder write into shared memory without waiting on the application's CPU; a null fence
 means reusable now, and **it is the only fence**: a picture of the planes kind was copied --
-or on macOS lies in the decoder's own buffer, which nothing writes while it is held -- and one
+or on macOS lies in the hardware decoder's own buffer, which nothing writes while it is held -- and one
 of the handle kind was copied or finished on the device before the acquire returned
 (§4 of [10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other
 kind is refused. The rule 5 of §1 holds: no callback fires from inside the library.
@@ -818,15 +818,19 @@ managers' directories by full path. **Full chroma comes as two planes**, appende
 minor: `LOWLAT_FORMAT_NV24` (5), eight bits, a luma plane and a plane of both chroma components
 interleaved, each at the picture's size, and `LOWLAT_FORMAT_P410` (6), the same with ten bits in
 the high bits of sixteen; `planes[2]` is null for both. **A picture of the planes kind lies in
-the decoder's own buffer**, each plane at its own pitch, which the decoder aligns per plane: the
-chroma's pitch is its plane's own, not derived from the luma's.
+the hardware decoder's own buffer**, each plane at its own pitch, which the decoder aligns per
+plane: the chroma's pitch is its plane's own, not derived from the luma's. **The system's
+software decoder's pictures are copied** into the library's own memory, as every other
+platform's software decoder's are: it writes into a buffer it has handed out, while it is held
+(*found 2026-10-30*, M1.3).
 
 **The handle on macOS since M1.3** (*2026-10-30*, minor 35; [10 §4.3](10-client.md)):
 `lowlat_handle_kind` gains `LOWLAT_HANDLE_IOSURFACE` (4), one IOSurface per picture, and
 `lowlat_frame` gains `surface`, the picture's `IOSurfaceRef`. The system's decoder hands both
-kinds out, the kind followed per picture with no keyframe; `LOWLAT_DECODER_AUTO` with the handle
-kind settles on it, the codec library's pair refusing the kind, and its row in the table says
-`handle`. **A plane is imported by its index**, at the plane's own size and the layout's format --
+kinds out where the hardware decodes, the kind followed per picture with no keyframe, and a
+picture of its software decoder as planes, copied; `LOWLAT_DECODER_AUTO` with the handle kind
+settles on it, the codec library's pair refusing the kind, and its row in the table says
+`handle` where the hardware decodes anything. **A plane is imported by its index**, at the plane's own size and the layout's format --
 `R8` and `RG8`, or `R16` and `RG16` with ten bits in the high bits, the two-plane layouts above
 included -- so each plane's `pitch` is the surface's and its `offset` zero; `handle_size` is the
 surface's allocation and `adapter` zero, a surface opening on any device of the machine.

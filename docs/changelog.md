@@ -14,6 +14,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ### Changed
 - **The toolkit's Metal renderer imports a surface's planes** once per allocation, keeping eight,
   bound for the draw alone.
+- **The system's software decoder's pictures are copied** on macOS ([10 §4.3](10-client.md)), no
+  longer lent: it writes into a buffer it has handed out while it is held, as CI's virtual Mac
+  showed. Lent and exported pictures are the hardware's alone, and the table says `handle` only
+  where the hardware decodes.
 ### Measured
 - A plane imports in about 20 us; the planes kind's upload of a 1440p picture costs 0.75 to
   1.65 ms, 3.0 to 5.1 under the translation layer.

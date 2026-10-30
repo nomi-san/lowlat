@@ -492,9 +492,9 @@ imports a surface: Metal by plane, OpenGL, Vulkan through its Metal layer.
 that work was submitted: the surface goes back to the pool at the release and the decoder writes
 into it again.
 
-*As built (M1.3)*: a picture asked for by handle is the decoder's own buffer held in its slot,
-unlocked, until the ring lends the slot again -- the rule the planes kind keeps, below -- and the
-frame carries the buffer's surface, the kind followed per picture. Its allocation is the
+*As built (M1.3)*: a picture asked for by handle is the hardware decoder's own buffer held in its
+slot, unlocked, until the ring lends the slot again -- the rule the planes kind keeps, below --
+and the frame carries the buffer's surface, the kind followed per picture. Its allocation is the
 surface's identifier, which an import keeps from naming another: measured, an identifier comes
 back the moment its surface is freed, and never while a texture made from it lives. A plane
 imports in about 20 us on an M2, 30 under the translation layer, where the planes kind's upload
@@ -508,7 +508,14 @@ planes, 31 against 39 under the translation layer, and a picture reached the scr
 sooner at the median; the decode measured 0.2 to 1.4 ms slower by handle, likely the system's
 clocks following the lighter load.
 
-**A picture of the planes kind is the decoder's own buffer** (*built 2026-10-30*, M1.2), lent to
+**The system's software decoder writes into a buffer it has handed out** (*found 2026-10-30* on
+CI's virtual Mac, where it took every stream, and reproduced on an M2): a picture the queue held,
+retained and locked for reading, changed under it as later pictures were decoded; the hardware's
+buffers stay as handed out. So only the hardware's pictures are lent or exported, below and
+above; a software session's are copied into the queue's own slots, as every other platform's
+software decoder's are, and come as planes to a session that asked for handles.
+
+**A picture of the planes kind is the hardware decoder's own buffer** (*built 2026-10-30*, M1.2), lent to
 the queue's slot being filled, locked for reading from its publish until the ring lends that
 slot to the decoder again, and handed out where its planes lie, without a copy. The ring lends a
 slot only once nothing holds it, so a held picture's buffer is never written; a released one
