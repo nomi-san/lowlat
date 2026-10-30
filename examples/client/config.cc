@@ -19,6 +19,8 @@ static Settings _settings;
 // The interface that imports the library's device handles.
 #if defined(_WIN32)
 static const MTY_GFX HANDLES_GFX = MTY_GFX_D3D11;
+#elif defined(__APPLE__)
+static const MTY_GFX HANDLES_GFX = MTY_GFX_METAL;
 #else
 static const MTY_GFX HANDLES_GFX = MTY_GFX_GL;
 #endif

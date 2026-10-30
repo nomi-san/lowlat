@@ -521,14 +521,15 @@ typedef struct {
 	                          ///<   the one derived from `imageWidth`.
 } MTY_RenderDesc;
 
-/// @brief A picture in device memory another interface exported, drawn on GL or Direct3D 11
-///   as a hardware frame: what MTY_WindowDrawQuad takes as the image when
+/// @brief A picture in device memory another interface exported, drawn on GL, Direct3D 11 or
+///   Metal as a hardware frame: what MTY_WindowDrawQuad takes as the image when
 ///   MTY_RenderDesc.hardware is set.
 /// @details What it names is imported once per `id` and the import kept while that `id`
 ///   keeps appearing, so a caller hands the same picture memory over on every draw at the
 ///   cost of one import. On GL the descriptor's planes are laid out plainly at their offsets
 ///   and pitches, in the order and sampling `MTY_RenderDesc.format` and `chroma` describe; on
-///   Direct3D 11 each plane is a texture of its own.
+///   Direct3D 11 each plane is a texture of its own; on Metal each plane is one of the
+///   surface's, at the size the format and the chroma give it.
 typedef struct {
 	int32_t fd;         ///< An opaque descriptor the GL implementation's own vendor exports
 	                    ///<   (`GL_HANDLE_TYPE_OPAQUE_FD_EXT`). The import takes a duplicate;
@@ -541,6 +542,8 @@ typedef struct {
 	uint32_t pitch[3];  ///< Each plane's bytes from one row to the next.
 	void *texture[3];   ///< On Direct3D 11, each plane's texture by its shared handle, which the
 	                    ///<   renderer's device opens; null for a plane the layout has not.
+	void *surface;      ///< On Metal, the picture's `IOSurfaceRef`, each of whose planes the
+	                    ///<   renderer imports by its index; null elsewhere.
 } MTY_HardwareFrame;
 
 /// @brief A point with an `x` and `y` coordinate.

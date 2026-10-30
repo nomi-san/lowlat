@@ -98,6 +98,15 @@ that shape first.
 | `src/matoya.h` | `MTY_RenderDesc.planes` and `MTY_RenderDesc.pitches`: each plane's own address and row length in bytes, taken where set |
 | `src/gfx/fmt.h` | `fmt_reload_textures` uploads a plane from its own address at its own row length where the description gives them, and from the image in sequence as before where not; every renderer's upload goes through it |
 
+The Metal renderer draws a picture the library hands out as a device handle on macOS: the
+picture's IOSurface, each of whose planes Metal imports by its index. Upstream's Metal renderer
+refuses every hardware frame (`mty_metal_valid_hardware_frame` returns false).
+
+| file | change |
+|---|---|
+| `src/matoya.h` | `MTY_HardwareFrame.surface`: the picture's `IOSurfaceRef`, which with the frame's `id` is what the Metal renderer takes as the image when `MTY_RenderDesc.hardware` is set |
+| `src/unix/apple/gfx/metal.m` | up to eight imports kept, each a frame's planes made from its surface by plane index at the size the format and the chroma give them, found by `id` at the same size and format, the oldest replaced by a new one; an import's textures are drawn from for the draw alone and never become the staging textures an upload writes into; `mty_metal_valid_hardware_frame` answers yes for a frame with a surface, and for none |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 

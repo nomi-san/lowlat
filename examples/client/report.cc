@@ -15,6 +15,9 @@
 #else
 #include <unistd.h>
 #endif
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 #include "lowlat.h"
 #include "matoya.h"
@@ -30,6 +33,9 @@
 namespace report {
 
 static double _second_began;
+// The process's processor time at the last second's end, and when that was.
+static uint64_t _processor_us;
+static double _processor_ms;
 static uint64_t _seconds;
 static uint64_t _last_video_bytes;
 static bool _established;
@@ -102,8 +108,31 @@ void memory_words(char *out, size_t size)
 #endif
 }
 
+// The process's processor time so far, on every core, user and system, in
+// microseconds.
+static uint64_t processor_us()
+{
+#if defined(_WIN32)
+	FILETIME created, exited, kernel, user;
+	if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+		return 0;
+	ULARGE_INTEGER k, u;
+	k.LowPart = kernel.dwLowDateTime;
+	k.HighPart = kernel.dwHighDateTime;
+	u.LowPart = user.dwLowDateTime;
+	u.HighPart = user.dwHighDateTime;
+	return (k.QuadPart + u.QuadPart) / 10;
+#else
+	struct rusage use;
+	if (getrusage(RUSAGE_SELF, &use) != 0)
+		return 0;
+	return (uint64_t) use.ru_utime.tv_sec * 1000000 + (uint64_t) use.ru_utime.tv_usec
+		+ (uint64_t) use.ru_stime.tv_sec * 1000000 + (uint64_t) use.ru_stime.tv_usec;
+#endif
+}
+
 // The second's figures on the log, and the same in the title bar.
-static void second()
+static void second(double now_ms)
 {
 	lowlat_client *client = session::client();
 	const config::Settings &knobs = config::get();
@@ -116,6 +145,12 @@ static void second()
 	uint64_t rss = resident_mb();
 	char memory[64];
 	memory_words(memory, sizeof memory);
+	// The processor time the second took, as a share of one core.
+	uint64_t processor = processor_us();
+	double cpu = now_ms > _processor_ms
+		? (double) (processor - _processor_us) / ((now_ms - _processor_ms) * 10.0) : 0.0;
+	_processor_us = processor;
+	_processor_ms = now_ms;
 	const char *codec = st.codec == LOWLAT_CODEC_HEVC ? "HEVC"
 		: st.codec == LOWLAT_CODEC_H264 ? "H264" : "-";
 	present::Second p = present::take_second();
@@ -131,7 +166,7 @@ static void second()
 	pads::Second pad = pads::take_second();
 	const session::Roster &room = session::roster();
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
-		"gfx=%s vsync=%d swap_ms=%.1f/%.1f held=%u/%u/%u/%u lat_ms=%.2f/%.2f lib_ms=%.2f/%.2f "
+		"gfx=%s vsync=%d kind=%s cpu=%.1f swap_ms=%.1f/%.1f held=%u/%u/%u/%u lat_ms=%.2f/%.2f lib_ms=%.2f/%.2f "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " %s keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u pad_in=%u pad_in_dropped=%u "
@@ -146,6 +181,7 @@ static void second()
 		"mic_refused=%u\n",
 		_seconds, p.presents, p.polls, p.pictures, p.repeats, p.skips,
 		config::gfx_name(knobs.gfx), (int) knobs.vsync,
+		present::picture().kind == LOWLAT_FRAME_HANDLE ? "handles" : "planes", cpu,
 		p.swap_count > 0 ? (double) p.swap_sum_us / (double) p.swap_count / 1000.0 : 0.0,
 		(double) p.swap_max_us / 1000.0, p.held[0], p.held[1], p.held[2], p.held[3],
 		p.lat_count > 0 ? (double) p.lat_sum_us / (double) p.lat_count / 1000.0 : 0.0,
@@ -255,6 +291,8 @@ static void second()
 void start(double now_ms)
 {
 	_second_began = now_ms;
+	_processor_us = processor_us();
+	_processor_ms = now_ms;
 }
 
 bool tick(double now_ms)
@@ -262,7 +300,7 @@ bool tick(double now_ms)
 	if (now_ms - _second_began < 1000.0)
 		return false;
 	_second_began = now_ms;
-	second();
+	second(now_ms);
 	return true;
 }
 

@@ -14,6 +14,7 @@ GFX_PROTOTYPES(_metal_)
 #include "shaders/quad.h"
 
 #define METAL_NUM_STAGING 3
+#define METAL_NUM_IMPORTS 8
 
 struct metal_res {
 	MTLPixelFormat format;
@@ -22,10 +23,22 @@ struct metal_res {
 	uint32_t height;
 };
 
+// A hardware frame's planes imported from its surface, kept while the allocation that
+// names them keeps appearing at the same size and format.
+struct metal_import {
+	uint32_t id;
+	MTY_ColorFormat format;
+	uint32_t width;
+	uint32_t height;
+	id<MTLTexture> texture[METAL_NUM_STAGING];
+};
+
 struct metal {
 	MTY_ColorFormat format;
 	struct gfx_uniforms fcb;
 	struct metal_res staging[METAL_NUM_STAGING];
+	struct metal_import imports[METAL_NUM_IMPORTS];
+	uint32_t next_import;
 	id<MTLLibrary> library;
 	id<MTLFunction> fs;
 	id<MTLFunction> vs;
@@ -184,7 +197,65 @@ static bool metal_refresh_resource(struct gfx *gfx, MTY_Device *_device, MTY_Con
 
 bool mty_metal_valid_hardware_frame(MTY_Device *device, MTY_Context *context, const void *shared_resource)
 {
-	return false;
+	// Every Metal device imports a surface; asked of no frame, the answer is the device's.
+	const MTY_HardwareFrame *frame = shared_resource;
+
+	return !frame || frame->surface;
+}
+
+// A hardware frame's planes as imported: the import kept for its allocation, or a new one
+// in place of the oldest. Each plane is the surface's own by its index, at the size the
+// format and the chroma give it; they are bound for the draw alone and never become the
+// staging textures, which an upload writes into.
+static struct metal_import *metal_import(struct metal *ctx, id<MTLDevice> device,
+	const MTY_HardwareFrame *frame, const MTY_RenderDesc *desc)
+{
+	for (uint32_t x = 0; x < METAL_NUM_IMPORTS; x++) {
+		struct metal_import *import = &ctx->imports[x];
+
+		if (import->texture[0] && import->id == frame->id && import->format == ctx->format &&
+			import->width == desc->cropWidth && import->height == desc->cropHeight)
+			return import;
+	}
+
+	struct metal_import *import = &ctx->imports[ctx->next_import];
+	ctx->next_import = (ctx->next_import + 1) % METAL_NUM_IMPORTS;
+
+	for (uint32_t x = 0; x < METAL_NUM_STAGING; x++)
+		import->texture[x] = nil;
+
+	if (!frame->surface)
+		return NULL;
+
+	uint32_t wdiv = desc->chroma != MTY_CHROMA_444 ? 2 : 1;
+	uint32_t hdiv = desc->chroma == MTY_CHROMA_420 ? 2 : 1;
+
+	for (uint8_t x = 0; x < FMT_INFO[ctx->format].planes && x < METAL_NUM_STAGING; x++) {
+		MTLTextureDescriptor *tdesc = [MTLTextureDescriptor
+			texture2DDescriptorWithPixelFormat:FMT_PLANES[ctx->format][x]
+			width:desc->cropWidth / (x > 0 ? wdiv : 1)
+			height:desc->cropHeight / (x > 0 ? hdiv : 1)
+			mipmapped:NO];
+		tdesc.usage = MTLTextureUsageShaderRead;
+
+		import->texture[x] = [device newTextureWithDescriptor:tdesc iosurface:(IOSurfaceRef) frame->surface plane:x];
+
+		if (!import->texture[x]) {
+			MTY_Log("A surface's plane %u was not imported", (unsigned) x);
+
+			for (uint32_t y = 0; y < METAL_NUM_STAGING; y++)
+				import->texture[y] = nil;
+
+			return NULL;
+		}
+	}
+
+	import->id = frame->id;
+	import->format = ctx->format;
+	import->width = desc->cropWidth;
+	import->height = desc->cropHeight;
+
+	return import;
 }
 
 bool mty_metal_render(struct gfx *gfx, MTY_Device *device, MTY_Context *context,
@@ -201,8 +272,25 @@ bool mty_metal_render(struct gfx *gfx, MTY_Device *device, MTY_Context *context,
 	if (ctx->format == MTY_COLOR_FORMAT_UNKNOWN)
 		return true;
 
-	if (!fmt_reload_textures(gfx, device, context, image, desc, metal_refresh_resource))
-		return false;
+	// The textures drawn from: a hardware frame's imported planes, or the staging textures
+	// an upload fills.
+	id<MTLTexture> planes[METAL_NUM_STAGING];
+
+	if (desc->hardware) {
+		struct metal_import *import = metal_import(ctx, (__bridge id<MTLDevice>) device, image, desc);
+		if (!import)
+			return false;
+
+		for (uint8_t x = 0; x < METAL_NUM_STAGING; x++)
+			planes[x] = import->texture[x];
+
+	} else {
+		if (!fmt_reload_textures(gfx, device, context, image, desc, metal_refresh_resource))
+			return false;
+
+		for (uint8_t x = 0; x < METAL_NUM_STAGING; x++)
+			planes[x] = ctx->staging[x].texture;
+	}
 
 	// Begin render pass
 	MTLRenderPassDescriptor *rpd = [MTLRenderPassDescriptor new];
@@ -239,7 +327,7 @@ bool mty_metal_render(struct gfx *gfx, MTY_Device *device, MTY_Context *context,
 
 	// Uniforms
 	for (uint8_t x = 0; x < METAL_NUM_STAGING; x++) {
-		id<MTLTexture> tex = ctx->staging[x].texture ? ctx->staging[x].texture : ctx->niltex;
+		id<MTLTexture> tex = planes[x] ? planes[x] : ctx->niltex;
 		[re setFragmentTexture:tex atIndex:x];
 	}
 
@@ -293,6 +381,10 @@ void mty_metal_destroy(struct gfx **gfx, MTY_Device *device)
 
 	for (uint8_t x = 0; x < METAL_NUM_STAGING; x++)
 		ctx->staging[x].texture = nil;
+
+	for (uint8_t x = 0; x < METAL_NUM_IMPORTS; x++)
+		for (uint8_t y = 0; y < METAL_NUM_STAGING; y++)
+			ctx->imports[x].texture[y] = nil;
 
 	ctx->library = nil;
 	ctx->fs = nil;

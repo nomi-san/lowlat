@@ -146,7 +146,7 @@ static void *present_loop(void *opaque) noexcept
 		printf("demo: drawing through %s on the system's default adapter\n",
 			config::gfx_name(knobs.gfx));
 #endif
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	// A handle is only drawable on a context that imports one: asked once,
 	// before any picture, rather than found out per frame. Direct3D 11 opens
 	// every shared texture of its own GPU.
@@ -242,7 +242,8 @@ static void *present_loop(void *opaque) noexcept
 			desc.filter = MTY_FILTER_LINEAR;
 			// A handle is drawn from the toolkit's import of it, made once
 			// per allocation and kept while that allocation keeps coming:
-			// on Windows a texture per plane, by its shared handle; elsewhere
+			// on Windows a texture per plane, by its shared handle; on macOS
+			// each plane of the picture's surface by its index; elsewhere
 			// at each plane's offset and pitch, planes being one image with
 			// the planes in sequence and the row length as a width, each
 			// plane's offset the rows before it times that width, which is
@@ -254,6 +255,8 @@ static void *present_loop(void *opaque) noexcept
 #if defined(_WIN32)
 				for (uint32_t p = 0; p < 3; p++)
 					hw.texture[p] = (void *) (uintptr_t) f->textures[p];
+#elif defined(__APPLE__)
+				hw.surface = const_cast<void *>(f->surface);
 #else
 				hw.fd = f->fd;
 				hw.size = f->handle_size;

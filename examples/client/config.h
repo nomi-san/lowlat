@@ -21,8 +21,8 @@
 // picture of textures opens where it is drawn and switching to handles moves
 // nothing; pictures moved to another GPU by the chord or a row, or found
 // again under a new identity after a device was lost, bring it after them.
-// On macOS planes are drawn through Metal, and no decoder there hands out
-// handles.
+// On macOS Metal draws both, a handle being each picture's surface, imported
+// by plane; only the system's decoder hands one out.
 // `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
 // the display's next refresh: the lowest latency, torn where a picture
 // lands mid-scan.
