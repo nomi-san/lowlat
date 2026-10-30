@@ -1288,6 +1288,13 @@ pub struct Config {
     /// defaults**, since a connection would light the desk's monitors by
     /// itself. Settled when hosting starts; only Windows acts on it.
     pub wake_display: bool,
+    /// Never report the pointer as taken over because its plane is empty.
+    ///
+    /// **For a compositor that empties the plane in ordinary use**, such as
+    /// niri, where the pointer can be drawn into the picture or be on another
+    /// output. The report puts a guest into relative motion, which traps its
+    /// pointer in the window.
+    pub keep_pointer: bool,
     /// Whether a stream on an NVIDIA GPU holds the GPU's memory clock at a
     /// floor for as long as it runs.
     ///
@@ -2974,6 +2981,7 @@ fn publish_pointer(
     height: u32,
     hotspots: &mut Hotspots,
     presence: &mut Presence,
+    keep_pointer: bool,
     now_ms: f64,
 ) {
     let Some(desktop) = display else { return };
@@ -2993,6 +3001,9 @@ fn publish_pointer(
         // it was. A display that reports the pointer itself answers nothing
         // here when no message is owed, and never reaches the rule below, so
         // the rule has seen nothing drawn and stays silent for it.
+        if keep_pointer {
+            return;
+        }
         if let Some(state) = presence.observe(None, now_ms) {
             shared.publish_pointer(state, None);
         }
@@ -4120,6 +4131,7 @@ fn encode_loop<E: Encoder + FromDevice>(
                     config.height,
                     &mut hotspots,
                     &mut presence,
+                    config.keep_pointer,
                     now_ms,
                 );
                 // **Beside the pointer, and as it turns**: a guest converts
@@ -5088,6 +5100,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 320,
@@ -5231,6 +5244,7 @@ mod tests {
                 display: false,
                 virtual_fallback: false,
                 wake_display: false,
+                keep_pointer: false,
                 hold_memory_clock: false,
                 own_display: OwnDisplay::default(),
                 width: 320,
@@ -5534,6 +5548,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 320,
@@ -7836,6 +7851,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
@@ -7943,6 +7959,7 @@ mod tests {
             display,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width,
@@ -8128,6 +8145,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
@@ -8162,6 +8180,7 @@ mod tests {
             display: false,
             virtual_fallback: false,
             wake_display: false,
+            keep_pointer: false,
             hold_memory_clock: false,
             own_display: OwnDisplay::default(),
             width: 1920,
