@@ -2,7 +2,7 @@
 //! servers' answers say of it, a probe refused while the port is taken, and
 //! an attempt that stops one and leaves what was known before.
 
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 mod support;
 
@@ -14,7 +14,7 @@ use lowlat_client::config::{Backend, Decoding, Port};
 use lowlat_client::nat::{Source, State};
 use lowlat_client::{Client, Config, Error, Peer, Transport};
 use lowlat_core::nat::Mapping;
-use support::server;
+use support::{second_server, server};
 
 /// A client with no decoder, on a port the system picks.
 fn client() -> Client {
@@ -55,8 +55,9 @@ fn a_probe_reads_the_translation_from_two_servers() {
     let mut one = client();
     assert_eq!(one.nat().state, State::None);
 
+    let other = second_server();
     let (a, first) = server(Ipv4Addr::LOCALHOST, None, 1, 1);
-    let (b, second) = server(Ipv4Addr::new(127, 0, 0, 2), None, 2, 1);
+    let (b, second) = server(other.0, other.1, 2, 1);
     one.probe_nat(vec![a, b], Duration::from_secs(3))
         .expect("a probe");
     until("the probe's result", || one.nat().state == State::Done);
@@ -70,7 +71,7 @@ fn a_probe_reads_the_translation_from_two_servers() {
     assert!(!nat.port_preserved);
 
     let (a, first) = server(Ipv4Addr::LOCALHOST, None, 7, 1);
-    let (b, second) = server(Ipv4Addr::new(127, 0, 0, 2), None, 7, 1);
+    let (b, second) = server(other.0, other.1, 7, 1);
     one.probe_nat(vec![a, b], Duration::from_secs(3))
         .expect("a second probe once the first is done");
     until("the second result", || {
@@ -129,8 +130,9 @@ fn an_attempt_stops_a_probe_and_holds_the_port_against_another() {
 #[test]
 fn an_attempts_own_answers_fill_the_result() {
     let mut one = client();
+    let other = second_server();
     let (a, x) = server(Ipv4Addr::LOCALHOST, None, 3, 1);
-    let (b, y) = server(Ipv4Addr::new(127, 0, 0, 2), None, 3, 1);
+    let (b, y) = server(other.0, other.1, 3, 1);
     let config = Config {
         servers: vec![a.into(), b.into()],
         ..Config::default()

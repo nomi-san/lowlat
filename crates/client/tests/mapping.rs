@@ -2,7 +2,7 @@
 //! handle with the same seed walks past it then, before anything is mapped,
 //! and never maps, moves or deletes the first handle's entry.
 
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 mod support;
 
@@ -161,7 +161,7 @@ fn a_probe_asks_from_the_held_port_and_a_confirmed_mapping_numbers_two() {
     until("the mapping", || fake.table().contains_key(&first.get()));
 
     let (a, x) = support::server(Ipv4Addr::LOCALHOST, Some(EXTERNAL), 1, 1);
-    let (b, y) = support::server(Ipv4Addr::new(127, 0, 0, 2), Some(EXTERNAL), 2, 1);
+    let (b, y) = support::server(support::second_server().0, Some(EXTERNAL), 2, 1);
     one.probe_nat(vec![a, b], Duration::from_secs(3))
         .expect("a probe");
     until("the result", || one.nat().state == State::Done);

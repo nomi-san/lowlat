@@ -23,6 +23,12 @@
 //! because the ring lends a slot to the producer only once nothing holds
 //! it. So the rule is the same as the host slots' by another route.
 //!
+//! **Lent slots** hold a picture that stays in the decoder's own buffer: the
+//! slot keeps the buffer, locked for reading, from the picture's publish
+//! until the slot takes another, and the picture is published with the
+//! buffer's own plane addresses and pitches. Nothing is copied, and the
+//! application reads the planes where the decoder wrote them.
+//!
 //! **A picture is laid out at its own pitch, not the ceiling's.** The slot
 //! is the reserve; the planes lent to the decoder are `width` samples a
 //! row, aligned, with the chroma planes straight after the luma rows, so the
@@ -47,6 +53,9 @@ use crate::config::FrameKind;
 mod sys;
 #[cfg(windows)]
 #[path = "frames/windows.rs"]
+mod sys;
+#[cfg(target_os = "macos")]
+#[path = "frames/macos.rs"]
 mod sys;
 
 pub use sys::Handle;
@@ -75,18 +84,42 @@ pub struct Frame {
     pub full_range: bool,
     /// The arrival stamp of the unit the picture was decoded from.
     pub arrived: Option<u32>,
-    /// Bytes a row, every plane. **The queue's, set at publish** from the
-    /// planes it lent; whatever is given here is replaced.
+    /// Bytes a row of the luma plane. **The queue's, set at publish** from
+    /// the planes it lent; whatever is given here is replaced.
     pub pitch: usize,
+    /// Bytes a row of each chroma plane: the luma's for the layouts laid out
+    /// here, twice its samples for chroma interleaved at full size, and a
+    /// lent buffer's own. The queue's, as `pitch`.
+    pub uv_pitch: usize,
     /// Where the chroma planes begin, in bytes from the slot: the
-    /// interleaved plane or the first of two, then the second at full chroma
-    /// (zero otherwise). The queue's, as `pitch`.
+    /// interleaved plane or the first of two, then the second of a
+    /// three-plane layout (zero otherwise). The queue's, as `pitch`.
     pub uv_offset: usize,
     pub v_offset: usize,
     /// The device slot's descriptor, or `None` for a host slot. The
     /// queue's, as `pitch`.
     pub handle: Option<Handle>,
+    /// Where the planes lie for a picture lent in the decoder's own buffer,
+    /// which its slot holds; `None` for every other. The queue's, as
+    /// `pitch`.
+    pub lent: Option<Lent>,
 }
+
+/// The planes of a picture lent in the decoder's own buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lent {
+    pub y: *const u8,
+    pub uv: *const u8,
+    /// Null for a two-plane layout.
+    pub v: *const u8,
+}
+
+// SAFETY: the addresses are of a buffer the slot holds locked for reading
+// from the picture's publish until the slot takes another, which the ring
+// allows only once nothing holds the slot; nothing writes through them.
+unsafe impl Send for Lent {}
+// SAFETY: as above.
+unsafe impl Sync for Lent {}
 
 impl Frame {
     const BLANK: Self = Self {
@@ -99,9 +132,11 @@ impl Frame {
         full_range: false,
         arrived: None,
         pitch: 0,
+        uv_pitch: 0,
         uv_offset: 0,
         v_offset: 0,
         handle: None,
+        lent: None,
     };
 }
 
@@ -110,6 +145,7 @@ impl Frame {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Layout {
     pitch: usize,
+    uv_pitch: usize,
     uv_offset: usize,
     v_offset: usize,
     /// Bytes the planes span.
@@ -124,14 +160,16 @@ impl Layout {
             return None;
         }
         let pitch = (width * format.sample()).div_ceil(align) * align;
+        let uv_pitch = format.chroma_row_bytes(width).div_ceil(align) * align;
         let luma = pitch.checked_mul(height)?;
-        let chroma = pitch.checked_mul(format.chroma_rows(height))?;
-        let planes = if format.full_chroma() { 2 } else { 1 };
+        let chroma = uv_pitch.checked_mul(format.chroma_rows(height))?;
+        let planes = if format.planar_chroma() { 2 } else { 1 };
         let bytes = luma.checked_add(chroma.checked_mul(planes)?)?;
         Some(Self {
             pitch,
+            uv_pitch,
             uv_offset: luma,
-            v_offset: if format.full_chroma() {
+            v_offset: if format.planar_chroma() {
                 luma + chroma
             } else {
                 0
@@ -178,12 +216,14 @@ pub struct Filling<'a> {
     index: usize,
     /// Set once the slot is published, so the drop does not give it back.
     published: bool,
-    /// The layout lent by `planes_for` or `device_planes_for`, published
+    /// The layout lent by `planes_for` or the platform's own, published
     /// with the picture.
     pitch: usize,
+    uv_pitch: usize,
     uv_offset: usize,
     v_offset: usize,
     handle: Option<Handle>,
+    lent: Option<Lent>,
 }
 
 /// The application already holds as many pictures as it may.
@@ -201,7 +241,9 @@ pub struct Held {
     pub uv: *const u8,
     /// Null for a two-plane layout.
     pub v: *const u8,
+    /// Bytes a row of the luma plane and of each chroma plane.
     pub pitch: usize,
+    pub uv_pitch: usize,
     /// The device slot's descriptor, or `None` for a host slot.
     pub handle: Option<Handle>,
 }
@@ -295,9 +337,11 @@ impl Frames {
             index,
             published: false,
             pitch: 0,
+            uv_pitch: 0,
             uv_offset: 0,
             v_offset: 0,
             handle: None,
+            lent: None,
         })
     }
 
@@ -322,12 +366,15 @@ impl Frames {
         let (y, uv, v) = if payload.handle.is_some() {
             // A device slot: the planes are offsets into the handle.
             (core::ptr::null(), core::ptr::null(), core::ptr::null())
+        } else if let Some(lent) = payload.lent {
+            // The decoder's own buffer, which the slot holds.
+            (lent.y, lent.uv, lent.v)
         } else {
             let y = self.slot_ptr(index).cast_const();
             // SAFETY: the offsets are the layout `publish` wrote from
             // `planes_for`, which kept them inside the slot.
             let uv = unsafe { y.add(payload.uv_offset) };
-            let v = if payload.format.full_chroma() {
+            let v = if payload.format.planar_chroma() {
                 // SAFETY: as above.
                 unsafe { y.add(payload.v_offset) }
             } else {
@@ -343,6 +390,7 @@ impl Frames {
             uv,
             v,
             pitch: payload.pitch,
+            uv_pitch: payload.uv_pitch,
             handle: payload.handle,
         }))
     }
@@ -417,10 +465,11 @@ impl Filling<'_> {
             return None;
         }
         self.pitch = layout.pitch;
+        self.uv_pitch = layout.uv_pitch;
         self.uv_offset = layout.uv_offset;
         self.v_offset = layout.v_offset;
         let luma = layout.uv_offset;
-        let chroma = if format.full_chroma() {
+        let chroma = if format.planar_chroma() {
             layout.v_offset - layout.uv_offset
         } else {
             layout.bytes - layout.uv_offset
@@ -434,7 +483,7 @@ impl Filling<'_> {
                 core::slice::from_raw_parts_mut(base.add(luma), chroma),
                 core::slice::from_raw_parts_mut(
                     base.add(luma + chroma),
-                    if format.full_chroma() { chroma } else { 0 },
+                    if format.planar_chroma() { chroma } else { 0 },
                 ),
             )
         };
@@ -442,9 +491,9 @@ impl Filling<'_> {
             y,
             y_pitch: layout.pitch,
             uv,
-            uv_pitch: layout.pitch,
+            uv_pitch: layout.uv_pitch,
             v,
-            v_pitch: layout.pitch,
+            v_pitch: layout.uv_pitch,
         })
     }
 
@@ -459,9 +508,11 @@ impl Filling<'_> {
     /// finished now. It is not handed out before.
     pub fn publish_gated(mut self, mut frame: Frame, value: u64) {
         frame.pitch = self.pitch;
+        frame.uv_pitch = self.uv_pitch;
         frame.uv_offset = self.uv_offset;
         frame.v_offset = self.v_offset;
         frame.handle = self.handle;
+        frame.lent = self.lent;
         self.frames.ring.set(self.index, frame);
         self.frames
             .ring
@@ -532,6 +583,20 @@ mod tests {
             assert_eq!(
                 (planes.y_pitch, planes.uv.len(), planes.v.len()),
                 (3840, 3840 * 1080, 3840 * 1080)
+            );
+        }
+        {
+            // Chroma interleaved at full size: one plane, twice the luma's
+            // samples a row.
+            let planes = filling.planes_for(1920, 1080, Format::P410).unwrap();
+            assert_eq!(
+                (
+                    planes.y_pitch,
+                    planes.uv_pitch,
+                    planes.uv.len(),
+                    planes.v.len()
+                ),
+                (3840, 7680, 7680 * 1080, 0)
             );
         }
         assert!(

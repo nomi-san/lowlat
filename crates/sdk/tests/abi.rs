@@ -12,10 +12,11 @@
 //!
 //! On Windows the same gates run with the platform's own tools -- its C
 //! compiler and its dump of an export table, found in the Visual Studio
-//! installation -- against the library that ships there, which carries the
-//! client half alone.
+//! installation -- against the library that ships there. On macOS they run
+//! with the system's compiler and symbol lister against a library that
+//! carries the client half alone.
 
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,6 +24,8 @@ use std::process::Command;
 /// The shared object's file name, as the platform's linker names it.
 #[cfg(target_os = "linux")]
 const OBJECT: &str = "liblowlat.so";
+#[cfg(target_os = "macos")]
+const OBJECT: &str = "liblowlat.dylib";
 #[cfg(windows)]
 const OBJECT: &str = "lowlat.dll";
 
@@ -129,7 +132,7 @@ fn shared_object() -> PathBuf {
 /// linker reads the directives of the members it takes. A debug build keeps
 /// every crate's objects apart -- half a gigabyte of them -- and the one with
 /// the directives is never taken.
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 fn static_library() -> PathBuf {
     let profile = artifacts().with_file_name("release");
     let args = [
@@ -149,7 +152,11 @@ fn static_library() -> PathBuf {
         String::from_utf8_lossy(&built.stderr)
     );
 
-    let library = profile.join("lowlat.lib");
+    let library = profile.join(if cfg!(windows) {
+        "lowlat.lib"
+    } else {
+        "liblowlat.a"
+    });
     assert!(library.is_file(), "{} was not produced", library.display());
     library
 }
@@ -269,12 +276,13 @@ fn join_field_guards(header: &str) -> String {
 /// reads as the two halves it is. Only the feature guards are touched; the
 /// `#pragma`, the C++ fences and the `noexcept` block go through untouched.
 fn merge_feature_guards(header: &str) -> String {
+    // The host half is no Apple build's, so its guards name that too.
     const GUARDS: [&str; 5] = [
-        "#if defined(LOWLAT_HOST)",
+        "#if (defined(LOWLAT_HOST) && !defined(__APPLE__))",
         "#if defined(LOWLAT_CLIENT)",
         "#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))",
         "#if (defined(LOWLAT_VDD) && defined(_WIN32))",
-        "#if (defined(LOWLAT_HOST) && defined(_WIN32))",
+        "#if ((defined(LOWLAT_HOST) && !defined(__APPLE__)) && defined(_WIN32))",
     ];
     let lines: Vec<&str> = header.lines().collect();
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());
@@ -506,7 +514,7 @@ fn msvc(tool: &str) -> Command {
 
 /// Compile `source` on its own into `object`, warnings as errors: as C11 or
 /// as C++17, with `define` defined when there is one.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn compile_object(
     source: &Path,
     object: &Path,
@@ -561,7 +569,7 @@ fn compile_object(
 }
 
 /// Compile and link `source` into `program`, as C11, warnings as errors.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn compile_program(source: &Path, program: &Path) -> Result<(), String> {
     let mut command = Command::new("cc");
     command
@@ -605,6 +613,29 @@ fn exports(object: &Path) -> Vec<String> {
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .map(str::to_owned)
+        .collect()
+}
+
+/// The names come with the leading underscore the system's linker adds to
+/// every C name, which the header's spelling does not have.
+#[cfg(target_os = "macos")]
+fn exports(object: &Path) -> Vec<String> {
+    let listed = Command::new("nm")
+        .args(["-g", "-U", "-j"])
+        .arg(object)
+        .output()
+        .expect("nm runs; it ships with the system's developer tools");
+    assert!(
+        listed.status.success(),
+        "nm could not read {}:\n{}",
+        object.display(),
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|name| name.strip_prefix('_').unwrap_or(name).to_owned())
         .collect()
 }
 
@@ -690,6 +721,9 @@ fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
         // against a library carrying one half does: the shared types must
         // still be there, and nothing of the hidden half may be.
         (false, Some("LOWLAT_NO_HOST"), "with LOWLAT_NO_HOST"),
+        // On macOS the client is the one half there is, and hiding it
+        // leaves nothing an application could call.
+        #[cfg(not(target_os = "macos"))]
         (false, Some("LOWLAT_NO_CLIENT"), "with LOWLAT_NO_CLIENT"),
     ] {
         let object = dir.join(format!("alone-{}.o", name.replace(' ', "-")));
@@ -787,6 +821,37 @@ fn the_static_library_links_alone_and_holds_a_panic() {
             String::from_utf8_lossy(&ran.stderr)
         );
     }
+}
+
+/// **The static library links alone into a C program on macOS too**, with
+/// nothing named beside it: the system's frameworks are opened at run time,
+/// so nothing past the C library every program has is on the link line. It
+/// holds a panic at its boundary as the shared object does.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_static_library_links_alone_and_holds_a_panic() {
+    let library = static_library();
+    let source = root().join("crates/sdk/tests/c/static.c");
+    let dir = scratch("static");
+    let program = dir.join("static");
+    let mut command = Command::new("cc");
+    command
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(root().join("include"))
+        .arg(&source)
+        .arg(&library)
+        .arg("-o")
+        .arg(&program);
+    if let Err(why) = run(command) {
+        panic!("the static library does not link alone:\n{why}");
+    }
+    let ran = Command::new(&program).output().expect("the program runs");
+    assert!(
+        ran.status.success(),
+        "the statically linked program failed:\n{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
 }
 
 /// **A library carrying the virtual displays alone links as an application

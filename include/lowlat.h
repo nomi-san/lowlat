@@ -31,7 +31,11 @@
 /// `LOWLAT_NO_CLIENT` before including this, and a call into the missing half
 /// fails to compile rather than to link. `lowlat_features()` reports the same
 /// two halves for the library that was actually loaded.
-#if !defined(LOWLAT_NO_HOST) && !defined(LOWLAT_HOST)
+///
+/// **No host runs on macOS**, so a plain include there declares the client
+/// half alone, and a `LOWLAT_HOST` the application defines declares nothing
+/// more.
+#if !defined(LOWLAT_NO_HOST) && !defined(LOWLAT_HOST) && !defined(__APPLE__)
 #define LOWLAT_HOST
 #endif
 #if !defined(LOWLAT_NO_CLIENT) && !defined(LOWLAT_CLIENT)
@@ -49,10 +53,10 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 33
+#define LOWLAT_ABI_MINOR 34
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
-/// A library built for Windows carries the client half alone.
+/// A library built for macOS carries the client half alone.
 #define LOWLAT_FEATURE_HOST 1
 
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
@@ -119,7 +123,7 @@
 #define LOWLAT_FINGERPRINT_MAX 112
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// The most guests a host may advertise, which is what the ring memory per
 /// guest is sized against.
 #define LOWLAT_GUESTS_MAX 16
@@ -339,6 +343,16 @@
 /// Ten bits in sixteen-bit samples, the value in the high bits; the same
 /// three planes.
 #define LOWLAT_FORMAT_YUV444_16 4
+
+/// Eight bits, full chroma in two planes: a luma plane and an interleaved
+/// chroma plane, both of the picture's size, the chroma's rows twice the
+/// luma's samples (minor 34). What the system's decoder on macOS hands out
+/// at full chroma.
+#define LOWLAT_FORMAT_NV24 5
+
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same two
+/// planes (minor 34).
+#define LOWLAT_FORMAT_P410 6
 
 /// No attempt has been made.
 #define LOWLAT_CLIENT_IDLE 0
@@ -612,7 +626,7 @@ typedef enum lowlat_codec {
 } lowlat_codec;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// How much colour the stream carries, relative to its luma.
 ///
 /// **Named by an enumeration and carried as an integer**, the same way
@@ -657,7 +671,7 @@ typedef enum lowlat_rotation {
 } lowlat_rotation;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// Which congestion control level a session runs at.
 ///
 /// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
@@ -688,7 +702,7 @@ typedef enum lowlat_log_level {
     LOWLAT_LOG_TRACE = 4,
 } lowlat_log_level;
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// Where a host sits between delay and picture.
 ///
 /// **The only encoder tuning this boundary exposes.** An encoder has a dozen
@@ -729,8 +743,11 @@ typedef enum lowlat_transport {
 /// replaced: the system's video decoding interface and the GPU maker's own
 /// decoder on that GPU or the first that decodes, the high-performance GPU
 /// first, then software -- the codec library, then the system's own
-/// decoder. A machine without any is refused at creation with the stage
-/// named, exactly as a host without an encoder is.
+/// decoder. On macOS (minor 34) the device names nothing but the codec
+/// library's directory: the system's own decoder, then the codec library;
+/// neither the open kind nor the vendor's exists there. A machine without
+/// any is refused at creation with the stage named, exactly as a host
+/// without an encoder is.
 typedef enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
     LOWLAT_DECODER_OPEN = 1,
@@ -744,14 +761,20 @@ typedef enum lowlat_decoder {
     /// otherwise is refused with `LOWLAT_ERR_NO_DECODER_LICENCE`. Looked
     /// for in the environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`),
     /// in the directory `lowlat_client_create_info.device` names when it
-    /// names one, beside the running executable, then the linker's own way;
-    /// the highest major of 4 through 9 that opens wins. Planes only.
+    /// names one, beside the running executable, then the linker's own way
+    /// -- on macOS the package managers' library directories by full path
+    /// instead, the architecture's own first (minor 34); the highest major
+    /// of 4 through 9 that opens wins. Planes only.
     LOWLAT_DECODER_SOFTWARE = 4,
-    /// The system's own decoder, in software (minor 20): on Windows the
-    /// media framework's, H.264 on every edition that has it and HEVC at
-    /// eight and ten bits where the system's HEVC extension is installed
-    /// and licensed; 4:2:0 alone, planes alone. Refused as not in the build
-    /// on any other system.
+    /// The system's own decoder (minor 20): on Windows the media
+    /// framework's, in software, H.264 on every edition that has it and HEVC
+    /// at eight and ten bits where the system's HEVC extension is installed
+    /// and licensed; 4:2:0 alone, planes alone. On macOS (minor 34)
+    /// VideoToolbox, through the hardware where the Mac has it and the
+    /// system's software decoder where it does not: H.264, and HEVC at eight
+    /// and ten bits and at full chroma where it decodes them; planes, handed
+    /// out where the decoder wrote them. Refused as not in the build on
+    /// Linux.
     LOWLAT_DECODER_SYSTEM = 5,
 } lowlat_decoder;
 
@@ -839,7 +862,7 @@ typedef enum lowlat_pad_report {
 } lowlat_pad_report;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// Where a report pad's reports go: which side holds the virtual device for
 /// a DualShock 4 or a DualSense a guest sends as its own reports
 /// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
@@ -909,7 +932,7 @@ typedef enum lowlat_relay_carrier {
 typedef struct lowlat_client lowlat_client;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -932,7 +955,7 @@ typedef struct lowlat_vdd lowlat_vdd;
 /// logged, and it must not call back in.
 typedef void (*lowlat_log_fn)(uint32_t level, const char *message, void *opaque);
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// The video settings that can change while a host is running.
 ///
 /// **Split out because the split is real.** Everything here is applied without
@@ -1043,7 +1066,7 @@ typedef struct lowlat_host_audio_config {
 } lowlat_host_audio_config;
 #endif
 
-#if (defined(LOWLAT_HOST) && defined(_WIN32))
+#if ((defined(LOWLAT_HOST) && !defined(__APPLE__)) && defined(_WIN32))
 /// How the guests' input reaches the system, on Windows alone (minor 32).
 ///
 /// **Every field here is live**, set and read back through its own pair of
@@ -1096,7 +1119,7 @@ typedef struct lowlat_host_input_config {
 } lowlat_host_input_config;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// How a host is configured.
 ///
 /// **There is no resolution here.** The display decides the picture's size, the
@@ -1298,7 +1321,7 @@ typedef struct lowlat_credentials {
 } lowlat_credentials;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// One connected guest.
 ///
 /// **No leading `size` field, and it is the one structure that cannot have
@@ -2221,8 +2244,9 @@ typedef struct lowlat_frame {
 /// finished reading a picture.
 ///
 /// **None is the only kind in this version**: a picture of the planes kind
-/// was copied, and one of the handle kind was finished on the device before
-/// the acquire returned, so either is reusable once released -- once the
+/// was copied, or on macOS is the decoder's own buffer, which nothing writes
+/// while it is held; one of the handle kind was finished on the device
+/// before the acquire returned. Either is reusable once released -- once the
 /// application's own device has finished reading it, for a picture of
 /// textures. The shape is fixed so a kind that needs one adds a kind rather
 /// than a call.
@@ -2378,7 +2402,7 @@ lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_,
 /// defines.
 lowlat_status lowlat_set_log_level(uint32_t level) LOWLAT_NOEXCEPT;
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// A configuration filled with what a host would choose for itself.
 ///
 /// **Zero is not a configuration.** Every enumerated field here is validated
@@ -2800,7 +2824,7 @@ lowlat_status lowlat_host_get_audio_config(lowlat_host *hl,
                                            lowlat_host_audio_config *out) LOWLAT_NOEXCEPT;
 #endif
 
-#if (defined(LOWLAT_HOST) && defined(_WIN32))
+#if ((defined(LOWLAT_HOST) && !defined(__APPLE__)) && defined(_WIN32))
 /// Change how the guests' input reaches the system, while a host runs
 /// (minor 32; Windows alone; `virtual_pads` from minor 33).
 ///
@@ -2841,7 +2865,7 @@ lowlat_status lowlat_host_get_input_config(lowlat_host *hl,
                                            lowlat_host_input_config *out) LOWLAT_NOEXCEPT;
 #endif
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// What the host is running at now.
 ///
 /// **Read back rather than remembered.** What a stream is doing is the
@@ -3060,8 +3084,9 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// codec library's own search; on Windows, slots 0 to 7 are the open
 /// decoder on the GPUs the system lists, high-performance first, 8 to 15
 /// the GPU maker's own decoder on the same GPUs, 16 the software decoder
-/// and 17 the system's own (minor 20). The same slot means the same thing
-/// on every machine and every
+/// and 17 the system's own (minor 20); on macOS, slot 0 is the system's own
+/// decoder and 1 the software decoder (minor 34). The same slot means the
+/// same thing on every machine and every
 /// call, and nothing is remembered between calls: each call opens its one
 /// slot the way creation opens it and closes it again,
 /// so a loop from zero until false costs every slot once -- a few
@@ -3639,7 +3664,9 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device, and is reusable once released. For a picture
+/// the host or on the device -- or on macOS lies in the decoder's own
+/// buffer, which nothing writes while it is held -- and is reusable once
+/// released. For a picture
 /// of textures a released slot may be written by the next picture at once,
 /// so null says the application's device has finished reading it -- as a
 /// renderer that waits on its swap chain's latency after each present has.

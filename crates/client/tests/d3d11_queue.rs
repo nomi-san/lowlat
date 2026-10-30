@@ -251,9 +251,11 @@ fn frame(picture: &Picture, published: &Published) -> Frame {
         full_range: picture.full_range,
         arrived: None,
         pitch: 0,
+        uv_pitch: 0,
         uv_offset: 0,
         v_offset: 0,
         handle: None,
+        lent: None,
     }
 }
 

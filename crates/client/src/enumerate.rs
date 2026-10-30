@@ -28,6 +28,9 @@ mod sys;
 #[cfg(windows)]
 #[path = "enumerate/windows.rs"]
 mod sys;
+#[cfg(target_os = "macos")]
+#[path = "enumerate/macos.rs"]
+mod sys;
 
 pub use sys::{OPEN_SLOTS, SLOTS, VENDOR_SLOTS, probe};
 
@@ -36,7 +39,10 @@ const RUNTIME: &str = "the runtime library is not on the machine";
 /// Render nodes are Linux's.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_NODE: &str = "no such render node, or it did not open";
+/// Devices are Linux's and Windows's.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const NO_DEVICE: &str = "no such device";
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const NO_CONTEXT: &str = "the device did not open";
 const PROFILE: &str = "decodes none of the profiles a stream could use";
 const NO_PAIR: &str = "no codec library pair found";

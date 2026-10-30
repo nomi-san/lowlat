@@ -33,7 +33,8 @@ miniz_oxide.workspace = true
 # dropped. Already in the graph beneath the credentials crate.
 zeroize = "1"
 
-# The tests run where the client builds, with the host's crates beside it.
+# The tests run where the client builds; the hermetic session's beside the
+# host's crates, where a host runs.
 [target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
 # The hermetic session's other end: the host crate's own framing and
 # negotiation, driven under the simulator against this client.
@@ -41,6 +42,8 @@ lowlat-host.workspace = true
 # The host's own expansion of input into device events, so what the client
 # sends is checked as the host would inject it.
 lowlat-inject.workspace = true
+
+[dev-dependencies]
 lowlat-sim.workspace = true
 # A gateway on loopback, so a handle's mapping is checked without the real one.
 lowlat-portmap = { workspace = true, features = ["fake"] }

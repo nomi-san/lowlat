@@ -4,7 +4,7 @@
 //! The port is read off the attempt's host candidates, so the machine needs a
 //! private address to offer one.
 
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::net::UdpSocket;
 use std::num::NonZeroU16;

@@ -129,7 +129,7 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
     let node = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
-        // The system's own decoder is Windows' media framework.
+        // The system's own decoder is Windows' and macOS's; Linux has none.
         (_, Backend::System) => Err(Error::Decoder(DecoderStage::Unsupported)),
         // Only the vendor backend exports a handle, so asking for one
         // settles the choice on it: on the card behind the node named, or

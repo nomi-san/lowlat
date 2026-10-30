@@ -41,6 +41,9 @@ pub(crate) mod sys;
 #[cfg(windows)]
 #[path = "seam/windows.rs"]
 pub(crate) mod sys;
+#[cfg(target_os = "macos")]
+#[path = "seam/macos.rs"]
+pub(crate) mod sys;
 
 pub use sys::Opened;
 

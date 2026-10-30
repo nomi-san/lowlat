@@ -5,10 +5,8 @@
 //! the client half are features, so a build can carry one without the other
 //! and the header says which through the same names.
 
-// Neither half builds on macOS yet: the host's never runs there, and the
-// client's stands on the network shell's platform module, which macOS does not
-// have yet (docs/impl-plan-macos.md). The library builds empty there till then.
-#![cfg(any(target_os = "linux", windows))]
+// On macOS the library carries the client half alone: no host runs there.
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 pub mod abi;
 

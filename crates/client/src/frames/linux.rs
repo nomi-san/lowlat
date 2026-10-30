@@ -217,6 +217,7 @@ impl Filling<'_> {
         let mut guard = self.frames.device.0.lock().ok()?;
         let slot = guard.slot_for(self.index, layout)?;
         self.pitch = layout.pitch;
+        self.uv_pitch = layout.uv_pitch;
         self.uv_offset = layout.uv_offset;
         self.v_offset = layout.v_offset;
         self.handle = Some(Handle {
@@ -230,13 +231,13 @@ impl Filling<'_> {
             y: base,
             y_pitch: layout.pitch,
             uv: at(layout.uv_offset),
-            uv_pitch: layout.pitch,
-            v: if format.full_chroma() {
+            uv_pitch: layout.uv_pitch,
+            v: if format.planar_chroma() {
                 at(layout.v_offset)
             } else {
                 0
             },
-            v_pitch: layout.pitch,
+            v_pitch: layout.uv_pitch,
         })
     }
 }

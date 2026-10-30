@@ -430,6 +430,7 @@ impl Filling<'_> {
         }
         let s = slot.as_ref()?;
         self.pitch = 0;
+        self.uv_pitch = 0;
         self.uv_offset = 0;
         self.v_offset = 0;
         self.handle = Some(Handle {

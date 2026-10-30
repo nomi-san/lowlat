@@ -32,8 +32,11 @@ use super::shared::*;
 /// replaced: the system's video decoding interface and the GPU maker's own
 /// decoder on that GPU or the first that decodes, the high-performance GPU
 /// first, then software -- the codec library, then the system's own
-/// decoder. A machine without any is refused at creation with the stage
-/// named, exactly as a host without an encoder is.
+/// decoder. On macOS (minor 34) the device names nothing but the codec
+/// library's directory: the system's own decoder, then the codec library;
+/// neither the open kind nor the vendor's exists there. A machine without
+/// any is refused at creation with the stage named, exactly as a host
+/// without an encoder is.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_decoder {
@@ -49,14 +52,20 @@ pub enum lowlat_decoder {
     /// otherwise is refused with [`LOWLAT_ERR_NO_DECODER_LICENCE`]. Looked
     /// for in the environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`),
     /// in the directory `lowlat_client_create_info.device` names when it
-    /// names one, beside the running executable, then the linker's own way;
-    /// the highest major of 4 through 9 that opens wins. Planes only.
+    /// names one, beside the running executable, then the linker's own way
+    /// -- on macOS the package managers' library directories by full path
+    /// instead, the architecture's own first (minor 34); the highest major
+    /// of 4 through 9 that opens wins. Planes only.
     LOWLAT_DECODER_SOFTWARE = 4,
-    /// The system's own decoder, in software (minor 20): on Windows the
-    /// media framework's, H.264 on every edition that has it and HEVC at
-    /// eight and ten bits where the system's HEVC extension is installed
-    /// and licensed; 4:2:0 alone, planes alone. Refused as not in the build
-    /// on any other system.
+    /// The system's own decoder (minor 20): on Windows the media
+    /// framework's, in software, H.264 on every edition that has it and HEVC
+    /// at eight and ten bits where the system's HEVC extension is installed
+    /// and licensed; 4:2:0 alone, planes alone. On macOS (minor 34)
+    /// VideoToolbox, through the hardware where the Mac has it and the
+    /// system's software decoder where it does not: H.264, and HEVC at eight
+    /// and ten bits and at full chroma where it decodes them; planes, handed
+    /// out where the decoder wrote them. Refused as not in the build on
+    /// Linux.
     LOWLAT_DECODER_SYSTEM = 5,
 }
 
@@ -250,8 +259,9 @@ const DECODER_INFO_MINOR_12: usize = core::mem::offset_of!(lowlat_decoder_info, 
 /// codec library's own search; on Windows, slots 0 to 7 are the open
 /// decoder on the GPUs the system lists, high-performance first, 8 to 15
 /// the GPU maker's own decoder on the same GPUs, 16 the software decoder
-/// and 17 the system's own (minor 20). The same slot means the same thing
-/// on every machine and every
+/// and 17 the system's own (minor 20); on macOS, slot 0 is the system's own
+/// decoder and 1 the software decoder (minor 34). The same slot means the
+/// same thing on every machine and every
 /// call, and nothing is remembered between calls: each call opens its one
 /// slot the way creation opens it and closes it again,
 /// so a loop from zero until false costs every slot once -- a few
@@ -874,6 +884,14 @@ pub const LOWLAT_FORMAT_YUV444: u32 = 3;
 /// Ten bits in sixteen-bit samples, the value in the high bits; the same
 /// three planes.
 pub const LOWLAT_FORMAT_YUV444_16: u32 = 4;
+/// Eight bits, full chroma in two planes: a luma plane and an interleaved
+/// chroma plane, both of the picture's size, the chroma's rows twice the
+/// luma's samples (minor 34). What the system's decoder on macOS hands out
+/// at full chroma.
+pub const LOWLAT_FORMAT_NV24: u32 = 5;
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same two
+/// planes (minor 34).
+pub const LOWLAT_FORMAT_P410: u32 = 6;
 
 /// A decoded picture, lent to the application.
 ///
@@ -954,8 +972,9 @@ const FRAME_MINOR_14: usize = core::mem::offset_of!(lowlat_frame, full_range);
 /// finished reading a picture.
 ///
 /// **None is the only kind in this version**: a picture of the planes kind
-/// was copied, and one of the handle kind was finished on the device before
-/// the acquire returned, so either is reusable once released -- once the
+/// was copied, or on macOS is the decoder's own buffer, which nothing writes
+/// while it is held; one of the handle kind was finished on the device
+/// before the acquire returned. Either is reusable once released -- once the
 /// application's own device has finished reading it, for a picture of
 /// textures. The shape is fixed so a kind that needs one adds a kind rather
 /// than a call.
@@ -2557,7 +2576,8 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     .map_or(0, |stamp| held.seam.arrived_us(stamp))
             };
             let pitch = u32::try_from(taken.pitch).unwrap_or(u32::MAX);
-            let full_chroma = taken.frame.format.full_chroma();
+            let uv_pitch = u32::try_from(taken.uv_pitch).unwrap_or(u32::MAX);
+            let three_planes = taken.frame.format.planar_chroma();
             let HandleFields {
                 kind: handle_kind,
                 fd,
@@ -2576,13 +2596,13 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     },
                     lowlat_plane {
                         data: core::ptr::null(),
-                        pitch,
+                        pitch: uv_pitch,
                         offset: taken.frame.uv_offset as u64,
                     },
                     lowlat_plane {
                         data: core::ptr::null(),
-                        pitch: if full_chroma { pitch } else { 0 },
-                        offset: if full_chroma {
+                        pitch: if three_planes { uv_pitch } else { 0 },
+                        offset: if three_planes {
                             taken.frame.v_offset as u64
                         } else {
                             0
@@ -2597,12 +2617,12 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     },
                     lowlat_plane {
                         data: taken.uv,
-                        pitch,
+                        pitch: uv_pitch,
                         offset: 0,
                     },
                     lowlat_plane {
                         data: taken.v,
-                        pitch: if taken.v.is_null() { 0 } else { pitch },
+                        pitch: if taken.v.is_null() { 0 } else { uv_pitch },
                         offset: 0,
                     },
                 ],
@@ -2705,6 +2725,15 @@ fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleField
     }
 }
 
+/// No picture leaves as a handle on macOS.
+#[cfg(target_os = "macos")]
+fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
+    match handle {
+        Some(never) => match never {},
+        None => HandleFields::NONE,
+    }
+}
+
 /// Give a picture back.
 ///
 /// @param[in] cl The handle.
@@ -2712,7 +2741,9 @@ fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleField
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device, and is reusable once released. For a picture
+/// the host or on the device -- or on macOS lies in the decoder's own
+/// buffer, which nothing writes while it is held -- and is reusable once
+/// released. For a picture
 /// of textures a released slot may be written by the next picture at once,
 /// so null says the application's device has finished reading it -- as a
 /// renderer that waits on its swap chain's latency after each present has.
@@ -3302,10 +3333,12 @@ mod tests {
         assert_eq!((status.mapping_refusal, status.mapping_refused_by), (0, 0));
     }
 
-    /// A reflexive server on loopback answering `limit` requests with the
-    /// source it saw moved by `shift` ports; its name.
+    /// A reflexive server at `at` answering `limit` requests with the source
+    /// it saw -- at `report` instead of its address when given one -- moved by
+    /// `shift` ports; its name.
     fn reflexive(
         at: std::net::Ipv4Addr,
+        report: Option<std::net::Ipv4Addr>,
         shift: u16,
         limit: usize,
     ) -> (String, std::thread::JoinHandle<()>) {
@@ -3323,7 +3356,8 @@ mod tests {
                 let Ok(request) = ::lowlat_core::stun::Message::parse(&buf[..len]) else {
                     continue;
                 };
-                let seen = std::net::SocketAddr::new(from.ip(), from.port().wrapping_add(shift));
+                let ip = report.map_or(from.ip(), std::net::IpAddr::V4);
+                let seen = std::net::SocketAddr::new(ip, from.port().wrapping_add(shift));
                 let mut out = [0u8; 256];
                 let len = ::lowlat_core::stun::encode_binding_response(
                     &mut out,
@@ -3336,6 +3370,30 @@ mod tests {
             }
         });
         (name, thread)
+    }
+
+    /// Where a second server listens beside one at 127.0.0.1, and the address
+    /// it reports seeing the socket at. Linux and Windows answer on all of
+    /// 127/8, and a server at 127.0.0.2 sees the socket at 127.0.0.1 as the
+    /// first does. macOS holds 127.0.0.1 alone, so there the second listens at
+    /// an address the machine holds beyond the loopback and reports 127.0.0.1,
+    /// as a translator in front of the port shows every destination one public
+    /// address.
+    fn second_server() -> (std::net::Ipv4Addr, Option<std::net::Ipv4Addr>) {
+        #[cfg(not(target_os = "macos"))]
+        let second = (std::net::Ipv4Addr::new(127, 0, 0, 2), None);
+        #[cfg(target_os = "macos")]
+        let second = (
+            ::lowlat_net::host_addresses(true)
+                .into_iter()
+                .find_map(|ip| match ip {
+                    std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4),
+                    _ => None,
+                })
+                .expect("a second server needs an address beyond the loopback"),
+            Some(std::net::Ipv4Addr::LOCALHOST),
+        );
+        second
     }
 
     fn probe_of(names: &[&str], timeout_ms: u32) -> lowlat_nat_probe {
@@ -3408,7 +3466,7 @@ mod tests {
             LOWLAT_ERR_INVALID_ARGUMENT,
             "a server with no IPv4 address was taken"
         );
-        let (silent, _never) = reflexive(std::net::Ipv4Addr::LOCALHOST, 0, 0);
+        let (silent, _never) = reflexive(std::net::Ipv4Addr::LOCALHOST, None, 0, 0);
         let mut sized = probe_of(&[&silent], 30_000);
         sized.size -= 1;
         assert_eq!(probe(handle, &sized), LOWLAT_ERR_INVALID_ARGUMENT);
@@ -3432,8 +3490,9 @@ mod tests {
             unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
             LOWLAT_OK
         );
-        let (a, first) = reflexive(std::net::Ipv4Addr::LOCALHOST, 5, 1);
-        let (b, second) = reflexive(std::net::Ipv4Addr::new(127, 0, 0, 2), 5, 1);
+        let (a, first) = reflexive(std::net::Ipv4Addr::LOCALHOST, None, 5, 1);
+        let other = second_server();
+        let (b, second) = reflexive(other.0, other.1, 5, 1);
         assert_eq!(probe(handle, &probe_of(&[&a, &b], 0)), LOWLAT_OK);
         let end = std::time::Instant::now() + Duration::from_secs(5);
         let after = loop {
@@ -4563,7 +4622,14 @@ mod tests {
                 clippy::absurd_extreme_comparisons,
                 reason = "a table with no open-stack slot compares against zero"
             )]
-            let expected = if count < ::lowlat_client::enumerate::OPEN_SLOTS {
+            let expected = if cfg!(target_os = "macos") {
+                // The system's own decoder, then the software one.
+                if count == 0 {
+                    lowlat_decoder::LOWLAT_DECODER_SYSTEM
+                } else {
+                    lowlat_decoder::LOWLAT_DECODER_SOFTWARE
+                }
+            } else if count < ::lowlat_client::enumerate::OPEN_SLOTS {
                 lowlat_decoder::LOWLAT_DECODER_OPEN
             } else if count < slots - if cfg!(windows) { 2 } else { 1 } {
                 lowlat_decoder::LOWLAT_DECODER_VENDOR
@@ -4590,7 +4656,13 @@ mod tests {
                         &["NVDEC"]
                     }
                 }
-                x if x == lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32 => &["MF"],
+                x if x == lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32 => {
+                    if cfg!(windows) {
+                        &["MF"]
+                    } else {
+                        &["VideoToolbox"]
+                    }
+                }
                 _ => &["libavcodec"],
             };
             let label = name.to_str().expect("a label in ASCII");
@@ -4661,7 +4733,7 @@ mod tests {
 
     /// The host's own admission, one guest and no stream: the peer the
     /// session tests here connect to on loopback.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     fn a_host() -> ::lowlat_host::admission::Admission {
         use ::lowlat_host::admission::{self, Admission};
         Admission::new(admission::Config {
@@ -4680,7 +4752,7 @@ mod tests {
     }
 
     /// Attempt `id` on the handle: the credentials for its offer.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     fn an_offer(handle: *mut lowlat_client, id: &core::ffi::CStr) -> lowlat_credentials {
         let mut ours: lowlat_credentials = unsafe { core::mem::zeroed() };
         ours.size = core::mem::size_of::<lowlat_credentials>() as u32;
@@ -4702,7 +4774,7 @@ mod tests {
     /// A session through the boundary against the host's own admission on
     /// loopback, the exchange relayed by hand as a signaling service would:
     /// the handle with its session up, and the host holding the other end.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     fn a_session() -> (*mut lowlat_client, ::lowlat_host::admission::Admission) {
         let mut host = a_host();
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
@@ -4717,7 +4789,7 @@ mod tests {
     }
 
     /// Attempt `id`, offered with `ours`, through to a session with `host`.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     fn connect(
         handle: *mut lowlat_client,
         host: &mut ::lowlat_host::admission::Admission,
@@ -4839,7 +4911,7 @@ mod tests {
     /// attempt, and a new attempt is refused as one already started until the
     /// departure is over, then taken. The departure is timed as well, because
     /// a call answered after it had ended would show nothing.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     #[test]
     fn a_call_made_while_the_session_leaves_is_answered_at_once() {
         use ::lowlat_host::admission::{Event as HostEvent, Outcome as HostOutcome};
@@ -4924,7 +4996,7 @@ mod tests {
     /// acquire after a reconnect comes back at once and a render loop paced
     /// by the wait spins. There is no decoder, so no picture ever comes and
     /// every acquire here runs to its timeout.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     #[test]
     fn a_second_session_on_the_handle_waits_for_its_pictures() {
         use std::time::Instant;
@@ -4971,7 +5043,7 @@ mod tests {
     /// attempt's name, and the status and the figures describe the new
     /// attempt -- connecting rather than over, nothing counted -- until its
     /// own session says otherwise.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", not(target_os = "macos")))]
     #[test]
     fn a_new_attempt_starts_from_nothing_the_last_session_left() {
         use std::time::Instant;

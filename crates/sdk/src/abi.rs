@@ -16,9 +16,11 @@ pub mod shared;
 #[cfg(any(feature = "host", feature = "client"))]
 pub use shared::*;
 
-#[cfg(feature = "host")]
+// No host runs on macOS, so a build there carries the client half alone
+// whatever its features say.
+#[cfg(all(feature = "host", not(target_os = "macos")))]
 pub mod host;
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", not(target_os = "macos")))]
 pub use host::*;
 
 #[cfg(feature = "client")]
@@ -184,7 +186,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 33;
+pub const LOWLAT_ABI_MINOR: u32 = 34;
 
 /// Major and minor, packed.
 ///
@@ -198,7 +200,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 }
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
-/// A library built for Windows carries the client half alone.
+/// A library built for macOS carries the client half alone.
 pub const LOWLAT_FEATURE_HOST: u32 = 1;
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
 pub const LOWLAT_FEATURE_CLIENT: u32 = 2;
@@ -226,7 +228,7 @@ pub const LOWLAT_FEATURE_VDD: u32 = 8;
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_features() -> u32 {
     let mut bits = 0;
-    if cfg!(feature = "host") {
+    if cfg!(all(feature = "host", not(target_os = "macos"))) {
         bits |= LOWLAT_FEATURE_HOST;
     }
     if cfg!(feature = "client") {
@@ -557,7 +559,10 @@ mod tests {
     #[test]
     fn the_features_are_the_builds_own() {
         let bits = lowlat_features();
-        assert_eq!(bits & LOWLAT_FEATURE_HOST != 0, cfg!(feature = "host"));
+        assert_eq!(
+            bits & LOWLAT_FEATURE_HOST != 0,
+            cfg!(all(feature = "host", not(target_os = "macos")))
+        );
         assert_eq!(bits & LOWLAT_FEATURE_CLIENT != 0, cfg!(feature = "client"));
         assert_eq!(
             bits & LOWLAT_FEATURE_GPL_LIBAVCODEC != 0,

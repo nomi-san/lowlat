@@ -29,6 +29,9 @@ mod sys;
 #[cfg(windows)]
 #[path = "decode/windows.rs"]
 mod sys;
+#[cfg(target_os = "macos")]
+#[path = "decode/macos.rs"]
+mod sys;
 
 /// How long the thread waits for a unit before looking at the stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -45,9 +48,15 @@ trait Backend: Decoder {
     fn exports(&self) -> bool {
         false
     }
-    /// The next picture into the slot `filling` lends, as a handle, with the
-    /// value its gate opens at (zero for a picture finished when it is
-    /// taken). Only a backend that exports is asked.
+    /// Whether its pictures stay in its own buffers, which the slot holds
+    /// for the lease: taken into the slot whatever kind is asked for.
+    fn lends(&self) -> bool {
+        false
+    }
+    /// The next picture into the slot `filling` lends -- as a handle, or as
+    /// the decoder's own buffer for one that lends -- with the value its gate
+    /// opens at (zero for a picture finished when it is taken). Only a
+    /// backend that exports or lends is asked.
     fn take_to_slot(
         &mut self,
         filling: &mut Filling<'_>,
@@ -330,9 +339,11 @@ fn take_pictures<D: Backend>(
         let mut filling = frames.fill()?;
         // By handle when the session asks for one and the decoder can hand
         // one out; as planes otherwise, whatever was asked. Decided per
-        // picture, so the kind switches at the next one with no keyframe.
-        let by_handle = frames.kind() == FrameKind::Handle && feed.decoder().exports();
-        let taken = if by_handle {
+        // picture, so the kind switches at the next one with no keyframe. A
+        // decoder that lends hands its own buffer to the slot either way.
+        let by_slot = feed.decoder().lends()
+            || (frames.kind() == FrameKind::Handle && feed.decoder().exports());
+        let taken = if by_slot {
             feed.decoder_mut()
                 .take_to_slot(&mut filling, (width, height, format))
         } else {
@@ -385,9 +396,11 @@ fn take_pictures<D: Backend>(
                     arrived: Some(stamp),
                     // The queue's, written at publish.
                     pitch: 0,
+                    uv_pitch: 0,
                     uv_offset: 0,
                     v_offset: 0,
                     handle: None,
+                    lent: None,
                 };
                 filling.publish_gated(frame, gate);
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);

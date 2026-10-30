@@ -68,12 +68,16 @@ static void *symbol(library lib, const char *name)
     return dlsym(lib, name);
 }
 
+/* Only the host half's poll reads the clock, and on macOS the header declares
+ * no host half. */
+#if defined(LOWLAT_HOST)
 static double now_ms(void)
 {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double) now.tv_sec * 1000.0 + (double) now.tv_nsec / 1000000.0;
 }
+#endif
 #endif
 
 /* The loader returns an object pointer and we need a function pointer.
@@ -102,6 +106,7 @@ static void logged(uint32_t level, const char *message, void *opaque)
     *(unsigned *) opaque += 1;
 }
 
+#if defined(LOWLAT_HOST)
 /* The host half: every entry point driven once, the way an application does,
  * and its deliberate panic contained. */
 static int host_half(library lib, const char *(*status_string)(lowlat_status))
@@ -656,6 +661,7 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
     printf("harness: host half, a panic returned %d (%s)\n", (int) contained, described);
     return 0;
 }
+#endif
 
 /* The client half: a handle, an attempt minted through the boundary, and the
  * whole of it torn down without a session. The credentials come out as usable
@@ -922,12 +928,14 @@ int main(int argc, char **argv)
                 (unsigned) features());
         return 1;
     }
+#if defined(LOWLAT_HOST)
     if ((halves & LOWLAT_FEATURE_HOST) != 0) {
         int failed = host_half(lib, status_string);
         if (failed != 0) {
             return failed;
         }
     }
+#endif
     if ((halves & LOWLAT_FEATURE_CLIENT) != 0) {
         int failed = client_half(lib, status_string);
         if (failed != 0) {
