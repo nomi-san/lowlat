@@ -5,8 +5,7 @@
 // The chords are Ctrl+Shift and a letter, never sent: the release that
 // follows one is sent and names a key the host never saw down, which it
 // drops. Off macOS a bare GUI key is the desktop's unless the keyboard is
-// grabbed; on macOS Command is sent as the GUI key, and Caps Lock as a press
-// and a release each time the lock changes.
+// grabbed; on macOS Command is sent as the GUI key.
 
 #pragma once
 

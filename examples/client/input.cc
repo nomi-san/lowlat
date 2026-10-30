@@ -141,18 +141,6 @@ void key(const MTY_KeyEvent *k)
 	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
 		return;
 	uint16_t usage = KEY_USAGE[k->key];
-#if defined(__APPLE__)
-	// The window reports Caps Lock as the lock's state, down as it goes on
-	// and up as it goes off; a host that toggles on a press would toggle
-	// once every two. Each change goes as a press and a release, the mask
-	// carrying the new state.
-	if (k->key == MTY_KEY_CAPS) {
-		uint32_t mods = mods_of(k->mod);
-		sent(lowlat_client_send_key(session::client(), usage, mods, true), &_keys);
-		sent(lowlat_client_send_key(session::client(), usage, mods, false), &_keys);
-		return;
-	}
-#endif
 	lowlat_status s = lowlat_client_send_key(session::client(), usage, mods_of(k->mod), k->pressed);
 	sent(s, &_keys);
 	if (!k->pressed)
