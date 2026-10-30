@@ -328,32 +328,6 @@
 /// No decoder can serve the stream; the ended event said so.
 #define LOWLAT_DECODER_FAILED 2
 
-/// Eight bits: a luma plane and an interleaved chroma plane at half the
-/// rows.
-#define LOWLAT_FORMAT_NV12 1
-
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same
-/// two planes.
-#define LOWLAT_FORMAT_P010 2
-
-/// Eight bits, full chroma: three planes of the picture's size, luma then
-/// the two chroma planes.
-#define LOWLAT_FORMAT_YUV444 3
-
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same
-/// three planes.
-#define LOWLAT_FORMAT_YUV444_16 4
-
-/// Eight bits, full chroma in two planes: a luma plane and an interleaved
-/// chroma plane, both of the picture's size, the chroma's rows twice the
-/// luma's samples (minor 34). What the system's decoder on macOS hands out
-/// at full chroma.
-#define LOWLAT_FORMAT_NV24 5
-
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same two
-/// planes (minor 34).
-#define LOWLAT_FORMAT_P410 6
-
 /// No attempt has been made.
 #define LOWLAT_CLIENT_IDLE 0
 
@@ -793,6 +767,34 @@ typedef enum lowlat_frame_kind {
     /// planes while it runs (every frame says its kind).
     LOWLAT_FRAME_HANDLE = 1,
 } lowlat_frame_kind;
+
+/// How a picture's planes are laid out.
+///
+/// **Named by an enumeration and carried as an integer**, as
+/// `lowlat_frame_kind` is: `lowlat_frame`'s `format` and
+/// `lowlat_client_status`'s `stream_format` hold one of these.
+typedef enum lowlat_format {
+    /// Eight bits: a luma plane and an interleaved chroma plane at half the
+    /// rows.
+    LOWLAT_FORMAT_NV12 = 1,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// two planes.
+    LOWLAT_FORMAT_P010 = 2,
+    /// Eight bits, full chroma: three planes of the picture's size, luma then
+    /// the two chroma planes.
+    LOWLAT_FORMAT_YUV444 = 3,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// three planes.
+    LOWLAT_FORMAT_YUV444_16 = 4,
+    /// Eight bits, full chroma in two planes: a luma plane and an interleaved
+    /// chroma plane, both of the picture's size, the chroma's rows twice the
+    /// luma's samples (minor 34). What the system's decoder on macOS hands
+    /// out at full chroma.
+    LOWLAT_FORMAT_NV24 = 5,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// two planes (minor 34).
+    LOWLAT_FORMAT_P410 = 6,
+} lowlat_format;
 
 /// What a frame of the handle kind carries.
 typedef enum lowlat_handle_kind {
@@ -2006,7 +2008,7 @@ typedef struct lowlat_client_status {
     /// mask; zero before an attempt.
     uint32_t asked_flags;
     uint32_t declared_flags;
-    /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
+    /// The stream as the decoder built it: one of `lowlat_format`, or
     /// zero before a build. With `codec`, what the host turned out to send.
     uint32_t stream_format;
     /// This client's number on the host's roster, which is how it finds
@@ -2180,7 +2182,7 @@ typedef struct lowlat_frame {
     uint32_t size;
     /// One of `lowlat_frame_kind`: what the picture is handed out as.
     uint32_t kind;
-    /// One of `LOWLAT_FORMAT_*`.
+    /// One of `lowlat_format`.
     uint32_t format;
     uint32_t width;
     uint32_t height;

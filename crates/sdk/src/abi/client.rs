@@ -521,7 +521,7 @@ pub struct lowlat_client_status {
     /// mask; zero before an attempt.
     pub asked_flags: u32,
     pub declared_flags: u32,
-    /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
+    /// The stream as the decoder built it: one of [`lowlat_format`], or
     /// zero before a build. With `codec`, what the host turned out to send.
     pub stream_format: u32,
     /// This client's number on the host's roster, which is how it finds
@@ -872,26 +872,35 @@ pub struct lowlat_plane {
     pub offset: u64,
 }
 
-/// Eight bits: a luma plane and an interleaved chroma plane at half the
-/// rows.
-pub const LOWLAT_FORMAT_NV12: u32 = 1;
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same
-/// two planes.
-pub const LOWLAT_FORMAT_P010: u32 = 2;
-/// Eight bits, full chroma: three planes of the picture's size, luma then
-/// the two chroma planes.
-pub const LOWLAT_FORMAT_YUV444: u32 = 3;
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same
-/// three planes.
-pub const LOWLAT_FORMAT_YUV444_16: u32 = 4;
-/// Eight bits, full chroma in two planes: a luma plane and an interleaved
-/// chroma plane, both of the picture's size, the chroma's rows twice the
-/// luma's samples (minor 34). What the system's decoder on macOS hands out
-/// at full chroma.
-pub const LOWLAT_FORMAT_NV24: u32 = 5;
-/// Ten bits in sixteen-bit samples, the value in the high bits; the same two
-/// planes (minor 34).
-pub const LOWLAT_FORMAT_P410: u32 = 6;
+/// How a picture's planes are laid out.
+///
+/// **Named by an enumeration and carried as an integer**, as
+/// [`lowlat_frame_kind`] is: [`lowlat_frame`]'s `format` and
+/// [`lowlat_client_status`]'s `stream_format` hold one of these.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_format {
+    /// Eight bits: a luma plane and an interleaved chroma plane at half the
+    /// rows.
+    LOWLAT_FORMAT_NV12 = 1,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// two planes.
+    LOWLAT_FORMAT_P010 = 2,
+    /// Eight bits, full chroma: three planes of the picture's size, luma then
+    /// the two chroma planes.
+    LOWLAT_FORMAT_YUV444 = 3,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// three planes.
+    LOWLAT_FORMAT_YUV444_16 = 4,
+    /// Eight bits, full chroma in two planes: a luma plane and an interleaved
+    /// chroma plane, both of the picture's size, the chroma's rows twice the
+    /// luma's samples (minor 34). What the system's decoder on macOS hands
+    /// out at full chroma.
+    LOWLAT_FORMAT_NV24 = 5,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// two planes (minor 34).
+    LOWLAT_FORMAT_P410 = 6,
+}
 
 /// A decoded picture, lent to the application.
 ///
@@ -904,7 +913,7 @@ pub struct lowlat_frame {
     pub size: u32,
     /// One of [`lowlat_frame_kind`]: what the picture is handed out as.
     pub kind: u32,
-    /// One of `LOWLAT_FORMAT_*`.
+    /// One of [`lowlat_format`].
     pub format: u32,
     pub width: u32,
     pub height: u32,
@@ -3523,6 +3532,37 @@ mod tests {
             (lowlat_mapping::LOWLAT_MAPPING_NONE as u32, false, false)
         );
         unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// **Every layout the client hands out is the header's name for it**:
+    /// the codes are made in the client crate and only named here, so each
+    /// is checked against its name, and a layout added there without a name
+    /// here does not compile.
+    #[test]
+    fn every_layout_handed_out_has_the_headers_name() {
+        use ::lowlat_decode::Format;
+        for format in [
+            Format::Nv12,
+            Format::P010,
+            Format::Yuv444,
+            Format::Yuv444_16,
+            Format::Nv24,
+            Format::P410,
+        ] {
+            let named = match format {
+                Format::Nv12 => lowlat_format::LOWLAT_FORMAT_NV12,
+                Format::P010 => lowlat_format::LOWLAT_FORMAT_P010,
+                Format::Yuv444 => lowlat_format::LOWLAT_FORMAT_YUV444,
+                Format::Yuv444_16 => lowlat_format::LOWLAT_FORMAT_YUV444_16,
+                Format::Nv24 => lowlat_format::LOWLAT_FORMAT_NV24,
+                Format::P410 => lowlat_format::LOWLAT_FORMAT_P410,
+            };
+            assert_eq!(
+                ::lowlat_client::decode::format_code(format),
+                named as u32,
+                "{format:?}"
+            );
+        }
     }
 
     /// **Each structure is the size its fields come to**, written out rather

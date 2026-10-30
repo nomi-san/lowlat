@@ -1099,6 +1099,7 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
+ "lowlat-decode",
  "lowlat-encode",
  "lowlat-host",
  "lowlat-inject",
