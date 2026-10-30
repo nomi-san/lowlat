@@ -109,6 +109,8 @@ static void app_apply_relative(MTY_App *ctx)
 	app_show_cursor(ctx, !rel);
 }
 
+static void app_invalidate_cursor_rects(MTY_App *ctx);
+
 static void app_apply_cursor(MTY_App *ctx)
 {
 	NSCursor *arrow = [NSCursor arrowCursor];
@@ -125,6 +127,7 @@ static void app_apply_cursor(MTY_App *ctx)
 
 	ctx->cursor = new;
 	[ctx->cursor set];
+	app_invalidate_cursor_rects(ctx);
 }
 
 static void app_apply_keyboard_state(MTY_App *ctx)
@@ -421,6 +424,25 @@ static struct window *app_get_window_by_number(MTY_App *ctx, NSInteger number)
 			return ctx->windows[x];
 
 	return NULL;
+}
+
+static void app_invalidate_cursor_rects(MTY_App *ctx)
+{
+	// Each view lays the app's cursor over itself again (view_resetCursorRects)
+	for (MTY_Window x = 0; x < MTY_WINDOW_MAX; x++)
+		if (ctx->windows[x])
+			[ctx->windows[x]->nsw invalidateCursorRectsForView:ctx->windows[x]->nsw.contentView];
+}
+
+static CGFloat app_cursor_scale(MTY_App *ctx)
+{
+	// The backing scale of the screen the first window is on, whose pixels a
+	// cursor sized from that window's drawable is drawn in
+	for (MTY_Window x = 0; x < MTY_WINDOW_MAX; x++)
+		if (ctx->windows[x])
+			return mty_screen_scale(ctx->windows[x]->nsw.screen);
+
+	return mty_screen_scale([NSScreen mainScreen]);
 }
 
 static MTY_Window app_find_open_window(MTY_App *ctx, MTY_Window req)
@@ -1264,6 +1286,18 @@ static BOOL view_acceptsFirstMouse(NSView *self, SEL _cmd, NSEvent *event)
 	return YES;
 }
 
+static void view_resetCursorRects(NSView *self, SEL _cmd)
+{
+	struct window *ctx = OBJC_CTX();
+	if (!ctx || !ctx->app->cursor)
+		return;
+
+	// AppKit sets a cursor of its own wherever a view lays none -- over the
+	// resize edges, the title bar -- and keeps it until something else is set;
+	// with the app's cursor over the whole view, AppKit sets that one instead
+	[self addCursorRect:self.bounds cursor:ctx->app->cursor];
+}
+
 static void view_updateTrackingAreas(NSView *self, SEL _cmd)
 {
 	struct window *ctx = OBJC_CTX();
@@ -1292,6 +1326,7 @@ static Class view_class(void)
 
 	// Overrides
 	OBJC_OVERRIDE(cls, @selector(acceptsFirstMouse:), view_acceptsFirstMouse);
+	OBJC_OVERRIDE(cls, @selector(resetCursorRects), view_resetCursorRects);
 	OBJC_OVERRIDE(cls, @selector(updateTrackingAreas), view_updateTrackingAreas);
 
 	objc_registerClassPair(cls);
@@ -1409,6 +1444,12 @@ static void app_pump_events(MTY_App *ctx, NSDate *until)
 
 			if (!event)
 				break;
+
+			// AppKit's own dispatch never hands a window a key's release while Command
+			// is held, so a key let go under Command would stay down: the window is
+			// handed it here
+			if (event.type == NSEventTypeKeyUp && (event.modifierFlags & NSEventModifierFlagCommand))
+				[event.window sendEvent:event];
 
 			[NSApp sendEvent:event];
 		}
@@ -1597,7 +1638,7 @@ void MTY_AppSetRelativeMouse(MTY_App *ctx, bool relative)
 	app_apply_relative(ctx);
 }
 
-static void app_set_cursor(MTY_App *ctx, NSImage *image, uint32_t hotX, uint32_t hotY)
+static void app_set_cursor(MTY_App *ctx, NSImage *image, CGFloat hotX, CGFloat hotY)
 {
 	ctx->custom_cursor = image ? [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(hotX, hotY)] : nil;
 
@@ -1620,6 +1661,7 @@ void MTY_AppSetRGBACursor(MTY_App *ctx, const void *image, uint32_t width, uint3
 	uint32_t hotX, uint32_t hotY)
 {
 	NSImage *nsi = nil;
+	CGFloat scale = 1.0f;
 
 	if (image) {
 		uint8_t *plane = (uint8_t *) image;
@@ -1631,11 +1673,21 @@ void MTY_AppSetRGBACursor(MTY_App *ctx, const void *image, uint32_t width, uint3
 
 		if (rep) {
 			nsi = [[NSImage alloc] initWithCGImage:rep.CGImage size:NSZeroSize];
-			app_descale_nsimage(nsi, ctx->cursor_width, ctx->cursor_height);
+
+			if (ctx->cursor_width == 0 || ctx->cursor_height == 0) {
+				// Unsized, the image's pixels are the screen's: its size in points is its
+				// pixels over the backing scale, and the hotspot, in points as well, is
+				// divided alike
+				scale = app_cursor_scale(ctx);
+				nsi.size = NSMakeSize(width / scale, height / scale);
+
+			} else {
+				app_descale_nsimage(nsi, ctx->cursor_width, ctx->cursor_height);
+			}
 		}
 	}
 
-	app_set_cursor(ctx, nsi, hotX, hotY);
+	app_set_cursor(ctx, nsi, hotX / scale, hotY / scale);
 }
 
 void MTY_AppSetPNGCursor(MTY_App *ctx, const void *image, size_t size, uint32_t hotX, uint32_t hotY)

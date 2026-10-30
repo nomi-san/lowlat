@@ -107,6 +107,16 @@ refuses every hardware frame (`mty_metal_valid_hardware_frame` returns false).
 | `src/matoya.h` | `MTY_HardwareFrame.surface`: the picture's `IOSurfaceRef`, which with the frame's `id` is what the Metal renderer takes as the image when `MTY_RenderDesc.hardware` is set |
 | `src/unix/apple/gfx/metal.m` | up to eight imports kept, each a frame's planes made from its surface by plane index at the size the format and the chroma give them, found by `id` at the same size and format, the oldest replaced by a new one; an import's textures are drawn from for the draw alone and never become the staging textures an upload writes into; `mty_metal_valid_hardware_frame` answers yes for a frame with a surface, and for none |
 
+The macOS window keeps the application's cursor and hears every key let go. Upstream's gives
+an RGBA cursor a size in points equal to its pixel count, so a 2x screen draws it at twice its
+size, and its hotspot in those same points lands at twice its offset; it only `set`s its cursor,
+which AppKit replaces with its own arrow on almost any move and keeps; and AppKit's dispatch
+never hands a window the release of a key let go while Command is held, so that key stayed down.
+
+| file | change |
+|---|---|
+| `src/unix/apple/macosx/app.m` | an RGBA cursor given no size (`MTY_AppSetCursorSize`) is sized at its pixels over the backing scale of the first window's screen, its hotspot divided alike; the content view lays the app's cursor over its bounds as a cursor rect, invalidated at every change of cursor, so AppKit sets that one wherever it would set its own; the event pump hands a key release that carries the Command flag to its window as well, before AppKit's dispatch drops it |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 
