@@ -739,8 +739,9 @@ and the one just acquired, so a swap has no gap -- and a third acquire is refuse
 `LOWLAT_ERR_TOO_MANY_HELD` rather than silently dropping one. `release_frame` may carry a
 fence the application's device signals when it has finished reading, which is what lets a
 decoder write into shared memory without waiting on the application's CPU; a null fence
-means reusable now, and **it is the only fence**: a picture of the planes kind was copied,
-and one of the handle kind was copied or finished on the device before the acquire returned
+means reusable now, and **it is the only fence**: a picture of the planes kind was copied --
+or on macOS lies in the decoder's own buffer, which nothing writes while it is held -- and one
+of the handle kind was copied or finished on the device before the acquire returned
 (§4 of [10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other
 kind is refused. The rule 5 of §1 holds: no callback fires from inside the library.
 
@@ -799,11 +800,31 @@ carries its own backing, so a picture still held stays valid on the device it wa
 Linux's vendor decoder takes both calls the same way, between planes and its descriptor and
 between its devices.
 
-**Planned for macOS** (*2026-10-29*, M1; [10 §4.3](10-client.md)): `lowlat_handle_kind` gains a
-kind for one IOSurface per picture, appended to `lowlat_frame` with the surface itself, which
-the library retains for the lease; the planes are described by the frame's existing fields and
-imported by plane index. A minor when built. The library is `liblowlat.dylib` and
-`liblowlat.a`, each universal over arm64 and x86_64, and carries the client half alone.
+**On macOS since M1.2** (*2026-10-30*, minor 34; [10 §4.3, §5.3](10-client.md)): the library
+is `liblowlat.dylib`, whose install name is `@rpath/liblowlat.dylib`, so an application finds
+it through its own run path, and `liblowlat.a`, asked for by name as on Windows; each is built
+for one architecture until M1.5 joins them. It carries the client half alone: no host is built
+there whatever the build asks for, `lowlat_features` reports none, and the header declares none
+where `__APPLE__` is defined, a `LOWLAT_HOST` the application defines declaring nothing more.
+`LOWLAT_DECODER_SYSTEM` is the system's decoder, VideoToolbox -- the hardware where the Mac has
+it and the system's software decoder where it does not -- for H.264 and HEVC, ten-bit and full
+chroma where it answers that it decodes them, planes only. `LOWLAT_DECODER_AUTO` settles on it,
+and on the codec library's pair after it; the open and vendor kinds, and the handle kind until
+M1.3, are refused with `LOWLAT_ERR_DECODER_UNSUPPORTED`. `lowlat_enum_decoders` has two slots
+there: 0 the system's decoder, labelled `VideoToolbox [Apple]`, its words what the hardware
+decodes and what only the software decoder does, and 1 the software pair, found as
+`libavcodec.N.dylib` through the variable, the application's directory, then the package
+managers' directories by full path. **Full chroma comes as two planes**, appended at this
+minor: `LOWLAT_FORMAT_NV24` (5), eight bits, a luma plane and a plane of both chroma components
+interleaved, each at the picture's size, and `LOWLAT_FORMAT_P410` (6), the same with ten bits in
+the high bits of sixteen; `planes[2]` is null for both. **A picture of the planes kind lies in
+the decoder's own buffer**, each plane at its own pitch, which the decoder aligns per plane: the
+chroma's pitch is its plane's own, not derived from the luma's.
+
+**Planned for macOS** (*2026-10-29*, M1.3; [10 §4.3](10-client.md)): `lowlat_handle_kind` gains
+a kind for one IOSurface per picture, appended to `lowlat_frame` with the surface itself, which
+the library retains for the lease; the planes are described by the frame's existing fields, the
+two-plane layouts above included, and imported by plane index. A minor when built.
 
 **On Windows since W1.2** (*2026-09-27*): the library is `lowlat.dll` with its import library
 `lowlat.dll.lib`, the C runtime linked in statically, and it carries the client half alone --
@@ -1300,7 +1321,8 @@ SDK's decoder list has. **The table is fixed and a call probes one slot** (*corr
 2026-09-22*, minor 12): on Linux, slots 0 to 7 are the open interface on render nodes
 `renderD128` to `renderD135`, 8 to 15 the vendor's on its devices by ordinal, 16 the
 software decoder from the codec library's own search (an LGPL build; a GPL one too with
-`LOWLAT_FEATURE_GPL_LIBAVCODEC`, §3b). The same slot means the same thing on every machine
+`LOWLAT_FEATURE_GPL_LIBAVCODEC`, §3b); Windows' and macOS's tables are §3b's. The same slot
+means the same thing on every machine
 and every call, and nothing is remembered between calls: a call opens its one slot exactly
 the way creation opens it and closes it again, so a loop costs every slot once -- measured
 on the development machine, 5 ms for the open interface on a node, microseconds for a node
@@ -1312,7 +1334,8 @@ re-probed the whole machine. A slot with nothing usable behind it still answers 
 there, a device past the last, a codec library the build does not load -- and a loop skips
 it. An available row is a decoder creation will open, named by the two values creation
 takes; its `name` is a label for a menu, the interface and the card's maker (`VA-API
-[Intel]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `libavcodec [LGPL]`), and `driver`
+[Intel]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `VideoToolbox [Apple]`,
+`libavcodec [LGPL]`), and `driver`
 (minor 13) the driver's own words -- its banner and version, the device's product name, the
 library's version and licence, or why the slot is unavailable. For a startup or a settings
 screen, not a per-frame call.
@@ -1615,6 +1638,14 @@ gives `virtual_pads` one of the input half's reserved bytes, moving nothing.
 bytes from this minor. Nothing moves, and a caller built against an earlier minor leaves it
 zero, off. `lowlat_host_send_pad_report` takes output reports alone: a feature write is refused
 with `LOWLAT_ERR_INVALID_ARGUMENT`.
+
+**Minor 34** (2026-10-30) is full chroma in two planes ([§3b](#3b-client)):
+`LOWLAT_FORMAT_NV24` (5) and `LOWLAT_FORMAT_P410` (6), which the system's decoder on macOS
+hands out and no decoder on Linux or Windows does. Nothing moves. The library for macOS starts
+at this minor, so no application built against an earlier one meets them. **The layouts are
+named by an enumeration from this minor**, `lowlat_format`, as the frame kinds are, with the
+values the names had, still carried in `uint32_t` fields: a test of the preprocessor for one of
+the names no longer finds it, so an application asks the minor instead.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

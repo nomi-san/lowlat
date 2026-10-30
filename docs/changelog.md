@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-30 - M1.2: the system's decoder and the demo on macOS
+
+### Added
+- **The client half on macOS** ([06 §3b](06-api.md), minor 34): `liblowlat.dylib`, named
+  `@rpath/liblowlat.dylib` so an application finds it through its own run path, and
+  `liblowlat.a`; no host is built or declared there.
+- **VideoToolbox** ([10 §5.3](10-client.md)): H.264 and HEVC, ten-bit and full chroma where the
+  system decodes them, through the hardware, and the system's software decoder where the
+  hardware refuses; its frameworks opened by path at run time; pictures in the library's
+  reader's order, handed out where the decoder wrote them.
+- **Full chroma in two planes**, `LOWLAT_FORMAT_NV24` and `LOWLAT_FORMAT_P410`, and the layouts
+  named by an enumeration, `lowlat_format`, with the values they had.
+- **The codec library's pair on macOS**, found in the package managers' directories by full path.
+- **The demo on macOS**, through Metal, for either architecture; the SDL script builds one static
+  library holding both.
+### Changed
+- **A first picture the hardware refuses goes to the software decoder** on macOS
+  ([10 §5.3](10-client.md)), as a session the hardware cannot make does at the probe; the status
+  is logged. Met on a virtual Mac running x86_64 under the translation layer.
+- **Each plane of a picture carries its own pitch** in the frame queue ([10 §4.3](10-client.md)).
+- **The toolkit's upload takes each plane's own address and row length**, so the demo draws a
+  picture's planes as the library hands them out on every platform.
+### Measured
+- Every reference clip bit for bit through the hardware on both architectures; the system's
+  software decoder gets the multi-slice H.264 clip wrong and is the only one that decodes MBAFF.
+- A process's first decoding session costs 50 to 78 ms and a new one about 4; the frameworks are
+  found in 21 ms on arm64 and 119 under the translation layer.
+- Five-minute sessions on the development Mac: every layout from this project's host at 54 to 60
+  pictures a second, the decode 1.9 to 2.2 ms at the median and 32 to 38 percent of a core; an
+  established host's H.264 and HEVC at 20 percent; the x86_64 demo under the translation layer
+  at 37.
+
 ## 2026-10-29 - M1.1: the network shell on macOS
 
 ### Changed

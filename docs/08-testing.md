@@ -362,9 +362,21 @@ The loopback holds 127.0.0.1 alone there, so a test that reaches a wildcard-boun
 another 127/8 address, as Linux allows, takes a macOS arm. It also delivers after the send has
 returned (*found 2026-10-29*, M1.1): a test that takes a burst in one call counts it queued
 first, by the system's own count of queued datagrams, and one that only needs the burst whole
-gathers it across waits, as on Windows. *Planned with the system's decoder*:
-the reference clips decode on the development Mac, and on the runner as far as the runner's
-system decodes them.
+gathers it across waits, as on Windows. *Since M1.2* the system's decoder decodes every
+reference clip bit for bit and in order, through whichever decoder the system chooses for it
+and again through its software decoder alone -- the multi-slice H.264 clip skipped there and
+said, since that decoder gets it wrong -- each clip saying which served it, and the status where
+the hardware refused its first picture and the software decoder took the stream, so the runner
+decodes as far as its own system does; the move to the software decoder is checked by making a
+first picture fail, the per-unit path allocates nothing, and the hand-over from the framework's
+thread is model-checked. A second reflexive server listens at an address
+the machine holds beyond the loopback and reports the one the first sees, as a translator would.
+The library's gates run there in their macOS arms: the header compiled by the system's compiler
+as C and as C++, alone and with the host hidden, declaring no host either way; the shared
+library's exports, every one prefixed once the underscore the system's linker adds is taken
+off; its install name, `@rpath/liblowlat.dylib`, which an application's link records; the
+client half panicking on purpose through it and coming back with a status; and the static
+library linked into a C program with nothing named beside it.
 
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 

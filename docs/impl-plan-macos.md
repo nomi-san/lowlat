@@ -161,11 +161,46 @@ and D14's amendment [00](00-overview.md).
   15.7), so it is not set. The mark arrives on the wire as set whatever the class, and the
   replies carried none, so the gain is the Mac's own leg. Idle, all four were the same. Another
   station's upload contending for the air is still to measure.
-- [ ] **M1.2 the seam, VideoToolbox and the demo**: the seam and the library's client half on the
+- [x] **M1.2 the seam, VideoToolbox and the demo**: the seam and the library's client half on the
   shell, with the client's macOS modules (moved here from M0.3); VideoToolbox decoding H.264 and HEVC, ten-bit and full chroma where the system answers
   that it decodes them, its pictures leased as planes without a copy; the pair from the package
   managers' directories; the demo built for macOS. Checked by the reference clips and by sessions
-  against both hosts.
+  against both hosts. *Built 2026-10-30.* Decided at its interview: full chroma as two layouts
+  appended, NV24 and P410, which are what the decoder writes, so it leaves without a copy
+  (minor 34, the layouts named by an enumeration at the same minor); the system's frameworks
+  opened by path at run time rather than linked, so the static library still links with nothing
+  named; and the sessions below. **The decoder gives pictures back in the order it decoded
+  them**, whatever the session is asked, and on its own thread even from a call that waits: the
+  order is the library's reader's, as for every hardware backend, and a picture crosses through
+  a hand-over that orders itself, model-checked. **A picture is the decoder's own buffer**, lent
+  to the queue's slot and locked for reading until the ring lends that slot again, each plane at
+  its own pitch, since the decoder aligns each on its own. A session outlives a rebuild that
+  brings the same parameter sets back: 50 to 78 ms for a process's first, about 4 after it. The
+  library carries the client half alone, the header declaring no host there, and is named
+  `@rpath/liblowlat.dylib`, which the linker had left as the path it was built at. The demo draws
+  through Metal; the toolkit's upload takes each plane's own address and row length on every
+  platform; the makefile builds the demo for either architecture, and the SDL script one static
+  library holding both. Checked by every reference clip bit for bit and in order through the
+  hardware and through the system's software decoder (the multi-slice H.264 clip, which that
+  decoder gets wrong, skipped there), the library's gates in their macOS arms and the client's
+  tests with macOS arms, each new check failing when broken: 979 tests on each architecture,
+  Windows and Linux as before. CI's x86_64 job, a virtual Mac running the tests under the
+  translation layer, found a session the system chose failing every first picture where a
+  software-only one decoded every clip: such a refusal now hands the stream to the software
+  decoder, as the probe does, its status logged. **Sessions**, five minutes each by planes on
+  the development Mac's 60 Hz panel over the LAN, every one ending as asked, the loss at most
+  0.03 percent: from
+  this project's host on the development machine, a 1080p picture in every layout the decoder
+  hands out -- H.264 and HEVC (NV12), Main10 (P010), 4:4:4 (NV24) and 4:4:4 ten-bit (P410) -- at
+  54 to 60 pictures a second, the decode 1.9 to 2.2 ms at the median and at most 4.1 at the
+  99th percentile of the per-second figures, arrival to presented 17 to 29 ms at the median, 32
+  to 38 percent of a core and a footprint of 88 to 98 MB (137 once, at full chroma); from an
+  established host across the Internet (13 to 15 ms away), H.264 and HEVC at the 15 pictures a
+  second it sent, the decode 2.7 and 2.0 ms, arrival to presented 10 ms, 20 percent of a core;
+  and HEVC from this project's host by an x86_64 demo under the translation layer, video alone,
+  at 59 pictures a second, the decode 1.1 ms, 37 percent of a core and 106 MB. The host's cursor
+  drawn at twice its size on the Mac's 2x display, and the system's arrow coming back on some
+  moves, are M1.4's.
 - [ ] **M1.3 the handle**: one IOSurface per picture, appended to the frame ([06 §3b](06-api.md));
   the demo's renderer importing it by plane. Measured against planes.
 - [ ] **M1.4 the desk**: the toolkit's two key faults mended; relative mode; the host's cursors;
@@ -189,6 +224,9 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-30: M1.2 built: VideoToolbox, the client half and the demo on macOS; full chroma in
+  two planes and the layouts named by an enumeration (minor 34); the library found through the
+  application's run path; eight sessions against both hosts.
 - 2026-10-29: M1.1 built: the network shell's macOS module and the port mapper's, the mapper
   moved here at the step's interview; one send a datagram, by measurement.
 - 2026-10-29: M0.1 to M0.4 built, M0's gate passed and M0 closed; M0.3 corrected at the build,

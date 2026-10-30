@@ -1064,7 +1064,15 @@ injection, daemon and driver crates build empty there.
   quarter of its length, up to 1 and 5 ms, unless it is a kernel-queue timer marked critical
   ([02 §2](02-io-shell.md)).
 - **The system's interfaces are generated bindings** over the macOS SDK's headers, checked into
-  the driver crate, as Windows's are.
+  the driver crate, as Windows's are. *As built (M1.2)*, the video frameworks' functions are
+  generated as the types of pointers to them rather than as declarations, and the frameworks
+  are opened by path at run time, every function and constant the library uses found once at
+  the first decoder probe -- measured at 21 ms on arm64 and 119 under the translation layer,
+  nearly all of it Core Foundation's own start. Nothing is linked by name, so an application
+  that never decodes loads none of them and the static library links with nothing named.
+- **A shared library is named by the path it was built at** unless its link says otherwise, and
+  an application's link records that name, so the library's says `@rpath/liblowlat.dylib`
+  ([06 §3b](06-api.md)).
 - **The socket's platform facts are [02 §5](02-io-shell.md)'s**: every v4-level option refused on a
   dual-stack socket, the mark and the source per datagram on IPv4, and a port held for IPv4 by
   another socket not stopping a dual-stack bind.

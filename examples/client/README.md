@@ -55,6 +55,21 @@ is named on, else on the system's first adapter, or as planes through 12 or
 Vulkan with `LOWLAT_GFX=d3d12` or `vk`. The first run asks the firewall to let
 the demo receive, since the session arrives over UDP.
 
+On macOS the same `make` builds the demo, the toolkit and the library for the
+machine's architecture, or for the one `ARCH` names: `make ARCH=x86_64` on
+Apple Silicon builds a demo that runs under the system's translation layer.
+The toolkit builds its objects in its own tree, so one architecture's archive
+is there at a time, and its build needs Xcode's command-line tools. SDL comes
+from `scripts/build-sdl3.sh`, which builds one static library holding both
+architectures (`PKG_CONFIG_PATH=<prefix>/lib/pkgconfig make`); the toolkit and
+SDL link through the system's frameworks, and the C++ runtime is the
+system's. The library is `liblowlat.dylib`, found through the demo's run path,
+and carries the client half alone. Pictures are drawn through Metal, as
+planes: the system's decoder hands out none by handle yet. There the toolkit's
+websocket reader is the system's, which hands an empty message out as one and
+ends at the close with an error rather than as done; `make check` holds it to
+the rest, and the signaling skips the one and takes the other as the close.
+
 The token is what `lowlat-login` produces; the peer id is the host's, as its
 service prints it. `LOWLAT_DEVICE` names a render node for the decoder, or on
 Windows a GPU's identity as the table prints it, `luid:HIGH:LOW` (the first

@@ -478,7 +478,7 @@ texture again at every draw, and drawing on one GPU while presenting to another'
 the process with every draw, its processor time climbing with it -- the figure was the climb's
 average. It opens a picture's textures once now.)
 
-### §4.3 On macOS (*planned 2026-10-29*, M1)
+### §4.3 On macOS (*planned 2026-10-29*, M1; *the planes built 2026-10-30*, M1.2)
 
 **A picture of the handle kind is one IOSurface**, retained by the library for the lease.
 VideoToolbox decodes into surface-backed buffers from the library's own pool, and the frame
@@ -490,8 +490,20 @@ the system imports a surface: Metal by plane, OpenGL, Vulkan through its Metal l
 
 **The lease ends when the application's own GPU work on the picture has completed**, not when
 that work was submitted: the surface goes back to the pool at the release and the decoder writes
-into it again. A picture of the planes kind is the same buffer's planes, locked for the lease and
-handed out where they lie, without a copy.
+into it again.
+
+**A picture of the planes kind is the decoder's own buffer** (*built 2026-10-30*, M1.2), lent to
+the queue's slot being filled, locked for reading from its publish until the ring lends that
+slot to the decoder again, and handed out where its planes lie, without a copy. The ring lends a
+slot only once nothing holds it, so a held picture's buffer is never written; a released one
+waits in its slot, at most the queue's four, and goes back to the decoder's pool when its slot
+takes the next. **Each plane carries its own pitch**: the decoder aligns each plane's rows on
+their own, so at full chroma the chroma's pitch is twice the luma's only where the width allows
+it -- 2560 and 5120 bytes at 1440p, but 320 against 192 at 144 wide -- and the software
+decoder's chroma does not follow its luma at a whole number of rows. **Full chroma is two
+planes**, the luma and both chroma components interleaved at full size, as the decoder writes
+it ([06 §3b](06-api.md), `NV24` and `P410`). Every picture is finished when it is published, so
+nothing is gated. The codec library's pictures go into the queue's own slots, as on Linux.
 
 ## §5 The decoder, and when a client asks for a keyframe
 
@@ -1050,13 +1062,31 @@ the HEVC extension the table offers H.264 alone and an HEVC preference is masked
 every H.264 clip decodes bit for bit, and a 1440p stream at sixteen pictures a second was kept
 up with at 21 ms a picture, where the GPU's own decoders took 8.
 
-### §5.3 Backends, macOS, in order (*planned 2026-10-29*, M1)
+### §5.3 Backends, macOS, in order (*planned 2026-10-29*, M1; *built 2026-10-30*, M1.2)
 
 1. **VideoToolbox**, the system's decoder: the hardware where the Mac has it and the system's
    software decoder where it does not, for H.264 and HEVC; ten-bit and full chroma where it
    answers that it decodes them, asked at run time rather than read from the system's version,
    so a Mac declares only what it decodes (D11's preferences). No GPU vendor's own decoder exists
-   on macOS.
+   on macOS. *As built*: its frameworks are opened by path at run time, so an application that
+   never decodes loads none of them and the static library links with nothing named. What it
+   decodes is asked once, of sessions made from parameter sets the library carries at both
+   depths and both chromas, the hardware first and the software decoder where the hardware
+   refuses; the listing's words say which serves what. **A session the system chose that fails
+   its first picture is the hardware refusing too**: the status is logged, and the software
+   decoder takes the picture again and the stream from there; a stream it refuses as well is
+   refused as before. Met on a virtual Mac running an x86_64 process under the translation
+   layer, where such a session failed every first picture and a software-only one decoded every
+   clip. The output is pinned to the eight
+   two-plane layouts of both ranges, depths and chromas, so every picture comes in a layout the
+   frame names. **Pictures come back in the order they were decoded**, whatever the session is
+   asked, so their order is the library's reader's (§5.1); they come back on the framework's own
+   thread even from a call that waits, and cross to the decode thread through a hand-over that
+   orders itself. A session survives a rebuild that brings the same parameter sets back, as
+   each keyframe of a host's does: a process's first costs 50 to 78 ms, a new one about 4 after
+   it. Measured on an M2: every reference clip bit for bit on both architectures; the software
+   decoder gets the multi-slice H.264 clip wrong, 12 of its 24 pictures, and is the only one of
+   the two that decodes MBAFF.
 2. **The LGPL pair** on D14's terms, as on Linux (§5.1): nothing shipped, loaded at run time,
    only an LGPL build, and a GPL one only in a build that allows it. A Mac's own pair is a
    package manager's, and a bare name never reaches Homebrew's directory on Apple Silicon
