@@ -265,6 +265,16 @@ pub fn plane_textures(
         ],
         Format::Yuv444 => [Some((DXGI_FORMAT_R8_UNORM, width, height)); 3],
         Format::Yuv444_16 => [Some((DXGI_FORMAT_R16_UNORM, width, height)); 3],
+        Format::Nv24 => [
+            Some((DXGI_FORMAT_R8_UNORM, width, height)),
+            Some((DXGI_FORMAT_R8G8_UNORM, width, height)),
+            None,
+        ],
+        Format::P410 => [
+            Some((DXGI_FORMAT_R16_UNORM, width, height)),
+            Some((DXGI_FORMAT_R16G16_UNORM, width, height)),
+            None,
+        ],
     }
 }
 

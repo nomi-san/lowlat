@@ -61,6 +61,9 @@ mod split;
 /// The open stack's decode, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod vaapi;
+/// The system's own decoder on macOS.
+#[cfg(target_os = "macos")]
+pub mod videotoolbox;
 /// Intel's own decoder, reached on Windows alone.
 #[cfg(windows)]
 pub mod vpl;
@@ -130,19 +133,34 @@ pub enum Format {
     /// Ten bits in sixteen-bit samples, the value in the high bits; the same
     /// three planes.
     Yuv444_16,
+    /// Eight bits, full chroma in two planes: a luma plane and an interleaved
+    /// chroma plane, both of the picture's size.
+    Nv24,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// two planes.
+    P410,
 }
 
 impl Format {
     /// Bytes per sample.
     pub const fn sample(self) -> usize {
         match self {
-            Self::Nv12 | Self::Yuv444 => 1,
-            Self::P010 | Self::Yuv444_16 => 2,
+            Self::Nv12 | Self::Yuv444 | Self::Nv24 => 1,
+            Self::P010 | Self::Yuv444_16 | Self::P410 => 2,
         }
     }
 
-    /// Whether chroma is at the picture's own resolution, in two planes.
+    /// Whether chroma is at the picture's own resolution.
     pub const fn full_chroma(self) -> bool {
+        matches!(
+            self,
+            Self::Yuv444 | Self::Yuv444_16 | Self::Nv24 | Self::P410
+        )
+    }
+
+    /// Whether the chroma is two planes, one a component, rather than one
+    /// interleaved plane: the three-plane layouts.
+    pub const fn planar_chroma(self) -> bool {
         matches!(self, Self::Yuv444 | Self::Yuv444_16)
     }
 
@@ -157,12 +175,18 @@ impl Format {
 
     /// Bytes a chroma row carries for a picture `width` samples wide: two
     /// interleaved samples per pair of pixels, or one per pixel per plane,
-    /// which come to the same count.
+    /// which come to the same count; twice that interleaved at full chroma.
     pub const fn chroma_row_bytes(self, width: usize) -> usize {
-        width * self.sample()
+        let row = width * self.sample();
+        if self.full_chroma() && !self.planar_chroma() {
+            row * 2
+        } else {
+            row
+        }
     }
 
-    /// The layout for a stream's depth and chroma.
+    /// The layout for a stream's depth and chroma, as a backend that reads
+    /// the stream itself hands it out: full chroma in three planes.
     pub const fn of(ten_bit: bool, full_chroma: bool) -> Self {
         match (ten_bit, full_chroma) {
             (false, false) => Self::Nv12,
@@ -178,8 +202,8 @@ impl Format {
 /// The pitches are the caller's; a backend writes `width` samples of each
 /// of `height` luma rows and the format's chroma rows and touches nothing
 /// past them. `uv` is the interleaved chroma plane, or the first of the
-/// two chroma planes at full chroma, where `v` is the second; a two-plane
-/// layout leaves `v` empty.
+/// two chroma planes of a three-plane layout, where `v` is the second; a
+/// two-plane layout leaves `v` empty.
 #[derive(Debug)]
 pub struct Planes<'a> {
     pub y: &'a mut [u8],

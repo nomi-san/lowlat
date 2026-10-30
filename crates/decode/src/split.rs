@@ -38,8 +38,8 @@ mod code;
 /// packed plane at full chroma.
 pub(crate) const fn views(format: Format) -> [DXGI_FORMAT; 2] {
     match format {
-        Format::Nv12 => [DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UINT],
-        Format::P010 => [DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UINT],
+        Format::Nv12 | Format::Nv24 => [DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UINT],
+        Format::P010 | Format::P410 => [DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UINT],
         Format::Yuv444 => [DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_UNKNOWN],
         Format::Yuv444_16 => [DXGI_FORMAT_R10G10B10A2_UINT, DXGI_FORMAT_UNKNOWN],
     }
@@ -64,12 +64,16 @@ impl Shaders {
         })
     }
 
-    fn for_format(&self, format: Format) -> &Com<ID3D11ComputeShader> {
+    /// None for the two-plane layouts at full chroma, which no decoder here
+    /// produces and the planar pass, a thread a chroma sample over four luma
+    /// samples, does not split.
+    fn for_format(&self, format: Format) -> Option<&Com<ID3D11ComputeShader>> {
         match format {
-            Format::Nv12 => &self.planar8,
-            Format::P010 => &self.planar16,
-            Format::Yuv444 => &self.vuya,
-            Format::Yuv444_16 => &self.y410,
+            Format::Nv12 => Some(&self.planar8),
+            Format::P010 => Some(&self.planar16),
+            Format::Yuv444 => Some(&self.vuya),
+            Format::Yuv444_16 => Some(&self.y410),
+            Format::Nv24 | Format::P410 => None,
         }
     }
 }
@@ -232,9 +236,10 @@ impl Split {
         planes: [Option<&SharedTexture>; 3],
         (width, height): (u32, u32),
     ) -> Result<()> {
+        let shader = self.shaders.for_format(format).ok_or(Error::NoProfile)?;
         let uavs: [*mut ID3D11UnorderedAccessView; 3] =
             planes.map(|p| p.map_or(core::ptr::null_mut(), SharedTexture::view));
-        let wanted = if format.full_chroma() { 3 } else { 2 };
+        let wanted = if format.planar_chroma() { 3 } else { 2 };
         if uavs.iter().take(wanted).any(|u| u.is_null()) {
             return Err(Error::TooLarge);
         }
@@ -250,7 +255,7 @@ impl Split {
         // the split's bindings stand rather than falling between them.
         device
             .dispatch(
-                self.shaders.for_format(format),
+                shader,
                 &sources,
                 &uavs,
                 (cols.div_ceil(8), rows.div_ceil(8)),
@@ -344,7 +349,7 @@ pub(crate) fn copy_planes(
     // rows after the first's.
     let source = unsafe { core::slice::from_raw_parts(mapped.pData.cast::<u8>(), total) };
     match format {
-        Format::Nv12 | Format::P010 => {
+        Format::Nv12 | Format::P010 | Format::Nv24 | Format::P410 => {
             let row_bytes = width * format.sample();
             copy_rows(source, 0, pitch, out.y, out.y_pitch, row_bytes, height)?;
             copy_rows(
@@ -353,7 +358,7 @@ pub(crate) fn copy_planes(
                 pitch,
                 out.uv,
                 out.uv_pitch,
-                row_bytes,
+                format.chroma_row_bytes(width),
                 format.chroma_rows(height),
             )
         }

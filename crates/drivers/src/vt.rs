@@ -322,6 +322,16 @@ impl PixelBuffer {
         NonNull::new(held).map(|buffer| Self { buffer, vt })
     }
 
+    /// Hold `buffer` by the reference its giver took for this holder.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is null or a live buffer whose reference the caller hands
+    /// over.
+    pub unsafe fn adopt(vt: &'static Vt, buffer: CVPixelBufferRef) -> Option<Self> {
+        NonNull::new(buffer).map(|buffer| Self { buffer, vt })
+    }
+
     /// The layout, as the framework's four characters name it.
     pub fn format(&self) -> OSType {
         // SAFETY: a live buffer this holder keeps alive.

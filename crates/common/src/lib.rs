@@ -9,6 +9,7 @@ pub mod clock;
 pub mod dynlib;
 pub mod env_file;
 pub mod events;
+pub mod handoff;
 pub mod latest;
 pub mod log;
 pub mod pool;

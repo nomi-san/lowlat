@@ -435,6 +435,8 @@ pub fn format_code(format: Format) -> u32 {
         Format::P010 => 2,
         Format::Yuv444 => 3,
         Format::Yuv444_16 => 4,
+        Format::Nv24 => 5,
+        Format::P410 => 6,
     }
 }
 
