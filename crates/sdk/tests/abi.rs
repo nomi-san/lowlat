@@ -979,6 +979,33 @@ fn every_exported_symbol_carries_the_prefix() {
     );
 }
 
+/// **The shared library is found through the application's run path** on
+/// macOS: the install name an application's link records is
+/// `@rpath/liblowlat.dylib`, not the path it was built at.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_shared_library_is_found_through_the_run_path() {
+    let object = shared_object();
+    let named = Command::new("otool")
+        .arg("-D")
+        .arg(&object)
+        .output()
+        .expect("otool runs; it ships with the system's developer tools");
+    assert!(
+        named.status.success(),
+        "otool could not read {}:\n{}",
+        object.display(),
+        String::from_utf8_lossy(&named.stderr)
+    );
+    // The file's name on the first line, its install name on the second.
+    let listed = String::from_utf8_lossy(&named.stdout);
+    assert_eq!(
+        listed.lines().nth(1),
+        Some("@rpath/liblowlat.dylib"),
+        "{listed}"
+    );
+}
+
 /// **Nothing reaches the header without the prefix either**, which is the same
 /// rule as the symbol table's and a different mechanism.
 ///
