@@ -6,8 +6,10 @@ run-name: "build: ${{ inputs.name || github.ref_name }}"
 # the demo inside its tarball -- each the shared library with its header in
 # the usual lib/ and include/ layout; and on Windows the client's zip, the
 # library as a DLL with its import library and as a static one, the demo
-# inside, with its symbols beside it. All kept as artifacts. Nothing here runs
-# on a push; ci.yml is what every push gets.
+# inside, with its symbols beside it; and on macOS the client's zip, the client
+# half as one universal static library with its header, run where it was not
+# built as well. All kept as artifacts. Nothing here runs on a push; ci.yml is
+# what every push gets.
 on:
   workflow_dispatch:
     inputs:
@@ -243,3 +245,93 @@ jobs:
           name: lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}-symbols
           path: ${{ runner.temp }}/dist/lowlat-sdk-windows-x86_64-client-${{ steps.sha.outputs.short }}-symbols.zip
           if-no-files-found: error
+
+  # The client's macOS zip, made by the script a Mac runs by hand too
+  # (scripts/package-client-macos.sh), which checks the copies it zips: both
+  # architectures, no member for a system later than the client's oldest, no
+  # host entry point, and the C test program linked to the library as C and,
+  # with thin link-time optimisation, as C and as C++, and run. The x86_64
+  # slice is built across from this arm64 runner, its programs run under the
+  # system's translation layer.
+  macos:
+    name: macOS client zip
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Short commit
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: The translation layer
+        run: arch -x86_64 /usr/bin/true || sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Package
+        run: |
+          bash scripts/package-client-macos.sh "$RUNNER_TEMP/dist" \
+            lowlat-sdk-macos-universal-client-${{ steps.sha.outputs.short }}
+
+      - name: Upload the client zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlat-sdk-macos-universal-client-${{ steps.sha.outputs.short }}
+          path: ${{ runner.temp }}/dist/lowlat-sdk-macos-universal-client-${{ steps.sha.outputs.short }}.zip
+          if-no-files-found: error
+
+  # The zip where it was not built: natively on Intel, which the build runner
+  # only translates, and on the oldest macOS a runner offers. The same C test
+  # program, linked to the zip's library the same three ways for the client's
+  # oldest system with the linker's warnings as errors, and run, for the
+  # runner's own architecture.
+  macos-elsewhere:
+    name: macOS client zip on ${{ matrix.runner }}
+    needs: macos
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-14]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Short commit
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lowlat-sdk-macos-universal-client-${{ steps.sha.outputs.short }}
+          path: ${{ runner.temp }}/zip
+
+      - name: The zip's library, linked and run
+        run: |
+          name=lowlat-sdk-macos-universal-client-${{ steps.sha.outputs.short }}
+          ditto -x -k "$RUNNER_TEMP/zip/$name.zip" "$RUNNER_TEMP/unpacked"
+          sdk=$RUNNER_TEMP/unpacked/$name
+          sw_vers -productVersion
+          uname -m
+          cat "$sdk/FEATURES"
+          for way in c c-lto c++-lto; do
+            case $way in
+            c) compile="cc -std=c11" optimise="" ;;
+            c-lto) compile="cc -std=c11" optimise="-flto=thin -Wl,-dead_strip" ;;
+            c++-lto) compile="c++ -std=c++17 -x c++" optimise="-flto=thin -Wl,-dead_strip" ;;
+            esac
+            echo "== linked as $way"
+            $compile -Wall -Wextra -Werror -mmacosx-version-min=11.0 -I "$sdk/include" \
+              crates/sdk/tests/c/static.c -x none "$sdk/lib/liblowlat.a" \
+              -Wl,-fatal_warnings $optimise -o "$RUNNER_TEMP/static-$way"
+            "$RUNNER_TEMP/static-$way"
+          done
