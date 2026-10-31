@@ -14,9 +14,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   no cast and holds any value a newer library writes; in C it is the platform's enumeration,
   four bytes as the integer was. Five enumerations name the zero a status reports before a
   build. No byte moves.
-- **`lowlat_host_config_default` fills the caller's structure** ([06 §3](06-api.md)) and returns
-  a status, refusing one shorter than the configuration: by value, a newer library wrote its
-  whole structure into a return slot a caller built against an older header had sized.
+- **`lowlat_host_config_default` is `lowlat_host_default_config`, which fills the caller's
+  structure** ([06 §3](06-api.md)) and returns a status, refusing one shorter than the
+  configuration: by value, a newer library wrote its whole structure into a return slot a caller
+  built against an older header had sized. The new name makes such a caller fail to load rather
+  than call the new signature the old way.
 ### Fixed
 - **No call makes a reference of the caller's structure.** The release read a whole frame
   where a caller built against an older header passes a shorter one, and three calls that fill

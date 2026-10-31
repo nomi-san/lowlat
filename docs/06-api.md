@@ -31,7 +31,7 @@ Six rules, each of which removes a class of integration failure.
    and the enumeration the platform's, four bytes on every target this builds for. Nothing in
    the header tests a C standard's version, which MSVC leaves undefined in its default C mode.
    A structure the application writes keeps its integers even where the library fills it too
-   (`lowlat_host_config_default`), since the library reads it back; a family of bits names one
+   (`lowlat_host_default_config`), since the library reads it back; a family of bits names one
    bit an enumerator, and whatever holds them OR-ed stays an integer.
 4. **A boolean field is a `bool`.** One byte on every target this builds for, asserted at
    compile time by the header's own test, and C normalizes anything assigned to one.
@@ -323,13 +323,15 @@ it was published.
 validated rather than clamped, so a structure the caller zeroed asks for the first variant of
 each -- the most aggressive congestion level among them -- and names no codec, which is
 refused; the boundary cannot tell a zero that was meant from one that was not.
-`lowlat_host_config_default` fills the caller's structure with what a host would choose for
+`lowlat_host_default_config` fills the caller's structure with what a host would choose for
 itself, the inner `size` fields included, and is the thing to start from and overwrite. The
 caller sets `size`, as for every other structure filled here, and one shorter than the
-configuration is refused rather than written past (*amended 2026-10-31*, minor 36: it returned
-the structure by value, which a newer library wrote whole into a return slot a caller built
-against an older header had sized). **A null configuration to `lowlat_host_start` means exactly
-those defaults**, which is the one reading of a null pointer there that cannot be a mistake.
+configuration is refused rather than written past (*amended 2026-10-31*, minor 36: it was
+`lowlat_host_config_default`, which returned the structure by value, and a newer library wrote
+it whole into a return slot a caller built against an older header had sized; under its new
+name such a caller fails to load rather than calling it the old way). **A null configuration
+to `lowlat_host_start` means exactly those defaults**, which is the one reading of a null
+pointer there that cannot be a mistake.
 
 Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
 
@@ -1725,8 +1727,10 @@ the translation's state, number, mapping, source and gateway; a decoder row's de
 host's status's codec and chroma; a pad report's kind and `lowlat_host_poll_pad_report`'s type
 and kind; the log callback's level. Five zeros a status reports before a build are named:
 `LOWLAT_CODEC_NONE`, `LOWLAT_FORMAT_NONE`, `LOWLAT_AUDIO_NONE`, `LOWLAT_CHROMA_NONE` and
-`LOWLAT_NAT_SOURCE_NONE`. `lowlat_host_config_default` takes the structure to fill and returns
-a status ([§3](#3-host)). **No byte moves.** In C a typed field is its enumeration where it
+`LOWLAT_NAT_SOURCE_NONE`. `lowlat_host_config_default` is `lowlat_host_default_config`, which
+takes the structure to fill and returns a status ([§3](#3-host)): a signature changed under a
+new name, so an application built against an earlier minor fails to load rather than call it
+the old way. **No byte moves.** In C a typed field is its enumeration where it
 had been a `uint32_t`, four bytes either way; in C++ it reads into its enumeration with no
 cast, and a bare integer written into one takes a cast; in both a log callback takes
 `lowlat_log_level`. A test of the preprocessor for one of the names no longer finds it, as at
