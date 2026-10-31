@@ -2652,19 +2652,28 @@ lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_, void *opaque) LOWLAT_NO
 lowlat_status lowlat_set_log_level(uint32_t level) LOWLAT_NOEXCEPT;
 
 #if (defined(LOWLAT_HOST) && !defined(__APPLE__))
-/// A configuration filled with what a host would choose for itself.
+/// Fill a configuration with what a host would choose for itself.
 ///
 /// **Zero is not a configuration.** Every enumerated field here is validated
-/// rather than clamped, so a structure the caller zeroed is a *valid* request
-/// for the first variant of everything -- H.264, the most aggressive
-/// congestion level -- and the boundary cannot tell that apart from an
-/// application that meant it. Starting from this, and overwriting what the
+/// rather than clamped, so a structure the caller zeroed asks for the first
+/// variant of each -- the most aggressive congestion level among them -- and
+/// names no codec, which is refused; the boundary cannot tell a zero that was
+/// meant from one that was not. Starting from this, and overwriting what the
 /// application actually has an opinion about, is what keeps an unset field
 /// unset rather than accidentally set to zero.
 ///
-/// `size` is filled in, so a caller that starts here does not have to know it
-/// exists. Each field's own default is on the field.
-lowlat_host_config lowlat_host_config_default(void) LOWLAT_NOEXCEPT;
+/// **Filled through the caller's pointer, as every other structure is.** The
+/// caller sets `size`, and one shorter than this configuration is refused
+/// rather than written past; the inner structures' sizes are filled in, so a
+/// caller that starts here does not set them. Each field's own default is on
+/// the field.
+///
+/// @param[out] out One `lowlat_host_config` with `size` set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` for a null `out`
+/// or a `size` shorter than the configuration.
+///
+/// @attention `out` is null or points to one `lowlat_host_config` whose `size` is set.
+lowlat_status lowlat_host_config_default(lowlat_host_config *out) LOWLAT_NOEXCEPT;
 
 /// Create a handle.
 ///

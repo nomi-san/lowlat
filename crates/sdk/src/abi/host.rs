@@ -381,20 +381,56 @@ const HOST_CONFIG_MINOR_31: usize = core::mem::size_of::<lowlat_host_config>() +
 /// guest is sized against.
 pub const LOWLAT_GUESTS_MAX: u32 = 16;
 
-/// A configuration filled with what a host would choose for itself.
+/// Fill a configuration with what a host would choose for itself.
 ///
 /// **Zero is not a configuration.** Every enumerated field here is validated
-/// rather than clamped, so a structure the caller zeroed is a *valid* request
-/// for the first variant of everything -- H.264, the most aggressive
-/// congestion level -- and the boundary cannot tell that apart from an
-/// application that meant it. Starting from this, and overwriting what the
+/// rather than clamped, so a structure the caller zeroed asks for the first
+/// variant of each -- the most aggressive congestion level among them -- and
+/// names no codec, which is refused; the boundary cannot tell a zero that was
+/// meant from one that was not. Starting from this, and overwriting what the
 /// application actually has an opinion about, is what keeps an unset field
 /// unset rather than accidentally set to zero.
 ///
-/// `size` is filled in, so a caller that starts here does not have to know it
-/// exists. Each field's own default is on the field.
+/// **Filled through the caller's pointer, as every other structure is.** The
+/// caller sets `size`, and one shorter than this configuration is refused
+/// rather than written past; the inner structures' sizes are filled in, so a
+/// caller that starts here does not set them. Each field's own default is on
+/// the field.
+///
+/// @param[out] out One [`lowlat_host_config`] with `size` set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a null `out`
+/// or a `size` shorter than the configuration.
+///
+/// # Safety
+///
+/// `out` is null or points to one [`lowlat_host_config`] whose `size` is set.
 #[unsafe(no_mangle)]
-pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
+pub unsafe extern "C" fn lowlat_host_config_default(out: *mut lowlat_host_config) -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        if out.is_null() {
+            return LOWLAT_ERR_INVALID_ARGUMENT;
+        }
+        // Read through the pointer and written whole, as every structure
+        // filled here is.
+        // SAFETY: the caller's contract.
+        let size = unsafe { core::ptr::addr_of!((*out).size).read_unaligned() };
+        if (size as usize) < core::mem::size_of::<lowlat_host_config>() {
+            return LOWLAT_ERR_INVALID_ARGUMENT;
+        }
+        // SAFETY: `out` holds a whole configuration, as its size says.
+        unsafe {
+            out.write(lowlat_host_config {
+                size,
+                ..default_config()
+            });
+        }
+        LOWLAT_OK
+    })
+}
+
+/// What a host would choose for itself, as [`lowlat_host_config_default`]
+/// fills it.
+fn default_config() -> lowlat_host_config {
     lowlat_host_config {
         size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
         base_port: 9000,
@@ -1001,7 +1037,7 @@ pub unsafe extern "C" fn lowlat_host_start(
             // configuration that cannot be a mistake. An application with no
             // opinion should not have to build a structure to say so, and
             // building one by zeroing it asks for something else entirely.
-            let defaults = lowlat_host_config_default();
+            let defaults = default_config();
             let cfg = match cfg.as_ref() {
                 Some(cfg) => cfg,
                 None => &defaults,
@@ -3538,7 +3574,36 @@ mod start_tests {
     /// aggressive congestion level. These are what a host would choose.
     #[test]
     fn the_defaults_are_what_a_host_would_choose_and_zero_is_not_them() {
-        let cfg = lowlat_host_config_default();
+        // Filled through the caller's pointer: refused when there is none, and
+        // when the size is short, with not a byte of the structure written.
+        assert_eq!(
+            unsafe { lowlat_host_config_default(core::ptr::null_mut()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let whole = core::mem::size_of::<lowlat_host_config>();
+        let size = u32::try_from(whole).unwrap();
+        let mut cfg = core::mem::MaybeUninit::<lowlat_host_config>::uninit();
+        let bytes = cfg.as_mut_ptr().cast::<u8>();
+        unsafe {
+            bytes.write_bytes(0xa5, whole);
+            core::ptr::addr_of_mut!((*cfg.as_mut_ptr()).size).write(size - 1);
+        }
+        assert_eq!(
+            unsafe { lowlat_host_config_default(cfg.as_mut_ptr()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let after = unsafe { core::slice::from_raw_parts(bytes.add(4), whole - 4) };
+        assert!(
+            after.iter().all(|byte| *byte == 0xa5),
+            "a short structure was written"
+        );
+        unsafe { core::ptr::addr_of_mut!((*cfg.as_mut_ptr()).size).write(size) };
+        assert_eq!(
+            unsafe { lowlat_host_config_default(cfg.as_mut_ptr()) },
+            LOWLAT_OK
+        );
+        // SAFETY: the call wrote the whole of it.
+        let cfg = unsafe { cfg.assume_init() };
         assert_eq!(
             cfg.cg_level,
             lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32
