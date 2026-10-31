@@ -26,6 +26,7 @@ static bool app_func(void *opaque) noexcept
 	(void) opaque;
 	session::pump();
 	double t = clocks::now_ms();
+	input::tick(t);
 	session::leave_when_due(t);
 	if (_quit.load())
 		return false;

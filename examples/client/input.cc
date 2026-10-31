@@ -8,6 +8,7 @@
 #include <bitset>
 
 #include "app.h"
+#include "clocks.h"
 #include "keys.h"
 #include "session.h"
 #include "view.h"
@@ -28,6 +29,18 @@ static std::atomic_uint _motions_total;
 // The usage codes last sent down and not yet up: a press the library took
 // sets one, any release clears it, and so does letting go of everything.
 static std::bitset<256> _held;
+#if defined(__APPLE__)
+// The window reports Caps Lock as the lock's state, down as it goes on and
+// up as it goes off, so a host that toggles on a press alone would toggle
+// once every two. Each change goes as a tap instead, both halves carrying the
+// new state, the release this much later: a host that taps itself to the
+// state reads its own before acting on the release, which sent back to back
+// it had not yet changed, and tapped again.
+static constexpr double CAPS_RELEASE_MS = 100.0;
+// When the tap's release is owed, 0 for none, and the state it carries.
+static double _caps_release_at;
+static uint32_t _caps_mods;
+#endif
 
 // The toolkit's modifier bits, in the wire's numbering.
 static uint32_t mods_of(MTY_Mod m)
@@ -53,6 +66,16 @@ static void sent(lowlat_status s, uint32_t *counter)
 	if (s == LOWLAT_OK)
 		(*counter)++;
 }
+
+#if defined(__APPLE__)
+static void release_caps()
+{
+	_caps_release_at = 0;
+	uint16_t usage = KEY_USAGE[MTY_KEY_CAPS];
+	sent(lowlat_client_send_key(session::client(), usage, _caps_mods, false), &_keys);
+	_held.reset(usage);
+}
+#endif
 
 // The host's pointer mode, as the toolkit is told it. The chord can let go
 // of a captured pointer; the host's next transition takes it back.
@@ -141,6 +164,21 @@ void key(const MTY_KeyEvent *k)
 	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
 		return;
 	uint16_t usage = KEY_USAGE[k->key];
+#if defined(__APPLE__)
+	if (k->key == MTY_KEY_CAPS) {
+		// A release still owed goes first, so two quick changes stay two taps.
+		if (_caps_release_at > 0)
+			release_caps();
+		_caps_mods = mods_of(k->mod);
+		lowlat_status down = lowlat_client_send_key(session::client(), usage, _caps_mods, true);
+		sent(down, &_keys);
+		if (down == LOWLAT_OK) {
+			_held.set(usage);
+			_caps_release_at = clocks::now_ms() + CAPS_RELEASE_MS;
+		}
+		return;
+	}
+#endif
 	lowlat_status s = lowlat_client_send_key(session::client(), usage, mods_of(k->mod), k->pressed);
 	sent(s, &_keys);
 	if (!k->pressed)
@@ -172,8 +210,21 @@ void focus(bool focused)
 	if (!focused) {
 		lowlat_client_send_release_all(session::client());
 		_held.reset();
+#if defined(__APPLE__)
+		_caps_release_at = 0;
+#endif
 	}
 	apply_relative();
+}
+
+void tick(double now_ms)
+{
+#if defined(__APPLE__)
+	if (_caps_release_at > 0 && now_ms >= _caps_release_at)
+		release_caps();
+#else
+	(void) now_ms;
+#endif
 }
 
 void host_relative(const lowlat_relative_event *r)
@@ -190,6 +241,9 @@ void host_relative(const lowlat_relative_event *r)
 void forget_session()
 {
 	_held.reset();
+#if defined(__APPLE__)
+	_caps_release_at = 0;
+#endif
 	if (_relative) {
 		_relative = false;
 		apply_relative();

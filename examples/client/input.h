@@ -22,6 +22,9 @@ void scroll(const MTY_ScrollEvent *s);
 void motion(const MTY_MotionEvent *m);
 // Nothing stays held on a host whose window is no longer in front.
 void focus(bool focused);
+// What is owed at a time: on macOS the release of a Caps Lock tap. Each pass
+// of the app loop, with the clock's now.
+void tick(double now_ms);
 
 // The host took the pointer, or gave it back.
 void host_relative(const lowlat_relative_event *r);
