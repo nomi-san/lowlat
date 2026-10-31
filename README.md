@@ -144,7 +144,7 @@ same signaling over a second pipe, a data channel on the attempt socket, and
 | Windows host | in progress: the host, its display driver and the service are built and checked; a package and the gates remain ([docs/impl-plan-windows.md](docs/impl-plan-windows.md)) |
 | Linux client | the client half of the library, and the demo; what decodes on which part is [docs/09-compatibility.md](docs/09-compatibility.md) section 7a |
 | Windows client | the client half of the library, and the demo, as a zip from the build workflow; its gate passed on the development machine ([docs/impl-plan-windows.md](docs/impl-plan-windows.md) W1) |
-| macOS client | planned: the client half of the library and the demo on macOS 11 and later, arm64 and x86_64; no host on macOS ([docs/impl-plan-macos.md](docs/impl-plan-macos.md)) |
+| macOS client | the client half of the library on macOS 11 and later, arm64 and x86_64, as one universal static library in a zip from the build workflow, and the demo built from source; its gate passed on the development Mac; no host on macOS ([docs/impl-plan-macos.md](docs/impl-plan-macos.md)) |
 | Guests of a host | any platform with a stock Parsec client, or a browser; nothing to install |
 
 Capture backends and their privilege requirements are covered in

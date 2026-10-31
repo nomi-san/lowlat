@@ -1101,5 +1101,10 @@ injection, daemon and driver crates build empty there.
   display, so a client that presents while hidden draws as fast as pictures come, which cost
   the demo two to three times the processor it used shown. No thread's class is raised
   ([10 §10](10-client.md)).
+- **Game Mode reaches an application with no bundle when its policy is forced** (*measured at M1's
+  gate*, Xcode's `gamepolicyctl game-mode set on|off`): a DualSense by Bluetooth reported 125
+  times a second on against 65 off, by USB 250 either way; the decode did not move measurably,
+  and no indicator showed in the menu bar. The system engages it on its own only for an
+  application it takes for a game, by its bundle's category.
 - **Under the translation layer an x86_64 client plays sound** through SDL's Core Audio backend
   (measured, macOS 26): a sound path of an earlier client's crashed there.

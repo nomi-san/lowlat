@@ -1384,10 +1384,12 @@ application's own motion.
 the window never hears a key let go while Command is held -- the system's dispatch drops the
 release -- so the toolkit's event loop hands it to the window itself; Command goes to the host
 as the GUI key, as an established Mac client sends it, the system's own Command chords never
-reaching the window and its losing the focus releasing everything; and Caps Lock goes as the
-window reports it, down as the lock goes on and up as it goes off, the mask carrying the new
-state, which a host that follows the mask takes as one change a press (sent as a press and a
-release at once, it tapped such a host twice). A captured pointer is the system's to let go:
+reaching the window and its losing the focus releasing everything; and the window reports Caps
+Lock as the lock's state, so each change goes as a tap, the press at once and the release
+100 ms later, both with the mask carrying the new state (*M1's gate, 2026-10-31*): a host that
+toggles on a press alone took the window's form, down as the lock went on and up as it went
+off, as one change every two presses, and a press and release sent at once tapped a host that
+taps itself to the mask twice, the release arriving before its own tap had landed. A captured pointer is the system's to let go:
 it gives the pointer back when the window loses the focus and takes it again on its return.
 The host's cursor is drawn at its pixels on the screen's, which on a 2x display is half its
 size in points, its hotspot with it.

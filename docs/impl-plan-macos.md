@@ -6,6 +6,7 @@ macOS and none is planned. The platform seams (M0) come first and the client (M1
 built, the network shell and the port mapper's platform side; M1.2 is next. *Amended 2026-10-31:*
 M1.5 replanned at its interview -- the client ships as one universal static library with its
 header, unsigned, and no demo -- and built, the relay checked from the development Mac.
+*Amended 2026-10-31:* M1's gate passed; M1 is closed.
 
 ## Why the seams come first
 
@@ -318,8 +319,41 @@ against an established host and this project's host on the development machine:
   directory, with no variable set;
 - the same legs' numbers beside the other macOS clients' on the same host.
 
+*Passed 2026-10-31; M1 is closed.* Run unattended from the development Mac but for the desk, the
+legs cut to five minutes at the maintainer's word once the first four had run ten; the
+established host one across the Internet (28 ms), reached directly only with a reflexive server
+named. **Video**: this project's host in every layout it sends by planes -- H.264, HEVC, Main10,
+4:4:4 for ten minutes, 4:4:4 ten-bit for five -- and H.264 and HEVC by handle; the established
+host in every layout it sent -- H.264, HEVC, Main10 and 4:4:4 -- in both kinds; every leg leaving
+as asked, nothing lost to speak of, the decode 1.7 to 2.8 ms at the median and 3.3 at worst at
+the 99th percentile, 21 to 23 percent of a core by handle against 28 to 36 by planes, a
+footprint of 77 to 96 MB. Comparing the kinds across separate legs measures the display's phase
+more than the kind: one leg by handle reached the screen in 13.7 ms against 17.5 by planes for
+its first 160 seconds, then a full refresh later, a 60 Hz host drifting against the Mac's 60 Hz
+panel; M1.3's alternating legs are the comparison. **The desk**: the keyboard, Command's chords,
+the mouse in both modes, a DualSense by USB and by Bluetooth, the host's sound and the
+microphone's tone all working against the established host -- but Caps Lock, which that host
+toggled once every two presses, since it toggles on a press alone and the window reports the
+lock's state: the demo now sends each change as a tap, its release 100 ms behind, which it and
+this project's host each take as one change a press ([10 §8](10-client.md)). **x86_64** was
+waived at the gate, its video and input having run at M1.2 to M1.4. **Game Mode**, forced on and
+off every 30 seconds: it reaches the demo with no bundle -- a DualSense by Bluetooth reported
+125 times a second against 65 -- the decode did not move measurably, and no indicator showed in
+the menu bar. **The software pair**: refused by the default build in every leg; a build allowing
+GPL decoded H.264 and HEVC from the established host through the package manager's pair, 4.0
+and 5.0 ms at the median, with no variable set. **Beside the established Mac client** on the same
+host: the processor alike -- 26 percent of a core against 19 to 29 -- and 114 to 118 MB resident
+against 157 to 168; with both on vsync the demo a frame later on screen, with the demo's vsync
+off one to two frames sooner than the other's on, and with both off the other client sometimes
+a frame sooner. **Open**: the demo's present takes about 14 ms from taking a picture to
+returning even with vsync off, inside the toolkit's Metal present (a drawable's wait or the
+command buffer's), where the other client loses less; and the demo's vsync default.
+
 ## Change log
 
+- 2026-10-31: M1's gate passed against an established host across the Internet and this
+  project's host; Caps Lock sent as a tap; Game Mode measured; beside the other Mac client, the
+  present's wait left open. M1 closed.
 - 2026-10-31: M1.5 replanned at its interview -- the static library alone, unsigned, no demo; an
   application's link-time optimisation checked in C and C++; the relay from the development Mac
   -- and built; every macOS build for macOS 11; the gate gains Game Mode.

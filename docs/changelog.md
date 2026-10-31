@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-31 - M1: the macOS client's gate
+
+### Fixed
+- **Caps Lock from a Mac toggles a host once a press** ([10 §8](10-client.md)): the demo sends each
+  change the window reports as a tap, the release 100 ms behind the press. A host that toggles on
+  a press alone had toggled once every two.
+### Measured
+- The gate against an established host across the Internet and this project's host: every layout
+  each sent, in both kinds, the decode 1.7 to 2.8 ms at the median, 21 to 23 percent of a core by
+  handle and 28 to 36 by planes; the keyboard, the mouse in both modes, a DualSense by USB and by
+  Bluetooth, sound and the microphone; the software pair refused by default and decoding both
+  codecs where allowed.
+- Game Mode forced on reaches a client with no bundle: a Bluetooth DualSense reported 125 times a
+  second against 65; the decode did not move measurably ([07 §13](07-platforms.md)).
+- Beside the established Mac client on the same host: the processor alike and less memory; with
+  both on vsync this client a frame later on screen, with its vsync off sooner than the other's
+  on. Its present still takes about 14 ms with vsync off, inside the toolkit's Metal present: open.
+
 ## 2026-10-31 - M1.5: the client's macOS zip
 
 ### Added
