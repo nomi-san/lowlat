@@ -4,3 +4,10 @@
 # CI's Windows job names the flag again.
 [target.'cfg(windows)']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Every macOS build is for the oldest system the client supports, the C and
+# assembly crates compile as well as the Rust: unset, the compiler takes the
+# SDK's own version, and an application linking the static library for an
+# older system is warned of each member built so. A builder's own value stands.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"

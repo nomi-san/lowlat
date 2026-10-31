@@ -5,13 +5,29 @@
  * missing there is an unresolved symbol here. Only the client half, which is
  * what the library carries where it is built as a static library; its
  * deliberate panic is still held at the boundary, which is the one property a
- * different form of linking could lose.
+ * different form of linking could lose. Compiled as C++, it throws and catches
+ * exceptions of its own on either side of that panic: both go through the
+ * system's one unwinder.
  */
 
 #include "lowlat.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#ifdef __cplusplus
+#include <stdexcept>
+
+static bool thrown_and_caught()
+{
+    try {
+        throw std::runtime_error("static");
+    } catch (const std::runtime_error &) {
+        return true;
+    }
+    return false;
+}
+#endif
 
 int main(void)
 {
@@ -47,7 +63,19 @@ int main(void)
     }
     lowlat_client_end_connection(cl);
 
+#ifdef __cplusplus
+    if (!thrown_and_caught()) {
+        fprintf(stderr, "static: an exception before the panic was not caught\n");
+        return 1;
+    }
+#endif
     lowlat_status contained = lowlat_client_debug_panic(cl);
+#ifdef __cplusplus
+    if (!thrown_and_caught()) {
+        fprintf(stderr, "static: an exception after the panic was not caught\n");
+        return 1;
+    }
+#endif
     if (contained != LOWLAT_ERR_INTERNAL) {
         fprintf(stderr, "static: a deliberate client panic returned %d, not %d\n",
                 (int) contained, (int) LOWLAT_ERR_INTERNAL);
@@ -62,7 +90,8 @@ int main(void)
     }
     lowlat_client_destroy(cl);
 
-    printf("static: version %u.%u, a panic returned %d (%s)\n", version >> 16, version & 0xffff,
-           (int) contained, lowlat_status_string(contained));
+    printf("static: version %u.%u features 0x%x, a panic returned %d (%s)\n", version >> 16,
+           version & 0xffff, (unsigned) lowlat_features(), (int) contained,
+           lowlat_status_string(contained));
     return 0;
 }

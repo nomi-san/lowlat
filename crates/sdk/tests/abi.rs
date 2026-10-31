@@ -827,31 +827,62 @@ fn the_static_library_links_alone_and_holds_a_panic() {
 /// nothing named beside it: the system's frameworks are opened at run time,
 /// so nothing past the C library every program has is on the link line. It
 /// holds a panic at its boundary as the shared object does.
+///
+/// **Three ways, as applications link it**: as C, and as C and as C++ built
+/// with thin link-time optimisation and dead-stripped, as a release build of
+/// either is; compiled as C++ the program throws and catches exceptions of its
+/// own on either side of the contained panic. Each for the oldest system the
+/// client supports, the linker's warnings errors, so a member built for a
+/// later one fails here rather than in an application.
 #[cfg(target_os = "macos")]
 #[test]
 fn the_static_library_links_alone_and_holds_a_panic() {
     let library = static_library();
     let source = root().join("crates/sdk/tests/c/static.c");
     let dir = scratch("static");
-    let program = dir.join("static");
-    let mut command = Command::new("cc");
-    command
-        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
-        .arg(root().join("include"))
-        .arg(&source)
-        .arg(&library)
-        .arg("-o")
-        .arg(&program);
-    if let Err(why) = run(command) {
-        panic!("the static library does not link alone:\n{why}");
+    let ways: [(&str, &[&str], bool, &str); 3] = [
+        ("cc", &["-std=c11"], false, "C"),
+        ("cc", &["-std=c11"], true, "C with thin LTO"),
+        (
+            "c++",
+            &["-std=c++17", "-x", "c++"],
+            true,
+            "C++ with thin LTO",
+        ),
+    ];
+    for (i, (compiler, language, optimised, name)) in ways.into_iter().enumerate() {
+        let program = dir.join(format!("static-{i}"));
+        let mut command = Command::new(compiler);
+        command
+            .args(language)
+            .args([
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-mmacosx-version-min=11.0",
+                "-I",
+            ])
+            .arg(root().join("include"))
+            .arg(&source)
+            // Whatever the language was, the library is an input to the link.
+            .args(["-x", "none"])
+            .arg(&library)
+            .args(["-Wl,-fatal_warnings", "-o"])
+            .arg(&program);
+        if optimised {
+            command.args(["-flto=thin", "-Wl,-dead_strip"]);
+        }
+        if let Err(why) = run(command) {
+            panic!("the static library does not link alone as {name}:\n{why}");
+        }
+        let ran = Command::new(&program).output().expect("the program runs");
+        assert!(
+            ran.status.success(),
+            "the statically linked program failed as {name}:\n{}{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
     }
-    let ran = Command::new(&program).output().expect("the program runs");
-    assert!(
-        ran.status.success(),
-        "the statically linked program failed:\n{}{}",
-        String::from_utf8_lossy(&ran.stdout),
-        String::from_utf8_lossy(&ran.stderr)
-    );
 }
 
 /// **A library carrying the virtual displays alone links as an application
