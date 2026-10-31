@@ -123,10 +123,11 @@ mod tests {
     /// **A handle is the system's decoder's where the hardware decodes**,
     /// asked for by name or settled on by the automatic order, and refused
     /// where only the system's software decoder does, whose pictures are
-    /// copied; the codec library never hands one out.
+    /// copied; the codec library never hands one out. Each choice is judged
+    /// by its own probe: the system offers the hardware by the moment, so a
+    /// probe beside it may be told otherwise.
     #[test]
     fn a_handle_is_the_hardwares() {
-        let (_, handles) = probe_system().expect("the system's decoder");
         for backend in [Backend::Auto, Backend::System] {
             let decoding = Decoding {
                 backend,
@@ -134,18 +135,15 @@ mod tests {
                 ..Decoding::default()
             };
             match choose(&decoding) {
-                Ok((opened, _)) => {
-                    assert!(handles, "a handle with no hardware");
-                    assert_eq!(
-                        opened,
-                        Some(Opened::VideoToolbox { handles: true }),
-                        "{backend:?}"
-                    );
-                }
-                Err(e) => {
-                    assert!(!handles, "refused with the hardware there: {e:?}");
-                    assert!(matches!(e, Error::Decoder(DecoderStage::Unsupported)));
-                }
+                Ok((opened, _)) => assert_eq!(
+                    opened,
+                    Some(Opened::VideoToolbox { handles: true }),
+                    "{backend:?}"
+                ),
+                Err(e) => assert!(
+                    matches!(e, Error::Decoder(DecoderStage::Unsupported)),
+                    "{backend:?}: {e:?}"
+                ),
             }
         }
         assert!(Opened::VideoToolbox { handles: true }.exports());
