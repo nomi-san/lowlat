@@ -24,12 +24,13 @@ Six rules, each of which removes a class of integration failure.
    is whatever the application wrote, and reading one nothing defined is undefined behaviour.
    Every such field is checked at the boundary rather than converted. *Amended 2026-10-31
    (minor 36):* outward is also every structure field and out-parameter the library writes
-   with a value one of its enumerations names, each typed by it, and every enumeration is 32
-   bits wide. In C++ it declares its width (`enum lowlat_rotation : uint32_t`), so a field reads
-   into it with no cast and holds any value a newer library writes; in C its name is the 32-bit
-   integer and its enumerators name the values. The header forks on the language alone, never
-   on a C standard's version, which MSVC leaves undefined in its default C mode. A structure
-   the application writes keeps its integers even where the library fills it too
+   with a value one of its enumerations names, each typed by it. Every enumeration is one
+   `typedef enum` for both languages, its width under `LOWLAT_ENUM_BASE`: in C++ the macro
+   declares it (`: uint32_t`, or `: int32_t` for a status), so a field reads into its
+   enumeration with no cast and holds any value a newer library writes; in C the macro is empty
+   and the enumeration the platform's, four bytes on every target this builds for. Nothing in
+   the header tests a C standard's version, which MSVC leaves undefined in its default C mode.
+   A structure the application writes keeps its integers even where the library fills it too
    (`lowlat_host_config_default`), since the library reads it back; a family of bits names one
    bit an enumerator, and whatever holds them OR-ed stays an integer.
 4. **A boolean field is a `bool`.** One byte on every target this builds for, asserted at
@@ -1716,7 +1717,8 @@ the modifier bits, the mouse and pad buttons, the pad axes and state bits, a dis
 `lowlat_vdd_lifetime`, with the values they had. Two families take their names' prefixes: the
 decoder's state is `LOWLAT_DECODER_STATE_NONE_YET`, `_BUILT` and `_FAILED`, which had stood
 beside `LOWLAT_DECODER_NONE`, a decoder of none; the pad buttons are `LOWLAT_PAD_BUTTON_A` to
-`LOWLAT_PAD_BUTTON_DPAD_RIGHT`. Every enumeration is 32 bits wide, and every structure field and
+`LOWLAT_PAD_BUTTON_DPAD_RIGHT`. Every enumeration declares a 32-bit width in C++ through
+`LOWLAT_ENUM_BASE` and is the platform's enumeration in C, and every structure field and
 out-parameter the library writes is typed by its own: the frame's kind, format, rotation and
 handle kind; the client's status's state, decoder state, codecs, backend, format and mappings;
 the translation's state, number, mapping, source and gateway; a decoder row's decoder; the
@@ -1724,11 +1726,11 @@ host's status's codec and chroma; a pad report's kind and `lowlat_host_poll_pad_
 and kind; the log callback's level. Five zeros a status reports before a build are named:
 `LOWLAT_CODEC_NONE`, `LOWLAT_FORMAT_NONE`, `LOWLAT_AUDIO_NONE`, `LOWLAT_CHROMA_NONE` and
 `LOWLAT_NAT_SOURCE_NONE`. `lowlat_host_config_default` takes the structure to fill and returns
-a status ([§3](#3-host)). **No byte moves.** In C each type is the 32-bit integer it was; in C++
-a field reads into its enumeration with no cast, a bare integer written into one takes a cast,
-a log callback takes `lowlat_log_level`, and `enum lowlat_status` is the same type as
-`lowlat_status` there alone. A test of the preprocessor for one of the names no longer finds
-it, as at minor 34.
+a status ([§3](#3-host)). **No byte moves.** In C a typed field is its enumeration where it
+had been a `uint32_t`, four bytes either way; in C++ it reads into its enumeration with no
+cast, and a bare integer written into one takes a cast; in both a log callback takes
+`lowlat_log_level`. A test of the preprocessor for one of the names no longer finds it, as at
+minor 34.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
