@@ -31,7 +31,7 @@ void candidate(const char *whose, const char *address, uint16_t port, bool lan, 
 		(unsigned) port, lan ? " lan" : "", reflexive ? " reflexive" : "");
 }
 
-void library_line(uint32_t level, const char *message, void *opaque) noexcept
+void library_line(lowlat_log_level level, const char *message, void *opaque) noexcept
 {
 	(void) opaque;
 	char stamp[16];

@@ -222,8 +222,53 @@ fn generate() -> String {
     bindings.write(&mut out);
     let header = String::from_utf8(out).expect("the generated header is text");
     to_doxygen(&realign_wrapped_arguments(&use_typedef_names(
-        &merge_feature_guards(&join_field_guards(&header)),
+        &merge_feature_guards(&join_field_guards(&fork_on_the_language(&header))),
     )))
+}
+
+/// One fork for an enumeration's width, on the language alone.
+///
+/// **The generator forks it on the C standard too**, testing
+/// `__STDC_VERSION__` for C23's syntax -- a macro MSVC leaves undefined in its
+/// own default C mode. This keeps C++'s `enum lowlat_status : int32_t` and
+/// gives every C the integer, so the header tests no standard's version.
+fn fork_on_the_language(header: &str) -> String {
+    const OPEN: &str = "#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L";
+    const CLOSE: &str = "#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L";
+    const C23: &str = "#if __STDC_VERSION__ >= 202311L";
+    const C23_CLOSE: &str = "#endif // __STDC_VERSION__ >= 202311L";
+    let lines: Vec<&str> = header.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        match lines[i] {
+            OPEN => out.push("#ifdef __cplusplus"),
+            CLOSE => out.push("#endif // __cplusplus"),
+            // C23's typedef of the enumeration, `#else`, the integer's, and
+            // the close: the integer's alone stays.
+            C23 => {
+                assert!(
+                    lines.get(i + 2) == Some(&"#else") && lines.get(i + 4) == Some(&C23_CLOSE),
+                    "the width's fork changed shape at line {}",
+                    i + 1
+                );
+                out.push(lines[i + 3]);
+                i += 5;
+                continue;
+            }
+            line => out.push(line),
+        }
+        i += 1;
+    }
+    let mut forked = out.join("\n");
+    if header.ends_with('\n') {
+        forked.push('\n');
+    }
+    assert!(
+        !forked.contains("__STDC_VERSION__"),
+        "the header tests a C standard's version"
+    );
+    forked
 }
 
 /// One guard around a run of fields only one platform has, each field whole
@@ -298,7 +343,8 @@ fn merge_feature_guards(header: &str) -> String {
             if !already {
                 out.push(line);
             }
-        } else if line == "#endif" {
+        // A guard this does not touch may close with a comment after it.
+        } else if line == "#endif" || line.starts_with("#endif ") {
             let (guard, emitted) = open.pop().unwrap_or((None, true));
             match guard {
                 Some(guard) if emitted => {
@@ -345,6 +391,10 @@ fn merge_feature_guards(header: &str) -> String {
 /// every field. Both spellings name the same type in C and neither is one in
 /// C++, so the tags stay and the keyword goes wherever the typedef already
 /// says it: everywhere except the `typedef` that introduces it.
+///
+/// **An enumeration's own definition keeps it too.** One with a width opens a
+/// line of its own, `enum lowlat_status`, the width under a guard below and
+/// no `typedef` in front, since in C its name is the integer's.
 fn use_typedef_names(header: &str) -> String {
     const REDUNDANT: [&str; 3] = ["struct ", "union ", "enum "];
 
@@ -352,11 +402,15 @@ fn use_typedef_names(header: &str) -> String {
     let mut rest = header;
     'text: while !rest.is_empty() {
         for keyword in REDUNDANT {
-            if rest.starts_with(keyword)
-                && rest[keyword.len()..].starts_with("lowlat")
-                && !out.ends_with("typedef ")
-            {
-                rest = &rest[keyword.len()..];
+            let Some(name) = rest.strip_prefix(keyword) else {
+                continue;
+            };
+            // A definition: the keyword first on its line, the name all of it.
+            let defines = keyword == "enum "
+                && (out.is_empty() || out.ends_with('\n'))
+                && name.lines().next().is_some_and(|line| !line.contains(' '));
+            if name.starts_with("lowlat") && !out.ends_with("typedef ") && !defines {
+                rest = name;
                 continue 'text;
             }
         }

@@ -16,11 +16,18 @@ use lowlat_vdd_ctl::{
 use super::guard;
 use super::lowlat_status::{self, *};
 
-/// A monitor bound to the handle that plugged it: unplugged when the handle
-/// is closed or its process ends.
-pub const LOWLAT_VDD_BOUND: u32 = 0;
-/// A monitor kept until removed, owned by no handle.
-pub const LOWLAT_VDD_KEPT: u32 = 1;
+/// How long a monitor stays plugged, as [`lowlat_vdd_plug_info`]'s
+/// `lifetime` asks.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_vdd_lifetime {
+    /// A monitor bound to the handle that plugged it: unplugged when the
+    /// handle is closed or its process ends.
+    LOWLAT_VDD_BOUND = 0,
+    /// A monitor kept until removed, owned by no handle.
+    LOWLAT_VDD_KEPT = 1,
+}
+
 /// No slot asked for: the first free one.
 pub const LOWLAT_VDD_SLOT_ANY: u32 = u32::MAX;
 /// How many monitors the driver carries, each a slot from zero.
@@ -50,7 +57,7 @@ pub struct lowlat_vdd {
 pub struct lowlat_vdd_plug_info {
     /// `sizeof(lowlat_vdd_plug_info)`, set by the caller.
     pub size: u32,
-    /// [`LOWLAT_VDD_BOUND`] or [`LOWLAT_VDD_KEPT`].
+    /// One of [`lowlat_vdd_lifetime`].
     pub lifetime: u32,
     /// A kept monitor the driver plugs again whenever it starts.
     pub restore: bool,
@@ -358,8 +365,8 @@ pub unsafe extern "C" fn lowlat_vdd_plug(
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             let lifetime = match plug.lifetime {
-                LOWLAT_VDD_BOUND => Lifetime::Bound,
-                LOWLAT_VDD_KEPT => Lifetime::Kept,
+                code if code == lowlat_vdd_lifetime::LOWLAT_VDD_BOUND as u32 => Lifetime::Bound,
+                code if code == lowlat_vdd_lifetime::LOWLAT_VDD_KEPT as u32 => Lifetime::Kept,
                 _ => return LOWLAT_ERR_INVALID_ARGUMENT,
             };
             let slot = match plug.slot {

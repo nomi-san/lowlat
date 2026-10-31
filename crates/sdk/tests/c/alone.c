@@ -24,22 +24,44 @@ static_assert(sizeof(bool) == 1, "a bool is not one byte on this target");
  * than it expects, so a C translation unit that disagreed with the library
  * about a structure's size could not start a host at all. */
 
-/* **The three enumerations that are types are four bytes.** The rest only name
- * the values of fields carried as plain integers, so their width reaches
- * nothing; these three do -- one is returned by almost every call, and two are
- * structure fields, where a translation unit that sized one differently would
- * read every field after it from the wrong offset. C leaves the width to the
- * implementation and `-fshort-enums` takes it, so it is asserted here rather
- * than discovered at the first event. */
+/* **Every enumeration a call returns or a structure holds is four bytes**,
+ * whichever language reads the header: in C++ by the width it declares, in C
+ * as the 32-bit integer its name is. One sized otherwise would put every field
+ * after it at the wrong offset, so it is asserted here rather than discovered
+ * at the first event. */
 static_assert(sizeof(lowlat_status) == 4, "lowlat_status is not four bytes");
 static_assert(sizeof(lowlat_event_type) == 4, "lowlat_event_type is not four bytes");
 static_assert(sizeof(lowlat_outcome) == 4, "lowlat_outcome is not four bytes");
+static_assert(sizeof(lowlat_codec) == 4, "lowlat_codec is not four bytes");
+static_assert(sizeof(lowlat_rotation) == 4, "lowlat_rotation is not four bytes");
+static_assert(sizeof(lowlat_pad_report) == 4, "lowlat_pad_report is not four bytes");
+static_assert(sizeof(lowlat_log_level) == 4, "lowlat_log_level is not four bytes");
+#if defined(LOWLAT_CLIENT)
+static_assert(sizeof(lowlat_frame_kind) == 4, "lowlat_frame_kind is not four bytes");
+static_assert(sizeof(lowlat_format) == 4, "lowlat_format is not four bytes");
+static_assert(sizeof(lowlat_handle_kind) == 4, "lowlat_handle_kind is not four bytes");
+static_assert(sizeof(lowlat_client_state) == 4, "lowlat_client_state is not four bytes");
+static_assert(sizeof(lowlat_decoder_state) == 4, "lowlat_decoder_state is not four bytes");
+static_assert(sizeof(lowlat_decoder) == 4, "lowlat_decoder is not four bytes");
+static_assert(sizeof(lowlat_audio_codec) == 4, "lowlat_audio_codec is not four bytes");
+static_assert(sizeof(lowlat_mapping) == 4, "lowlat_mapping is not four bytes");
+static_assert(sizeof(lowlat_nat_state) == 4, "lowlat_nat_state is not four bytes");
+static_assert(sizeof(lowlat_nat_type) == 4, "lowlat_nat_type is not four bytes");
+static_assert(sizeof(lowlat_nat_mapping) == 4, "lowlat_nat_mapping is not four bytes");
+static_assert(sizeof(lowlat_nat_source) == 4, "lowlat_nat_source is not four bytes");
+#endif
+#if defined(LOWLAT_HOST)
+static_assert(sizeof(lowlat_chroma) == 4, "lowlat_chroma is not four bytes");
+#endif
 
-/* **The tag survives the typedef**, so an application may write either
- * `lowlat_status` or `enum lowlat_status` and mean the same type, and may
- * forward-declare one. Repeating a typedef is legal only when it names an
- * identical type, in C11 and in C++ alike, which is what this asks. */
+/* **In C++ the tag survives the typedef**, so an application may write either
+ * `lowlat_status` or `enum lowlat_status` and mean the same type. Repeating a
+ * typedef is legal only when it names an identical type, which is what this
+ * asks. In C the name is the integer and the tag a separate enumeration, so
+ * the two are not one type there and this is not asked. */
+#if defined(__cplusplus)
 typedef enum lowlat_status lowlat_status;
+#endif
 
 /* **The shared types are there whichever half is hidden**, and a half that is
  * hidden declares nothing: the seam's credentials and events belong to both,

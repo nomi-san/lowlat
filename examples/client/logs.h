@@ -5,6 +5,8 @@
 
 #include <stdint.h>
 
+#include "lowlat.h"
+
 namespace logs {
 
 // A line of the demo's own, stamped with the time of day. Formatted whole
@@ -19,7 +21,7 @@ void candidate(const char *whose, const char *address, uint16_t port, bool lan, 
 // Every function the library or the toolkit calls back is noexcept: nothing
 // may unwind through their frames, so a throw ends the process where it is
 // thrown -- running out of memory for the pointer's picture among them.
-void library_line(uint32_t level, const char *message, void *opaque) noexcept;
+void library_line(lowlat_log_level level, const char *message, void *opaque) noexcept;
 
 // The toolkit's own lines, which say when a draw could not be made: a
 // picture that failed to import would otherwise leave the last one on the

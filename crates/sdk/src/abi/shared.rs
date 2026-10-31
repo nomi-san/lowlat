@@ -32,7 +32,7 @@ pub const LOWLAT_ATTEMPT_MAX: usize = 128;
 pub const LOWLAT_ADDRESS_MAX: usize = 46;
 
 /// Which member of an event is the valid one.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_event_type {
     /// A local candidate, to be sent to the peer as it is found.
@@ -80,7 +80,7 @@ pub enum lowlat_event_type {
 }
 
 /// Why an attempt finished.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_outcome {
     /// Negotiated, and no path was found.
@@ -304,7 +304,7 @@ pub struct lowlat_rumble_event {
 /// with its own descriptor and identity, which the host's driver claims as
 /// the real thing. A pad reported as one product stays that product until
 /// it is unplugged.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_pad_type {
     /// A DualShock 4, either generation.
@@ -316,7 +316,7 @@ pub enum lowlat_pad_type {
 /// Which of a pad's reports travels, for `lowlat_client_send_pad_report`,
 /// [`lowlat_pad_report_event`], `lowlat_host_poll_pad_report` and
 /// `lowlat_host_send_pad_report`.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_pad_report {
     /// An input report, as the pad delivered it: what the pad is doing.
@@ -353,9 +353,8 @@ pub const LOWLAT_PAD_REPORT_MAX: u32 = 78;
 pub struct lowlat_pad_report_event {
     /// The pad as this client named it in its own reports.
     pub pad: u32,
-    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`, as an
-    /// integer for the reason [`lowlat_status`] is one.
-    pub kind: u32,
+    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+    pub kind: lowlat_pad_report,
     pub len: u32,
     pub report: *const u8,
 }
@@ -431,17 +430,19 @@ pub struct lowlat_event {
     pub body: lowlat_event_body,
 }
 
-/// The longest output identity carried across this boundary.
-///
 /// Which codec a stream is coded with: what a host is asked to encode, and
 /// what a client reports its decoder was built for.
 ///
-/// **Named by an enumeration and carried as an integer**, for the reason
-/// [`lowlat_status`] is: the application writes this field, so the value
-/// arriving is whatever it wrote.
-#[repr(C)]
+/// **This type where the library writes one, a plain integer where the
+/// application does**, for the reason [`lowlat_status`] is taken back as an
+/// integer: the value arriving is whatever the application wrote. The same
+/// holds for every enumeration here.
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_codec {
+    /// Nothing is being coded yet: what a status says before its stream
+    /// exists. Not a codec to ask for.
+    LOWLAT_CODEC_NONE = 0,
     LOWLAT_CODEC_H264 = 1,
     LOWLAT_CODEC_HEVC = 2,
 }
@@ -452,7 +453,7 @@ pub enum lowlat_codec {
 /// orientation with its stream, and the peer presents the picture turned and
 /// maps pointer coordinates against it; a client hands the same word out with
 /// every picture.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_rotation {
     LOWLAT_ROTATION_NONE = 1,
@@ -461,6 +462,8 @@ pub enum lowlat_rotation {
     LOWLAT_ROTATION_270 = 4,
 }
 
+/// The longest output identity carried across this boundary.
+///
 /// **Sized for the longest kind of identity, which is a device path.** These
 /// are not display connector names, which are short: the same bound carries
 /// the sound server's own name for a device, where a USB output's serial and
@@ -481,7 +484,7 @@ pub const LOWLAT_ICE_MAX: usize = 256;
 pub const LOWLAT_FINGERPRINT_MAX: usize = 112;
 
 /// Which pipe an attempt speaks.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_transport {
     /// Authenticated records on the attempt socket. The default.

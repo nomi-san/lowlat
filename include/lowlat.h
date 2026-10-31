@@ -53,26 +53,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 35
-
-/// The host half is in this build: every `lowlat_host_*` entry point exists.
-/// A library built for macOS carries the client half alone.
-#define LOWLAT_FEATURE_HOST 1
-
-/// The client half is in this build: every `lowlat_client_*` entry point exists.
-#define LOWLAT_FEATURE_CLIENT 2
-
-/// This build's software decoder loads a GPL build of the machine's codec
-/// library as well as an LGPL one (the `gpl-libavcodec` build feature; minor
-/// 12). A build without this bit refuses a GPL build with
-/// `LOWLAT_ERR_NO_DECODER_LICENCE`. The bit says what the build would load,
-/// not what it has: a codec library actually loaded is named with its
-/// licence by `lowlat_enum_decoders`.
-#define LOWLAT_FEATURE_GPL_LIBAVCODEC 4
-
-/// The virtual displays are in this build (minor 26): every `lowlat_vdd_*`
-/// entry point exists. Windows alone.
-#define LOWLAT_FEATURE_VDD 8
+#define LOWLAT_ABI_MINOR 36
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// How many reflexive servers a seam may be given, and how long each may be.
@@ -103,6 +84,8 @@
 /// -- and what a buffer given to `lowlat_host_poll_pad_report` must hold.
 #define LOWLAT_PAD_REPORT_MAX 78
 
+/// The longest output identity carried across this boundary.
+///
 /// **Sized for the longest kind of identity, which is a device path.** These
 /// are not display connector names, which are short: the same bound carries
 /// the sound server's own name for a device, where a USB output's serial and
@@ -165,190 +148,9 @@
 
 /// The longest relay username or password this boundary carries.
 #define LOWLAT_RELAY_CREDENTIAL_MAX 128
-
-/// The numbering game consoles report a translation by, as
-/// `lowlat_nat_info.nat_type` carries it (minor 23): unknown while the
-/// answers cannot tell.
-#define LOWLAT_NAT_TYPE_UNKNOWN 0
-
-/// Nothing translates.
-#define LOWLAT_NAT_TYPE_1 1
-
-/// One public port serves every destination, or the gateway's mapping of the
-/// port is confirmed: a peer reaches the port at the address it is told.
-#define LOWLAT_NAT_TYPE_2 2
-
-/// A public port per destination, or no answer at all: the address a peer
-/// is told was made for somebody else.
-#define LOWLAT_NAT_TYPE_3 3
-
-/// Where `lowlat_nat_info` stands (minor 23): nothing asked yet.
-#define LOWLAT_NAT_STATE_NONE 0
-
-/// A probe is running; the fields still say what was known before it.
-#define LOWLAT_NAT_STATE_PROBING 1
-
-/// A result is in.
-#define LOWLAT_NAT_STATE_DONE 2
-
-/// What `lowlat_nat_info`'s result was read from (minor 23), zero before
-/// there is one: a probe.
-#define LOWLAT_NAT_SOURCE_PROBE 1
-
-/// An attempt's own reflexive answers, once two server addresses answered.
-#define LOWLAT_NAT_SOURCE_ATTEMPT 2
-
-/// The sound codec on the wire, as `lowlat_client_status.audio_codec`
-/// reports it.
-#define LOWLAT_AUDIO_OPUS 1
-
-#define LOWLAT_AUDIO_PCM 2
-
-/// Modifier bits for `lowlat_client_send_key`. The lock bits are the toggles'
-/// state, which a host reads to keep its own locks in step.
-#define LOWLAT_MOD_LSHIFT 1
-
-#define LOWLAT_MOD_RSHIFT 2
-
-#define LOWLAT_MOD_LCTRL 64
-
-#define LOWLAT_MOD_RCTRL 128
-
-#define LOWLAT_MOD_LALT 256
-
-#define LOWLAT_MOD_RALT 512
-
-#define LOWLAT_MOD_LGUI 1024
-
-#define LOWLAT_MOD_RGUI 2048
-
-#define LOWLAT_MOD_NUM 4096
-
-#define LOWLAT_MOD_CAPS 8192
-
-/// Mouse buttons for `lowlat_client_send_mouse_button`.
-#define LOWLAT_MOUSE_LEFT 1
-
-#define LOWLAT_MOUSE_MIDDLE 2
-
-#define LOWLAT_MOUSE_RIGHT 3
-
-#define LOWLAT_MOUSE_X1 4
-
-#define LOWLAT_MOUSE_X2 5
-
-/// Pad buttons for `lowlat_client_send_pad_button`, by index.
-///
-/// **Not the bits of `lowlat_pad_state`**: the two forms number the
-/// buttons differently and neither is derivable from the other.
-#define LOWLAT_PAD_A 0
-
-#define LOWLAT_PAD_B 1
-
-#define LOWLAT_PAD_X 2
-
-#define LOWLAT_PAD_Y 3
-
-#define LOWLAT_PAD_BACK 4
-
-#define LOWLAT_PAD_GUIDE 5
-
-#define LOWLAT_PAD_START 6
-
-#define LOWLAT_PAD_LSTICK 7
-
-#define LOWLAT_PAD_RSTICK 8
-
-#define LOWLAT_PAD_LSHOULDER 9
-
-#define LOWLAT_PAD_RSHOULDER 10
-
-#define LOWLAT_PAD_DPAD_UP 11
-
-#define LOWLAT_PAD_DPAD_DOWN 12
-
-#define LOWLAT_PAD_DPAD_LEFT 13
-
-#define LOWLAT_PAD_DPAD_RIGHT 14
-
-/// Pad axes for `lowlat_client_send_pad_axis`. Sticks span the signed range,
-/// pushed right or away from the player positive, as in `lowlat_pad_state`;
-/// triggers run from zero.
-#define LOWLAT_PAD_AXIS_LX 0
-
-#define LOWLAT_PAD_AXIS_LY 1
-
-#define LOWLAT_PAD_AXIS_RX 2
-
-#define LOWLAT_PAD_AXIS_RY 3
-
-#define LOWLAT_PAD_AXIS_LT 4
-
-#define LOWLAT_PAD_AXIS_RT 5
-
-/// Button bits for `lowlat_pad_state`.
-#define LOWLAT_PAD_STATE_DPAD_UP 1
-
-#define LOWLAT_PAD_STATE_DPAD_DOWN 2
-
-#define LOWLAT_PAD_STATE_DPAD_LEFT 4
-
-#define LOWLAT_PAD_STATE_DPAD_RIGHT 8
-
-#define LOWLAT_PAD_STATE_START 16
-
-#define LOWLAT_PAD_STATE_BACK 32
-
-#define LOWLAT_PAD_STATE_LSTICK 64
-
-#define LOWLAT_PAD_STATE_RSTICK 128
-
-#define LOWLAT_PAD_STATE_LSHOULDER 256
-
-#define LOWLAT_PAD_STATE_RSHOULDER 512
-
-#define LOWLAT_PAD_STATE_GUIDE 1024
-
-#define LOWLAT_PAD_STATE_TOUCHPAD 2048
-
-#define LOWLAT_PAD_STATE_A 4096
-
-#define LOWLAT_PAD_STATE_B 8192
-
-#define LOWLAT_PAD_STATE_X 16384
-
-#define LOWLAT_PAD_STATE_Y 32768
-
-/// No decoder has been built yet: no parameter set has arrived.
-#define LOWLAT_DECODER_NONE_YET 0
-
-/// A decoder exists and is being fed.
-#define LOWLAT_DECODER_BUILT 1
-
-/// No decoder can serve the stream; the ended event said so.
-#define LOWLAT_DECODER_FAILED 2
-
-/// No attempt has been made.
-#define LOWLAT_CLIENT_IDLE 0
-
-/// Connectivity is running.
-#define LOWLAT_CLIENT_CONNECTING 1
-
-/// The session is up.
-#define LOWLAT_CLIENT_ESTABLISHED 2
-
-/// The session is over; the ended event says why.
-#define LOWLAT_CLIENT_OVER 3
 #endif
 
 #if (defined(LOWLAT_VDD) && defined(_WIN32))
-/// A monitor bound to the handle that plugged it: unplugged when the handle
-/// is closed or its process ends.
-#define LOWLAT_VDD_BOUND 0
-
-/// A monitor kept until removed, owned by no handle.
-#define LOWLAT_VDD_KEPT 1
-
 /// No slot asked for: the first free one.
 #define LOWLAT_VDD_SLOT_ANY UINT32_MAX
 
@@ -391,7 +193,11 @@
 ///
 /// A value is assigned once and never reused, including for a condition that
 /// is removed.
-typedef enum lowlat_status {
+enum lowlat_status
+#ifdef __cplusplus
+  : int32_t
+#endif // __cplusplus
+ {
     /// The call succeeded.
     LOWLAT_OK = 0,
     /// No event arrived within the timeout. Not an error.
@@ -497,11 +303,131 @@ typedef enum lowlat_status {
     LOWLAT_ERR_INPUT_DRIVER_DENIED = -702,
     /// The input driver answered with an error of its own.
     LOWLAT_ERR_INPUT_DRIVER_IO = -703,
-} lowlat_status;
+};
+#ifndef __cplusplus
+typedef int32_t lowlat_status;
+#endif // __cplusplus
+
+/// How severe a log line is.
+enum lowlat_log_level
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_LOG_ERROR = 0,
+    LOWLAT_LOG_WARN = 1,
+    LOWLAT_LOG_INFO = 2,
+    LOWLAT_LOG_DEBUG = 3,
+    LOWLAT_LOG_TRACE = 4,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_log_level;
+#endif // __cplusplus
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// Which codec a stream is coded with: what a host is asked to encode, and
+/// what a client reports its decoder was built for.
+///
+/// **This type where the library writes one, a plain integer where the
+/// application does**, for the reason `lowlat_status` is taken back as an
+/// integer: the value arriving is whatever the application wrote. The same
+/// holds for every enumeration here.
+enum lowlat_codec
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing is being coded yet: what a status says before its stream
+    /// exists. Not a codec to ask for.
+    LOWLAT_CODEC_NONE = 0,
+    LOWLAT_CODEC_H264 = 1,
+    LOWLAT_CODEC_HEVC = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_codec;
+#endif // __cplusplus
+#endif
+
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
+/// How much colour the stream carries, relative to its luma.
+///
+/// **Typed and carried as `lowlat_codec` is**, and an axis rather than a
+/// flag because it has somewhere to go: a third layout is in wide use
+/// elsewhere even though nothing here produces one.
+enum lowlat_chroma
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing is being coded yet: what a status says before its stream
+    /// exists.
+    LOWLAT_CHROMA_NONE = 0,
+    /// Colour at half resolution in both directions, which is what a session
+    /// runs at until a guest asks otherwise.
+    LOWLAT_CHROMA_420 = 1,
+    /// Colour at full resolution. Reported once a guest has asked for it and
+    /// the offer has been granted, which needs the second codec and the
+    /// captured output's encoder to be able to code it.
+    LOWLAT_CHROMA_444 = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_chroma;
+#endif // __cplusplus
+#endif
+
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// Which controller a report came from, for `lowlat_client_send_pad_report`
+/// and `lowlat_host_poll_pad_report`.
+///
+/// **The product decides what the host presents**: a device of that model,
+/// with its own descriptor and identity, which the host's driver claims as
+/// the real thing. A pad reported as one product stays that product until
+/// it is unplugged.
+enum lowlat_pad_type
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// A DualShock 4, either generation.
+    LOWLAT_PAD_TYPE_DS4 = 1,
+    /// A DualSense.
+    LOWLAT_PAD_TYPE_DS5 = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_type;
+#endif // __cplusplus
+
+/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`,
+/// `lowlat_pad_report_event`, `lowlat_host_poll_pad_report` and
+/// `lowlat_host_send_pad_report`.
+enum lowlat_pad_report
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// An input report, as the pad delivered it: what the pad is doing.
+    LOWLAT_PAD_REPORT_INPUT = 0,
+    /// An output report a virtual pad was written: motors, lights, effects.
+    /// The way back only.
+    LOWLAT_PAD_REPORT_OUTPUT = 1,
+    /// A feature report: calibration or firmware read from the pad on the
+    /// way in, a feature write to the virtual pad on the way back.
+    LOWLAT_PAD_REPORT_FEATURE = 2,
+    /// The pad is gone: unplugged by the guest, or with it. A host's poll
+    /// only, after the pad's last report, with no report and a length of
+    /// zero; an application destroys its device for the pad on it.
+    LOWLAT_PAD_REPORT_UNPLUG = 3,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_report;
+#endif // __cplusplus
+
 /// Which member of an event is the valid one.
-typedef enum lowlat_event_type {
+enum lowlat_event_type
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     /// A local candidate, to be sent to the peer as it is found.
     LOWLAT_EVENT_CANDIDATE = 1,
     /// Send the peer a candidate marked ready, once.
@@ -544,10 +470,17 @@ typedef enum lowlat_event_type {
     /// The host changed its answer on this client's microphone: whether it
     /// takes one. Every session starts with it taken. Client only, minor 25.
     LOWLAT_EVENT_MICROPHONE = 17,
-} lowlat_event_type;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_event_type;
+#endif // __cplusplus
 
 /// Why an attempt finished.
-typedef enum lowlat_outcome {
+enum lowlat_outcome
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     /// Negotiated, and no path was found.
     LOWLAT_OUTCOME_CONNECTIVITY_FAILED = 1,
     /// The peer stopped answering.
@@ -584,125 +517,10 @@ typedef enum lowlat_outcome {
     /// lapsed, mid-session; the relay has let the allocation go. Client only,
     /// minor 14.
     LOWLAT_OUTCOME_RELAY_LOST = 14,
-} lowlat_outcome;
-
-/// The longest output identity carried across this boundary.
-///
-/// Which codec a stream is coded with: what a host is asked to encode, and
-/// what a client reports its decoder was built for.
-///
-/// **Named by an enumeration and carried as an integer**, for the reason
-/// `lowlat_status` is: the application writes this field, so the value
-/// arriving is whatever it wrote.
-typedef enum lowlat_codec {
-    LOWLAT_CODEC_H264 = 1,
-    LOWLAT_CODEC_HEVC = 2,
-} lowlat_codec;
-#endif
-
-#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
-/// How much colour the stream carries, relative to its luma.
-///
-/// **Named by an enumeration and carried as an integer**, the same way
-/// `lowlat_codec` is, and an axis rather than a flag because it has
-/// somewhere to go: a third layout is in wide use elsewhere even though
-/// nothing here produces one.
-typedef enum lowlat_chroma {
-    /// Colour at half resolution in both directions, which is what a session
-    /// runs at until a guest asks otherwise.
-    LOWLAT_CHROMA_420 = 1,
-    /// Colour at full resolution. Reported once a guest has asked for it and
-    /// the offer has been granted, which needs the second codec and the
-    /// captured output's encoder to be able to code it.
-    LOWLAT_CHROMA_444 = 2,
-} lowlat_chroma;
-
-/// Which encoder to build.
-typedef enum lowlat_encoder {
-    /// **The default, and the right one.** A conversion target is allocated on
-    /// the device the display is on and an encoder belonging to another cannot
-    /// take it, so the encoder is a consequence of where the display is rather
-    /// than a preference. Choosing one is for forcing a particular encoder on a
-    /// machine where either would do.
-    LOWLAT_ENCODER_FOLLOW_DISPLAY = 0,
-    LOWLAT_ENCODER_OPEN = 1,
-    LOWLAT_ENCODER_VENDOR = 2,
-} lowlat_encoder;
-#endif
-
-#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
-/// How a picture is oriented.
-///
-/// **The coded picture never rotates.** A host sends the display's
-/// orientation with its stream, and the peer presents the picture turned and
-/// maps pointer coordinates against it; a client hands the same word out with
-/// every picture.
-typedef enum lowlat_rotation {
-    LOWLAT_ROTATION_NONE = 1,
-    LOWLAT_ROTATION_90 = 2,
-    LOWLAT_ROTATION_180 = 3,
-    LOWLAT_ROTATION_270 = 4,
-} lowlat_rotation;
-#endif
-
-#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
-/// Which congestion control level a session runs at.
-///
-/// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
-/// every outstanding fragment classifies stale and congestion is declared on
-/// every pass once the send window passes its floor. Sensitive is the default
-/// and the one to leave alone.
-///
-/// **Adaptive is not a fourth tolerance.** The first three are tunings of one
-/// detector and describe the whole of what a host does about congestion.
-/// Adaptive runs the sensitive tuning and adds host-local signals that see
-/// what the window floor hides. **Nothing is behind it yet**, so it behaves
-/// exactly as sensitive today; it is named here so that a signal which earns
-/// its measurement becomes a setting rather than a rebuild.
-typedef enum lowlat_cg_level {
-    LOWLAT_CG_LEVEL_AGGRESSIVE = 0,
-    LOWLAT_CG_LEVEL_SENSITIVE = 1,
-    LOWLAT_CG_LEVEL_RELAXED = 2,
-    LOWLAT_CG_LEVEL_ADAPTIVE = 3,
-} lowlat_cg_level;
-#endif
-
-/// How severe a log line is.
-typedef enum lowlat_log_level {
-    LOWLAT_LOG_ERROR = 0,
-    LOWLAT_LOG_WARN = 1,
-    LOWLAT_LOG_INFO = 2,
-    LOWLAT_LOG_DEBUG = 3,
-    LOWLAT_LOG_TRACE = 4,
-} lowlat_log_level;
-
-#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
-/// Where a host sits between delay and picture.
-///
-/// **The only encoder tuning this boundary exposes.** An encoder has a dozen
-/// knobs and almost none of them are an application's business; what an
-/// application wants to say is whether its guests would rather wait less or
-/// look at more. See [05 §4.1](../docs/05-host.md) for the levers this
-/// moves and [06 §quality](../docs/06-api.md).
-///
-/// **Zero is the low-latency end, and that is deliberate**: a zeroed structure
-/// has to mean the sensible default, and for a product whose first goal is
-/// delay the sensible default is a bounded frame.
-typedef enum lowlat_quality {
-    LOWLAT_QUALITY_LOWEST_LATENCY = 0,
-    LOWLAT_QUALITY_BALANCED = 1,
-    LOWLAT_QUALITY_HIGHEST = 2,
-} lowlat_quality;
-#endif
-
-#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
-/// Which pipe an attempt speaks.
-typedef enum lowlat_transport {
-    /// Authenticated records on the attempt socket. The default.
-    LOWLAT_TRANSPORT_BUD = 0,
-    /// A browser's data channel on the same socket.
-    LOWLAT_TRANSPORT_WEB = 1,
-} lowlat_transport;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_outcome;
+#endif // __cplusplus
 #endif
 
 #if defined(LOWLAT_CLIENT)
@@ -722,7 +540,11 @@ typedef enum lowlat_transport {
 /// neither the open kind nor the vendor's exists there. A machine without
 /// any is refused at creation with the stage named, exactly as a host
 /// without an encoder is.
-typedef enum lowlat_decoder {
+enum lowlat_decoder
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     LOWLAT_DECODER_AUTO = 0,
     LOWLAT_DECODER_OPEN = 1,
     LOWLAT_DECODER_VENDOR = 2,
@@ -752,32 +574,74 @@ typedef enum lowlat_decoder {
     /// into a buffer it has handed out. Refused as not in the build on
     /// Linux.
     LOWLAT_DECODER_SYSTEM = 5,
-} lowlat_decoder;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_decoder;
+#endif // __cplusplus
 
-/// How pictures leave the library.
-typedef enum lowlat_frame_kind {
-    /// Planes in memory the library owns for the lease.
-    LOWLAT_FRAME_PLANES = 0,
-    /// A device-level handle the application imports into its own device:
-    /// on Linux an opaque descriptor with the picture's planes at offsets
-    /// into it, which the vendor decoder alone exports, so asking for it
-    /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
-    /// texture per plane, which the open decoder exports on a system with a
-    /// fence (Windows 10 1703 on); on macOS the picture's surface, which the
-    /// system's decoder exports where the hardware decodes it (minor 35). A
-    /// decoder that exports none
-    /// refuses it at creation and at `lowlat_client_set_frame_kind` with
-    /// `LOWLAT_ERR_DECODER_UNSUPPORTED`, and one chosen mid-session hands out
-    /// planes while it runs (every frame says its kind).
-    LOWLAT_FRAME_HANDLE = 1,
-} lowlat_frame_kind;
+/// Where a client's session stands, as `lowlat_client_status.state` reports
+/// it.
+enum lowlat_client_state
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// No attempt has been made.
+    LOWLAT_CLIENT_IDLE = 0,
+    /// Connectivity is running.
+    LOWLAT_CLIENT_CONNECTING = 1,
+    /// The session is up.
+    LOWLAT_CLIENT_ESTABLISHED = 2,
+    /// The session is over; the ended event says why.
+    LOWLAT_CLIENT_OVER = 3,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_client_state;
+#endif // __cplusplus
 
-/// How a picture's planes are laid out.
-///
-/// **Named by an enumeration and carried as an integer**, as
-/// `lowlat_frame_kind` is: `lowlat_frame`'s `format` and
-/// `lowlat_client_status`'s `stream_format` hold one of these.
-typedef enum lowlat_format {
+/// Where a client's decoder stands, as `lowlat_client_status.decoder`
+/// reports it.
+enum lowlat_decoder_state
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// No decoder has been built yet: no parameter set has arrived.
+    LOWLAT_DECODER_STATE_NONE_YET = 0,
+    /// A decoder exists and is being fed.
+    LOWLAT_DECODER_STATE_BUILT = 1,
+    /// No decoder can serve the stream; the ended event said so.
+    LOWLAT_DECODER_STATE_FAILED = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_decoder_state;
+#endif // __cplusplus
+
+/// The sound codec on the wire, as `lowlat_client_status.audio_codec`
+/// reports it.
+enum lowlat_audio_codec
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// No sound decoder has been built yet.
+    LOWLAT_AUDIO_NONE = 0,
+    LOWLAT_AUDIO_OPUS = 1,
+    LOWLAT_AUDIO_PCM = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_audio_codec;
+#endif // __cplusplus
+
+/// How a picture's planes are laid out: what `lowlat_frame`'s `format`
+/// and `lowlat_client_status`'s `stream_format` say.
+enum lowlat_format
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing has been decoded yet: what a status says before a build.
+    LOWLAT_FORMAT_NONE = 0,
     /// Eight bits: a luma plane and an interleaved chroma plane at half the
     /// rows.
     LOWLAT_FORMAT_NV12 = 1,
@@ -798,10 +662,169 @@ typedef enum lowlat_format {
     /// Ten bits in sixteen-bit samples, the value in the high bits; the same
     /// two planes (minor 34).
     LOWLAT_FORMAT_P410 = 6,
-} lowlat_format;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_format;
+#endif // __cplusplus
 
+/// Which protocol keeps a client's port mapped on its gateway (minor 22).
+enum lowlat_mapping
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing mapped: none asked for, or no gateway that maps.
+    LOWLAT_MAPPING_NONE = 0,
+    LOWLAT_MAPPING_PCP = 1,
+    LOWLAT_MAPPING_NAT_PMP = 2,
+    LOWLAT_MAPPING_UPNP = 3,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_mapping;
+#endif // __cplusplus
+
+/// Where `lowlat_nat_info` stands (minor 23).
+enum lowlat_nat_state
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing asked yet.
+    LOWLAT_NAT_STATE_NONE = 0,
+    /// A probe is running; the fields still say what was known before it.
+    LOWLAT_NAT_STATE_PROBING = 1,
+    /// A result is in.
+    LOWLAT_NAT_STATE_DONE = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_nat_state;
+#endif // __cplusplus
+
+/// The numbering game consoles report a translation by, as
+/// `lowlat_nat_info.nat_type` carries it (minor 23).
+enum lowlat_nat_type
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Unknown while the answers cannot tell.
+    LOWLAT_NAT_TYPE_UNKNOWN = 0,
+    /// Nothing translates.
+    LOWLAT_NAT_TYPE_1 = 1,
+    /// One public port serves every destination, or the gateway's mapping of
+    /// the port is confirmed: a peer reaches the port at the address it is
+    /// told.
+    LOWLAT_NAT_TYPE_2 = 2,
+    /// A public port per destination, or no answer at all: the address a peer
+    /// is told was made for somebody else.
+    LOWLAT_NAT_TYPE_3 = 3,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_nat_type;
+#endif // __cplusplus
+
+/// How the translation in front of a client's port maps it (minor 23), as
+/// `lowlat_nat_info` reports it.
+enum lowlat_nat_mapping
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Nothing to compare: no result yet, or answers from fewer than two
+    /// server addresses.
+    LOWLAT_NAT_MAPPING_UNKNOWN = 0,
+    /// No server answered.
+    LOWLAT_NAT_MAPPING_NO_ANSWER = 1,
+    /// Nothing translates: the first server saw the port as it is.
+    LOWLAT_NAT_MAPPING_NONE = 2,
+    /// One public address and port, whatever the destination.
+    LOWLAT_NAT_MAPPING_INDEPENDENT = 3,
+    /// A public port per destination, the servers asked not telling whether
+    /// per address or per address and port.
+    LOWLAT_NAT_MAPPING_DEPENDENT = 4,
+    /// A public port per destination address: two ports of one server saw
+    /// one port.
+    LOWLAT_NAT_MAPPING_ADDRESS_DEPENDENT = 5,
+    /// A public port per destination address and port.
+    LOWLAT_NAT_MAPPING_ADDRESS_AND_PORT_DEPENDENT = 6,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_nat_mapping;
+#endif // __cplusplus
+
+/// What `lowlat_nat_info`'s result was read from (minor 23).
+enum lowlat_nat_source
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// No result yet.
+    LOWLAT_NAT_SOURCE_NONE = 0,
+    /// A probe.
+    LOWLAT_NAT_SOURCE_PROBE = 1,
+    /// An attempt's own reflexive answers, once two server addresses
+    /// answered.
+    LOWLAT_NAT_SOURCE_ATTEMPT = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_nat_source;
+#endif // __cplusplus
+
+/// How pictures leave the library.
+enum lowlat_frame_kind
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Planes in memory the library owns for the lease.
+    LOWLAT_FRAME_PLANES = 0,
+    /// A device-level handle the application imports into its own device:
+    /// on Linux an opaque descriptor with the picture's planes at offsets
+    /// into it, which the vendor decoder alone exports, so asking for it
+    /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
+    /// texture per plane, which the open decoder exports on a system with a
+    /// fence (Windows 10 1703 on); on macOS the picture's surface, which the
+    /// system's decoder exports where the hardware decodes it (minor 35). A
+    /// decoder that exports none
+    /// refuses it at creation and at `lowlat_client_set_frame_kind` with
+    /// `LOWLAT_ERR_DECODER_UNSUPPORTED`, and one chosen mid-session hands out
+    /// planes while it runs (every frame says its kind).
+    LOWLAT_FRAME_HANDLE = 1,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_frame_kind;
+#endif // __cplusplus
+#endif
+
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// How a picture is oriented.
+///
+/// **The coded picture never rotates.** A host sends the display's
+/// orientation with its stream, and the peer presents the picture turned and
+/// maps pointer coordinates against it; a client hands the same word out with
+/// every picture.
+enum lowlat_rotation
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_ROTATION_NONE = 1,
+    LOWLAT_ROTATION_90 = 2,
+    LOWLAT_ROTATION_180 = 3,
+    LOWLAT_ROTATION_270 = 4,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_rotation;
+#endif // __cplusplus
+#endif
+
+#if defined(LOWLAT_CLIENT)
 /// What a frame of the handle kind carries.
-typedef enum lowlat_handle_kind {
+enum lowlat_handle_kind
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     /// A frame of the planes kind: no handle.
     LOWLAT_HANDLE_NONE = 0,
     /// An opaque descriptor of the vendor's compute runtime, which the
@@ -842,53 +865,153 @@ typedef enum lowlat_handle_kind {
     /// this way: the system's software decoder writes into a buffer it has
     /// handed out, so its pictures are copied and come as planes.
     LOWLAT_HANDLE_IOSURFACE = 4,
-} lowlat_handle_kind;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_handle_kind;
+#endif // __cplusplus
+#endif
 
-typedef enum lowlat_fence_kind {
-    /// Reusable now.
-    LOWLAT_FENCE_NONE = 0,
-} lowlat_fence_kind;
+/// What `lowlat_features` reports, a bit each: the halves this build
+/// carries and what else was decided when it was built. The bits are OR-ed
+/// into a plain integer, which no single one of these is.
+enum lowlat_feature
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// The host half is in this build: every `lowlat_host_*` entry point
+    /// exists. A library built for macOS carries the client half alone.
+    LOWLAT_FEATURE_HOST = 1,
+    /// The client half is in this build: every `lowlat_client_*` entry point
+    /// exists.
+    LOWLAT_FEATURE_CLIENT = 2,
+    /// This build's software decoder loads a GPL build of the machine's codec
+    /// library as well as an LGPL one (the `gpl-libavcodec` build feature;
+    /// minor 12). A build without this bit refuses a GPL build with
+    /// `LOWLAT_ERR_NO_DECODER_LICENCE`. The bit says what the build would
+    /// load, not what it has: a codec library actually loaded is named with
+    /// its licence by `lowlat_enum_decoders`.
+    LOWLAT_FEATURE_GPL_LIBAVCODEC = 4,
+    /// The virtual displays are in this build (minor 26): every
+    /// `lowlat_vdd_*` entry point exists. Windows alone.
+    LOWLAT_FEATURE_VDD = 8,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_feature;
+#endif // __cplusplus
+
+#if (defined(LOWLAT_HOST) && !defined(__APPLE__))
+/// Which encoder to build.
+enum lowlat_encoder
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// **The default, and the right one.** A conversion target is allocated on
+    /// the device the display is on and an encoder belonging to another cannot
+    /// take it, so the encoder is a consequence of where the display is rather
+    /// than a preference. Choosing one is for forcing a particular encoder on a
+    /// machine where either would do.
+    LOWLAT_ENCODER_FOLLOW_DISPLAY = 0,
+    LOWLAT_ENCODER_OPEN = 1,
+    LOWLAT_ENCODER_VENDOR = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_encoder;
+#endif // __cplusplus
+
+/// Which congestion control level a session runs at.
+///
+/// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
+/// every outstanding fragment classifies stale and congestion is declared on
+/// every pass once the send window passes its floor. Sensitive is the default
+/// and the one to leave alone.
+///
+/// **Adaptive is not a fourth tolerance.** The first three are tunings of one
+/// detector and describe the whole of what a host does about congestion.
+/// Adaptive runs the sensitive tuning and adds host-local signals that see
+/// what the window floor hides. **Nothing is behind it yet**, so it behaves
+/// exactly as sensitive today; it is named here so that a signal which earns
+/// its measurement becomes a setting rather than a rebuild.
+enum lowlat_cg_level
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_CG_LEVEL_AGGRESSIVE = 0,
+    LOWLAT_CG_LEVEL_SENSITIVE = 1,
+    LOWLAT_CG_LEVEL_RELAXED = 2,
+    LOWLAT_CG_LEVEL_ADAPTIVE = 3,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_cg_level;
+#endif // __cplusplus
+
+/// Where a host sits between delay and picture.
+///
+/// **The only encoder tuning this boundary exposes.** An encoder has a dozen
+/// knobs and almost none of them are an application's business; what an
+/// application wants to say is whether its guests would rather wait less or
+/// look at more. See [05 §4.1](../docs/05-host.md) for the levers this
+/// moves and [06 §quality](../docs/06-api.md).
+///
+/// **Zero is the low-latency end, and that is deliberate**: a zeroed structure
+/// has to mean the sensible default, and for a product whose first goal is
+/// delay the sensible default is a bounded frame.
+enum lowlat_quality
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_QUALITY_LOWEST_LATENCY = 0,
+    LOWLAT_QUALITY_BALANCED = 1,
+    LOWLAT_QUALITY_HIGHEST = 2,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_quality;
+#endif // __cplusplus
 #endif
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
-/// Which controller a report came from, for `lowlat_client_send_pad_report`
-/// and `lowlat_host_poll_pad_report`.
-///
-/// **The product decides what the host presents**: a device of that model,
-/// with its own descriptor and identity, which the host's driver claims as
-/// the real thing. A pad reported as one product stays that product until
-/// it is unplugged.
-typedef enum lowlat_pad_type {
-    /// A DualShock 4, either generation.
-    LOWLAT_PAD_TYPE_DS4 = 1,
-    /// A DualSense.
-    LOWLAT_PAD_TYPE_DS5 = 2,
-} lowlat_pad_type;
+/// Which pipe an attempt speaks.
+enum lowlat_transport
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Authenticated records on the attempt socket. The default.
+    LOWLAT_TRANSPORT_BUD = 0,
+    /// A browser's data channel on the same socket.
+    LOWLAT_TRANSPORT_WEB = 1,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_transport;
+#endif // __cplusplus
+#endif
 
-/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`,
-/// `lowlat_pad_report_event`, `lowlat_host_poll_pad_report` and
-/// `lowlat_host_send_pad_report`.
-typedef enum lowlat_pad_report {
-    /// An input report, as the pad delivered it: what the pad is doing.
-    LOWLAT_PAD_REPORT_INPUT = 0,
-    /// An output report a virtual pad was written: motors, lights, effects.
-    /// The way back only.
-    LOWLAT_PAD_REPORT_OUTPUT = 1,
-    /// A feature report: calibration or firmware read from the pad on the
-    /// way in, a feature write to the virtual pad on the way back.
-    LOWLAT_PAD_REPORT_FEATURE = 2,
-    /// The pad is gone: unplugged by the guest, or with it. A host's poll
-    /// only, after the pad's last report, with no report and a length of
-    /// zero; an application destroys its device for the pad on it.
-    LOWLAT_PAD_REPORT_UNPLUG = 3,
-} lowlat_pad_report;
+#if defined(LOWLAT_CLIENT)
+enum lowlat_fence_kind
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// Reusable now.
+    LOWLAT_FENCE_NONE = 0,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_fence_kind;
+#endif // __cplusplus
 #endif
 
 #if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// Where a report pad's reports go: which side holds the virtual device for
 /// a DualShock 4 or a DualSense a guest sends as its own reports
 /// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
-typedef enum lowlat_pad_sink {
+enum lowlat_pad_sink
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     /// This library presents a device of its own, which the kernel's own
     /// driver claims as the real thing, and what is written to it goes back
     /// to the guest by itself. **The default.**
@@ -899,54 +1022,168 @@ typedef enum lowlat_pad_sink {
     /// stays on the host (minor 33). The permission gate, the per-guest cap
     /// and the unplug rule apply as they do above.
     LOWLAT_PAD_SINK_APP = 1,
-} lowlat_pad_sink;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_sink;
+#endif // __cplusplus
 #endif
 
 #if defined(LOWLAT_CLIENT)
-/// Which protocol keeps a client's port mapped on its gateway (minor 22).
-typedef enum lowlat_mapping {
-    /// Nothing mapped: none asked for, or no gateway that maps.
-    LOWLAT_MAPPING_NONE = 0,
-    LOWLAT_MAPPING_PCP = 1,
-    LOWLAT_MAPPING_NAT_PMP = 2,
-    LOWLAT_MAPPING_UPNP = 3,
-} lowlat_mapping;
-
-/// How the translation in front of a client's port maps it (minor 23), as
-/// `lowlat_nat_info` reports it.
-typedef enum lowlat_nat_mapping {
-    /// Nothing to compare: no result yet, or answers from fewer than two
-    /// server addresses.
-    LOWLAT_NAT_MAPPING_UNKNOWN = 0,
-    /// No server answered.
-    LOWLAT_NAT_MAPPING_NO_ANSWER = 1,
-    /// Nothing translates: the first server saw the port as it is.
-    LOWLAT_NAT_MAPPING_NONE = 2,
-    /// One public address and port, whatever the destination.
-    LOWLAT_NAT_MAPPING_INDEPENDENT = 3,
-    /// A public port per destination, the servers asked not telling whether
-    /// per address or per address and port.
-    LOWLAT_NAT_MAPPING_DEPENDENT = 4,
-    /// A public port per destination address: two ports of one server saw
-    /// one port.
-    LOWLAT_NAT_MAPPING_ADDRESS_DEPENDENT = 5,
-    /// A public port per destination address and port.
-    LOWLAT_NAT_MAPPING_ADDRESS_AND_PORT_DEPENDENT = 6,
-} lowlat_nat_mapping;
-
 /// What the client's leg to its relay travels on (minor 29).
 ///
 /// The relay's allocation and its leg to the host are datagrams either way;
 /// only the client's own leg changes. **The last rung, not a quality
 /// option**: over TCP a relay's stalls become the session's resends. The
 /// library never moves from one to the other by itself.
-typedef enum lowlat_relay_carrier {
+enum lowlat_relay_carrier
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
     /// Datagrams. The default.
     LOWLAT_RELAY_CARRIER_UDP = 0,
     /// One stream to the relay, for a network that carries no datagrams.
     LOWLAT_RELAY_CARRIER_TCP = 1,
-} lowlat_relay_carrier;
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_relay_carrier;
+#endif // __cplusplus
 
+/// Modifier bits for `lowlat_client_send_key`, OR-ed into its integer. The
+/// lock bits are the toggles' state, which a host reads to keep its own locks
+/// in step.
+enum lowlat_keymod
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_MOD_LSHIFT = 1,
+    LOWLAT_MOD_RSHIFT = 2,
+    LOWLAT_MOD_LCTRL = 64,
+    LOWLAT_MOD_RCTRL = 128,
+    LOWLAT_MOD_LALT = 256,
+    LOWLAT_MOD_RALT = 512,
+    LOWLAT_MOD_LGUI = 1024,
+    LOWLAT_MOD_RGUI = 2048,
+    LOWLAT_MOD_NUM = 4096,
+    LOWLAT_MOD_CAPS = 8192,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_keymod;
+#endif // __cplusplus
+
+/// Mouse buttons for `lowlat_client_send_mouse_button`.
+enum lowlat_mouse_button
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_MOUSE_LEFT = 1,
+    LOWLAT_MOUSE_MIDDLE = 2,
+    LOWLAT_MOUSE_RIGHT = 3,
+    LOWLAT_MOUSE_X1 = 4,
+    LOWLAT_MOUSE_X2 = 5,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_mouse_button;
+#endif // __cplusplus
+
+/// Pad buttons for `lowlat_client_send_pad_button`, by index.
+///
+/// **Not the bits of `lowlat_pad_state`**: the two forms number the
+/// buttons differently and neither is derivable from the other.
+enum lowlat_pad_button
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_PAD_BUTTON_A = 0,
+    LOWLAT_PAD_BUTTON_B = 1,
+    LOWLAT_PAD_BUTTON_X = 2,
+    LOWLAT_PAD_BUTTON_Y = 3,
+    LOWLAT_PAD_BUTTON_BACK = 4,
+    LOWLAT_PAD_BUTTON_GUIDE = 5,
+    LOWLAT_PAD_BUTTON_START = 6,
+    LOWLAT_PAD_BUTTON_LSTICK = 7,
+    LOWLAT_PAD_BUTTON_RSTICK = 8,
+    LOWLAT_PAD_BUTTON_LSHOULDER = 9,
+    LOWLAT_PAD_BUTTON_RSHOULDER = 10,
+    LOWLAT_PAD_BUTTON_DPAD_UP = 11,
+    LOWLAT_PAD_BUTTON_DPAD_DOWN = 12,
+    LOWLAT_PAD_BUTTON_DPAD_LEFT = 13,
+    LOWLAT_PAD_BUTTON_DPAD_RIGHT = 14,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_button;
+#endif // __cplusplus
+
+/// Pad axes for `lowlat_client_send_pad_axis`. Sticks span the signed range,
+/// pushed right or away from the player positive, as in `lowlat_pad_state`;
+/// triggers run from zero.
+enum lowlat_pad_axis
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_PAD_AXIS_LX = 0,
+    LOWLAT_PAD_AXIS_LY = 1,
+    LOWLAT_PAD_AXIS_RX = 2,
+    LOWLAT_PAD_AXIS_RY = 3,
+    LOWLAT_PAD_AXIS_LT = 4,
+    LOWLAT_PAD_AXIS_RT = 5,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_axis;
+#endif // __cplusplus
+
+/// Button bits for `lowlat_pad_state`, OR-ed into its `buttons`.
+enum lowlat_pad_state_button
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    LOWLAT_PAD_STATE_DPAD_UP = 1,
+    LOWLAT_PAD_STATE_DPAD_DOWN = 2,
+    LOWLAT_PAD_STATE_DPAD_LEFT = 4,
+    LOWLAT_PAD_STATE_DPAD_RIGHT = 8,
+    LOWLAT_PAD_STATE_START = 16,
+    LOWLAT_PAD_STATE_BACK = 32,
+    LOWLAT_PAD_STATE_LSTICK = 64,
+    LOWLAT_PAD_STATE_RSTICK = 128,
+    LOWLAT_PAD_STATE_LSHOULDER = 256,
+    LOWLAT_PAD_STATE_RSHOULDER = 512,
+    LOWLAT_PAD_STATE_GUIDE = 1024,
+    LOWLAT_PAD_STATE_TOUCHPAD = 2048,
+    LOWLAT_PAD_STATE_A = 4096,
+    LOWLAT_PAD_STATE_B = 8192,
+    LOWLAT_PAD_STATE_X = 16384,
+    LOWLAT_PAD_STATE_Y = 32768,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_pad_state_button;
+#endif // __cplusplus
+#endif
+
+#if (defined(LOWLAT_VDD) && defined(_WIN32))
+/// How long a monitor stays plugged, as `lowlat_vdd_plug_info`'s
+/// `lifetime` asks.
+enum lowlat_vdd_lifetime
+#ifdef __cplusplus
+  : uint32_t
+#endif // __cplusplus
+ {
+    /// A monitor bound to the handle that plugged it: unplugged when the
+    /// handle is closed or its process ends.
+    LOWLAT_VDD_BOUND = 0,
+    /// A monitor kept until removed, owned by no handle.
+    LOWLAT_VDD_KEPT = 1,
+};
+#ifndef __cplusplus
+typedef uint32_t lowlat_vdd_lifetime;
+#endif // __cplusplus
+#endif
+
+#if defined(LOWLAT_CLIENT)
 /// One client, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -975,7 +1212,7 @@ typedef struct lowlat_vdd lowlat_vdd;
 /// **The one place this library calls into an application**, and the single
 /// exception to being poll-based. It is cold, it fires on whichever thread
 /// logged, and it must not call back in.
-typedef void (*lowlat_log_fn)(uint32_t level, const char *message, void *opaque);
+typedef void (*lowlat_log_fn)(lowlat_log_level level, const char *message, void *opaque);
 
 #if (defined(LOWLAT_HOST) && !defined(__APPLE__))
 /// The video settings that can change while a host is running.
@@ -1433,14 +1670,14 @@ typedef struct lowlat_host_status {
     /// platform offers a depth above ten and one of them cannot describe one.
     bool ten_bit;
     uint8_t reserved[1];
-    /// One of `lowlat_codec`, and **zero until something is being coded**.
+    /// **None until something is being coded.**
     ///
     /// **What is coming out, not what was asked for.** A seated guest can move
     /// the codec and the depth while the stream runs, so the configuration
     /// stops being the answer as soon as one does.
-    uint32_t codec;
-    /// One of `lowlat_chroma`, and zero until something is being coded.
-    uint32_t chroma;
+    lowlat_codec codec;
+    /// None until something is being coded.
+    lowlat_chroma chroma;
     /// The sound device being read, empty when none is.
     ///
     /// **What it landed on, not what was asked for.** An empty request means
@@ -1702,9 +1939,8 @@ typedef struct lowlat_guest_list_event {
 typedef struct lowlat_pad_report_event {
     /// The pad as this client named it in its own reports.
     uint32_t pad;
-    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`, as an
-    /// integer for the reason `lowlat_status` is one.
-    uint32_t kind;
+    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+    lowlat_pad_report kind;
     uint32_t len;
     const uint8_t *report;
 } lowlat_pad_report_event;
@@ -1765,11 +2001,10 @@ typedef struct lowlat_decoder_info {
     uint32_t size;
     /// Its slot in the table, the `index` it was asked for.
     uint32_t index;
-    /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN`,
-    /// `LOWLAT_DECODER_VENDOR`, `LOWLAT_DECODER_SOFTWARE` or
-    /// `LOWLAT_DECODER_SYSTEM`: what
+    /// `LOWLAT_DECODER_OPEN`, `LOWLAT_DECODER_VENDOR`,
+    /// `LOWLAT_DECODER_SOFTWARE` or `LOWLAT_DECODER_SYSTEM`: what
     /// `lowlat_client_create_info.decoder` names to open this one.
-    uint32_t decoder;
+    lowlat_decoder decoder;
     /// The largest coded picture per codec, as the device reports it; zero
     /// where it does not say.
     uint32_t max_width_h264;
@@ -1944,7 +2179,7 @@ typedef struct lowlat_client_config {
 typedef struct lowlat_pad_state {
     /// Set by the caller to `sizeof(lowlat_pad_state)`.
     uint32_t size;
-    /// `LOWLAT_PAD_STATE_*` bits.
+    /// `lowlat_pad_state_button` bits.
     uint16_t buttons;
     int16_t lx;
     int16_t ly;
@@ -1960,7 +2195,7 @@ typedef struct lowlat_client_status {
     uint32_t size;
     /// `LOWLAT_CLIENT_CONNECTING`, `LOWLAT_CLIENT_ESTABLISHED` or
     /// `LOWLAT_CLIENT_OVER`; `LOWLAT_CLIENT_IDLE` with no attempt.
-    uint32_t state;
+    lowlat_client_state state;
     /// The status the host's disconnect carried, or zero.
     int32_t disconnect;
     /// The smoothed round trip to the host, in milliseconds.
@@ -1976,9 +2211,8 @@ typedef struct lowlat_client_status {
     uint64_t skipped;
     /// Sound packets taken off the audio channel.
     uint64_t audio_packets;
-    /// `LOWLAT_DECODER_NONE_YET`, `LOWLAT_DECODER_BUILT` or
-    /// `LOWLAT_DECODER_FAILED`.
-    uint32_t decoder;
+    /// Whether a decoder has been built, and how that went.
+    lowlat_decoder_state decoder;
     /// Pictures decoded and published, not yet taken by the application.
     uint32_t queue_depth;
     /// The last picture's decode and read-back, in microseconds.
@@ -1992,13 +2226,11 @@ typedef struct lowlat_client_status {
     /// The host's own encode time for the stream, as it last reported it,
     /// in microseconds; zero until it has.
     uint32_t encode_us;
-    /// The codec the decoder was built for, one of `lowlat_codec`; zero
-    /// before a build.
-    uint32_t codec;
-    /// The decoder backend in use, one of `lowlat_decoder` as resolved at
-    /// creation or by `lowlat_client_set_decoder`: never
-    /// `LOWLAT_DECODER_AUTO`.
-    uint32_t backend;
+    /// The codec the decoder was built for; none before a build.
+    lowlat_codec codec;
+    /// The decoder backend in use, as resolved at creation or by
+    /// `lowlat_client_set_decoder`: never `LOWLAT_DECODER_AUTO`.
+    lowlat_decoder backend;
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
     uint32_t input_dropped;
@@ -2015,9 +2247,8 @@ typedef struct lowlat_client_status {
     /// How long the last acquired packet waited between the wire and the
     /// call, in milliseconds.
     uint32_t audio_age_ms;
-    /// What the sound decoder was built for: `LOWLAT_AUDIO_OPUS`,
-    /// `LOWLAT_AUDIO_PCM`, or zero before a build.
-    uint32_t audio_codec;
+    /// What the sound decoder was built for; none before a build.
+    lowlat_audio_codec audio_codec;
     /// What the client reports to the host every two seconds: the smoothed
     /// decode and hand-over per picture, and the smoothed decode per sound
     /// packet, in microseconds; zero until something has been timed.
@@ -2028,9 +2259,9 @@ typedef struct lowlat_client_status {
     /// mask; zero before an attempt.
     uint32_t asked_flags;
     uint32_t declared_flags;
-    /// The stream as the decoder built it: one of `lowlat_format`, or
-    /// zero before a build. With `codec`, what the host turned out to send.
-    uint32_t stream_format;
+    /// The stream as the decoder built it; none before a build. With
+    /// `codec`, what the host turned out to send.
+    lowlat_format stream_format;
     /// This client's number on the host's roster, which is how it finds
     /// itself in the guest list; zero until the host has sent one.
     uint32_t number;
@@ -2053,10 +2284,9 @@ typedef struct lowlat_client_status {
     /// Whether the path goes through the relay (minor 14).
     bool relayed;
     uint8_t reserved;
-    /// What keeps this client's port mapped on the gateway (minor 22): one of
-    /// `lowlat_mapping`, none while nothing is mapped or with
-    /// `port_mapping` off.
-    uint32_t mapping;
+    /// What keeps this client's port mapped on the gateway (minor 22): none
+    /// while nothing is mapped or with `port_mapping` off.
+    lowlat_mapping mapping;
     /// The gateway's external address, NUL-terminated, and the port it
     /// mapped (minor 22): empty and zero while nothing is mapped, and the
     /// address empty where the gateway states none. The mapping is offered
@@ -2065,9 +2295,9 @@ typedef struct lowlat_client_status {
     char mapped_address[LOWLAT_ADDRESS_MAX];
     uint16_t mapped_port;
     /// The gateway's last refusal (minor 22): its own code, in the numbering
-    /// of the protocol `mapping_refused_by` names; zero for none.
+    /// of the protocol `mapping_refused_by` names; zero and none for none.
     uint16_t mapping_refusal;
-    uint32_t mapping_refused_by;
+    lowlat_mapping mapping_refused_by;
     /// The microphone (minor 25): frames of ten milliseconds sent, and frames
     /// dropped because the ring to the session thread was full.
     uint32_t microphone_sent;
@@ -2101,15 +2331,12 @@ typedef struct lowlat_nat_probe {
 typedef struct lowlat_nat_info {
     /// Set by the caller to `sizeof(lowlat_nat_info)`.
     uint32_t size;
-    /// One of `LOWLAT_NAT_STATE_*`.
-    uint32_t state;
-    /// One of `LOWLAT_NAT_TYPE_*`. A confirmed mapping on the gateway numbers
-    /// 2 whatever `mapping` says, since a peer reaches it at the address it
-    /// is told.
-    uint32_t nat_type;
-    /// One of `lowlat_nat_mapping`: how the translation itself maps the
-    /// port, beside the number.
-    uint32_t mapping;
+    lowlat_nat_state state;
+    /// A confirmed mapping on the gateway numbers 2 whatever `mapping` says,
+    /// since a peer reaches it at the address it is told.
+    lowlat_nat_type nat_type;
+    /// How the translation itself maps the port, beside the number.
+    lowlat_nat_mapping mapping;
     /// Where the first server to answer saw the port, NUL-terminated, and
     /// the port it saw; empty and zero without an answer.
     char public_address[LOWLAT_ADDRESS_MAX];
@@ -2130,11 +2357,9 @@ typedef struct lowlat_nat_info {
     /// Servers asked, and how many of them answered.
     uint32_t servers_asked;
     uint32_t servers_answered;
-    /// One of `LOWLAT_NAT_SOURCE_*`.
-    uint32_t source;
-    /// What keeps the port mapped on the gateway as this is read: one of
-    /// `lowlat_mapping`.
-    uint32_t gateway;
+    lowlat_nat_source source;
+    /// What keeps the port mapped on the gateway as this is read.
+    lowlat_mapping gateway;
 } lowlat_nat_info;
 
 /// What one channel did, seen from the receiving end.
@@ -2200,14 +2425,13 @@ typedef struct lowlat_plane {
 typedef struct lowlat_frame {
     /// Set by the caller to `sizeof(lowlat_frame)`.
     uint32_t size;
-    /// One of `lowlat_frame_kind`: what the picture is handed out as.
-    uint32_t kind;
-    /// One of `lowlat_format`.
-    uint32_t format;
+    /// What the picture is handed out as.
+    lowlat_frame_kind kind;
+    lowlat_format format;
     uint32_t width;
     uint32_t height;
-    /// One of `lowlat_rotation`, applied at present time.
-    uint32_t rotation;
+    /// Applied at present time.
+    lowlat_rotation rotation;
     /// The encoder generation the picture belongs to.
     uint32_t generation;
     /// The picture's order in its stream: a later picture has a higher
@@ -2217,8 +2441,8 @@ typedef struct lowlat_frame {
     lowlat_plane planes[3];
     /// Which slot this is, for the release.
     uint32_t slot;
-    /// One of `lowlat_handle_kind`: none for a frame of the planes kind.
-    uint32_t handle_kind;
+    /// None for a frame of the planes kind.
+    lowlat_handle_kind handle_kind;
     /// The descriptor, for `lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD`;
     /// negative otherwise.
     int32_t fd;
@@ -2291,7 +2515,7 @@ typedef struct lowlat_fence {
 typedef struct lowlat_vdd_plug_info {
     /// `sizeof(lowlat_vdd_plug_info)`, set by the caller.
     uint32_t size;
-    /// `LOWLAT_VDD_BOUND` or `LOWLAT_VDD_KEPT`.
+    /// One of `lowlat_vdd_lifetime`.
     uint32_t lifetime;
     /// A kept monitor the driver plugs again whenever it starts.
     bool restore;
@@ -2385,7 +2609,7 @@ uint32_t lowlat_abi_version(void) LOWLAT_NOEXCEPT;
 /// hides the same halves under the same names (`LOWLAT_HOST`, `LOWLAT_CLIENT`),
 /// so an application compiled for one build cannot name what it lacks.
 ///
-/// @returns `LOWLAT_FEATURE_*` bits, OR-ed.
+/// @returns `lowlat_feature` bits, OR-ed.
 uint32_t lowlat_features(void) LOWLAT_NOEXCEPT;
 
 /// Describe a status.
@@ -2418,8 +2642,7 @@ const char *lowlat_status_string(int32_t status) LOWLAT_NOEXCEPT;
 /// @attention `fn_` must remain callable, and `opaque` valid, until this is called
 /// again with something else or with `NULL`. It may fire on any thread, and it must not
 /// call back into this library.
-lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_,
-                                      void *opaque) LOWLAT_NOEXCEPT;
+lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_, void *opaque) LOWLAT_NOEXCEPT;
 
 /// Set how much is logged. Lines above this level are not formatted at all.
 ///
@@ -3012,8 +3235,8 @@ lowlat_status lowlat_host_poll_pad_report(lowlat_host *hl,
                                           uint32_t timeout_ms,
                                           uint32_t *guest,
                                           uint32_t *pad,
-                                          uint32_t *type_,
-                                          uint32_t *kind,
+                                          lowlat_pad_type *type_,
+                                          lowlat_pad_report *kind,
                                           uint8_t *report,
                                           uint32_t *len,
                                           uint32_t *dropped) LOWLAT_NOEXCEPT;
@@ -3348,7 +3571,7 @@ lowlat_status lowlat_client_set_frame_kind(lowlat_client *cl,
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] code The usage code.
-/// @param[in] mods `LOWLAT_MOD_*` bits in effect, lock state included.
+/// @param[in] mods `lowlat_keymod` bits in effect, lock state included.
 /// @param[in] pressed Down or up.
 /// @returns `LOWLAT_OK`, or `LOWLAT_ERR_NOT_STARTED` with no session up.
 ///
@@ -3362,7 +3585,7 @@ lowlat_status lowlat_client_send_key(lowlat_client *cl,
 /// outside the picture's rectangle is not sent; a release always is.
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
-/// @param[in] button One of `LOWLAT_MOUSE_*`.
+/// @param[in] button One of `lowlat_mouse_button`.
 /// @param[in] pressed Down or up.
 /// @param[in] x Where the pointer was.
 /// @param[in] y Where the pointer was.
@@ -3410,7 +3633,7 @@ lowlat_status lowlat_client_send_mouse_motion(lowlat_client *cl,
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] pad The pad.
-/// @param[in] button One of `LOWLAT_PAD_*`, the index form.
+/// @param[in] button One of `lowlat_pad_button`, the index form.
 /// @param[in] pressed Down or up.
 /// @returns `LOWLAT_OK`, or `LOWLAT_ERR_NOT_STARTED` with no session up.
 ///
@@ -3424,7 +3647,7 @@ lowlat_status lowlat_client_send_pad_button(lowlat_client *cl,
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] pad The pad.
-/// @param[in] axis One of `LOWLAT_PAD_AXIS_*`.
+/// @param[in] axis One of `lowlat_pad_axis`.
 /// @param[in] value The position: a stick over the signed range, away from the player
 /// positive as in a whole state, a trigger from zero.
 /// @returns `LOWLAT_OK`, or `LOWLAT_ERR_NOT_STARTED` with no session up.
@@ -3831,8 +4054,7 @@ lowlat_status lowlat_vdd_plug(lowlat_vdd *vdd,
 /// @returns `LOWLAT_ERR_VDD_NOT_OWNER` for a monitor bound to another handle.
 ///
 /// @attention `vdd` came from `lowlat_vdd_open`.
-lowlat_status lowlat_vdd_unplug(lowlat_vdd *vdd,
-                                uint32_t slot) LOWLAT_NOEXCEPT;
+lowlat_status lowlat_vdd_unplug(lowlat_vdd *vdd, uint32_t slot) LOWLAT_NOEXCEPT;
 
 /// Put a monitor this handle plugged, or a kept one, at a mode and wait until
 /// it is current: through the system's display configuration when the monitor

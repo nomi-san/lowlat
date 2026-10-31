@@ -15,7 +15,7 @@ use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, software};
 use lowlat_net::WakeHandle;
 
 use crate::config::FrameKind;
-use crate::driver::{DECODER_FAILED, Telemetry, Units};
+use crate::driver::{DECODER_BUILT, DECODER_FAILED, Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Filling, Frame, Frames};
 use crate::report::Smoothed;
@@ -267,7 +267,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
             Decision::Failed => return Next::Failed,
             Decision::Lost => return Next::Lost,
             Decision::Fed(Fed::Picture) => {
-                telemetry.decoder.store(1, Ordering::Relaxed);
+                telemetry.decoder.store(DECODER_BUILT, Ordering::Relaxed);
                 let taken = take_pictures(
                     &mut feed,
                     frames,
@@ -282,7 +282,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                 }
             }
             Decision::Built(fed) => {
-                telemetry.decoder.store(1, Ordering::Relaxed);
+                telemetry.decoder.store(DECODER_BUILT, Ordering::Relaxed);
                 telemetry.codec.store(
                     feed.codec().map_or(0, |c| u32::from(c.wire())),
                     Ordering::Relaxed,

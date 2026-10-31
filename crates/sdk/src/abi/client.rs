@@ -13,8 +13,12 @@ use core::time::Duration;
 
 use ::lowlat_client::config::{Backend, Decoding, FrameKind, Port};
 use ::lowlat_client::{Client, Event, Outcome};
+use lowlat_client_state::*;
 use lowlat_common::events::Delivery;
 use lowlat_event_type::*;
+use lowlat_nat_source::*;
+use lowlat_nat_state::*;
+use lowlat_nat_type::*;
 use lowlat_outcome::*;
 
 use super::guard;
@@ -37,7 +41,7 @@ use super::shared::*;
 /// neither the open kind nor the vendor's exists there. A machine without
 /// any is refused at creation with the stage named, exactly as a host
 /// without an encoder is.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
@@ -72,7 +76,7 @@ pub enum lowlat_decoder {
 }
 
 /// How pictures leave the library.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_frame_kind {
     /// Planes in memory the library owns for the lease.
@@ -92,7 +96,7 @@ pub enum lowlat_frame_kind {
 }
 
 /// What a frame of the handle kind carries.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_handle_kind {
     /// A frame of the planes kind: no handle.
@@ -194,7 +198,7 @@ pub const LOWLAT_PORT_SEED_MAX: usize = 64;
 const CREATE_INFO_MINOR_21: usize = core::mem::offset_of!(lowlat_client_create_info, port);
 
 /// Which protocol keeps a client's port mapped on its gateway (minor 22).
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_mapping {
     /// Nothing mapped: none asked for, or no gateway that maps.
@@ -217,11 +221,10 @@ pub struct lowlat_decoder_info {
     pub size: u32,
     /// Its slot in the table, the `index` it was asked for.
     pub index: u32,
-    /// One of [`lowlat_decoder`], `LOWLAT_DECODER_OPEN`,
-    /// `LOWLAT_DECODER_VENDOR`, `LOWLAT_DECODER_SOFTWARE` or
-    /// `LOWLAT_DECODER_SYSTEM`: what
+    /// `LOWLAT_DECODER_OPEN`, `LOWLAT_DECODER_VENDOR`,
+    /// `LOWLAT_DECODER_SOFTWARE` or `LOWLAT_DECODER_SYSTEM`: what
     /// `lowlat_client_create_info.decoder` names to open this one.
-    pub decoder: u32,
+    pub decoder: lowlat_decoder,
     /// The largest coded picture per codec, as the device reports it; zero
     /// where it does not say.
     pub max_width_h264: u32,
@@ -329,7 +332,7 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
                 Backend::Software => lowlat_decoder::LOWLAT_DECODER_SOFTWARE,
                 Backend::System => lowlat_decoder::LOWLAT_DECODER_SYSTEM,
                 _ => lowlat_decoder::LOWLAT_DECODER_OPEN,
-            } as u32,
+            },
             max_width_h264: row.max_h264.0,
             max_height_h264: row.max_h264.1,
             max_width_hevc: row.max_hevc.0,
@@ -450,7 +453,7 @@ pub const LOWLAT_RELAY_CREDENTIAL_MAX: usize = 128;
 /// only the client's own leg changes. **The last rung, not a quality
 /// option**: over TCP a relay's stalls become the session's resends. The
 /// library never moves from one to the other by itself.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_relay_carrier {
     /// Datagrams. The default.
@@ -469,9 +472,9 @@ const CONFIG_MINOR_13: usize = core::mem::offset_of!(lowlat_client_config, relay
 pub struct lowlat_client_status {
     /// Set by the caller to `sizeof(lowlat_client_status)`.
     pub size: u32,
-    /// [`LOWLAT_CLIENT_CONNECTING`], [`LOWLAT_CLIENT_ESTABLISHED`] or
-    /// [`LOWLAT_CLIENT_OVER`]; [`LOWLAT_CLIENT_IDLE`] with no attempt.
-    pub state: u32,
+    /// `LOWLAT_CLIENT_CONNECTING`, `LOWLAT_CLIENT_ESTABLISHED` or
+    /// `LOWLAT_CLIENT_OVER`; `LOWLAT_CLIENT_IDLE` with no attempt.
+    pub state: lowlat_client_state,
     /// The status the host's disconnect carried, or zero.
     pub disconnect: i32,
     /// The smoothed round trip to the host, in milliseconds.
@@ -487,9 +490,8 @@ pub struct lowlat_client_status {
     pub skipped: u64,
     /// Sound packets taken off the audio channel.
     pub audio_packets: u64,
-    /// [`LOWLAT_DECODER_NONE_YET`], [`LOWLAT_DECODER_BUILT`] or
-    /// [`LOWLAT_DECODER_FAILED`].
-    pub decoder: u32,
+    /// Whether a decoder has been built, and how that went.
+    pub decoder: lowlat_decoder_state,
     /// Pictures decoded and published, not yet taken by the application.
     pub queue_depth: u32,
     /// The last picture's decode and read-back, in microseconds.
@@ -503,13 +505,11 @@ pub struct lowlat_client_status {
     /// The host's own encode time for the stream, as it last reported it,
     /// in microseconds; zero until it has.
     pub encode_us: u32,
-    /// The codec the decoder was built for, one of [`lowlat_codec`]; zero
-    /// before a build.
-    pub codec: u32,
-    /// The decoder backend in use, one of `lowlat_decoder` as resolved at
-    /// creation or by `lowlat_client_set_decoder`: never
-    /// `LOWLAT_DECODER_AUTO`.
-    pub backend: u32,
+    /// The codec the decoder was built for; none before a build.
+    pub codec: lowlat_codec,
+    /// The decoder backend in use, as resolved at creation or by
+    /// `lowlat_client_set_decoder`: never `LOWLAT_DECODER_AUTO`.
+    pub backend: lowlat_decoder,
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
     pub input_dropped: u32,
@@ -526,9 +526,8 @@ pub struct lowlat_client_status {
     /// How long the last acquired packet waited between the wire and the
     /// call, in milliseconds.
     pub audio_age_ms: u32,
-    /// What the sound decoder was built for: [`LOWLAT_AUDIO_OPUS`],
-    /// [`LOWLAT_AUDIO_PCM`], or zero before a build.
-    pub audio_codec: u32,
+    /// What the sound decoder was built for; none before a build.
+    pub audio_codec: lowlat_audio_codec,
     /// What the client reports to the host every two seconds: the smoothed
     /// decode and hand-over per picture, and the smoothed decode per sound
     /// packet, in microseconds; zero until something has been timed.
@@ -539,9 +538,9 @@ pub struct lowlat_client_status {
     /// mask; zero before an attempt.
     pub asked_flags: u32,
     pub declared_flags: u32,
-    /// The stream as the decoder built it: one of [`lowlat_format`], or
-    /// zero before a build. With `codec`, what the host turned out to send.
-    pub stream_format: u32,
+    /// The stream as the decoder built it; none before a build. With
+    /// `codec`, what the host turned out to send.
+    pub stream_format: lowlat_format,
     /// This client's number on the host's roster, which is how it finds
     /// itself in the guest list; zero until the host has sent one.
     pub number: u32,
@@ -564,10 +563,9 @@ pub struct lowlat_client_status {
     /// Whether the path goes through the relay (minor 14).
     pub relayed: bool,
     pub reserved: u8,
-    /// What keeps this client's port mapped on the gateway (minor 22): one of
-    /// [`lowlat_mapping`], none while nothing is mapped or with
-    /// `port_mapping` off.
-    pub mapping: u32,
+    /// What keeps this client's port mapped on the gateway (minor 22): none
+    /// while nothing is mapped or with `port_mapping` off.
+    pub mapping: lowlat_mapping,
     /// The gateway's external address, NUL-terminated, and the port it
     /// mapped (minor 22): empty and zero while nothing is mapped, and the
     /// address empty where the gateway states none. The mapping is offered
@@ -576,9 +574,9 @@ pub struct lowlat_client_status {
     pub mapped_address: [c_char; LOWLAT_ADDRESS_MAX],
     pub mapped_port: u16,
     /// The gateway's last refusal (minor 22): its own code, in the numbering
-    /// of the protocol `mapping_refused_by` names; zero for none.
+    /// of the protocol `mapping_refused_by` names; zero and none for none.
     pub mapping_refusal: u16,
-    pub mapping_refused_by: u32,
+    pub mapping_refused_by: lowlat_mapping,
     /// The microphone (minor 25): frames of ten milliseconds sent, and frames
     /// dropped because the ring to the session thread was full.
     pub microphone_sent: u32,
@@ -593,14 +591,64 @@ pub struct lowlat_client_status {
 /// caller may pass, and what a caller built against an older header passes.
 const STATUS_MINOR_13: usize = core::mem::offset_of!(lowlat_client_status, relay_address);
 
-/// A protocol as `lowlat_mapping` numbers it.
-fn mapping_code(protocol: ::lowlat_portmap::Protocol) -> u32 {
-    (match protocol {
+/// A protocol as `lowlat_mapping` names it.
+fn mapping_code(protocol: ::lowlat_portmap::Protocol) -> lowlat_mapping {
+    match protocol {
         ::lowlat_portmap::Protocol::None => lowlat_mapping::LOWLAT_MAPPING_NONE,
         ::lowlat_portmap::Protocol::Pcp => lowlat_mapping::LOWLAT_MAPPING_PCP,
         ::lowlat_portmap::Protocol::NatPmp => lowlat_mapping::LOWLAT_MAPPING_NAT_PMP,
         ::lowlat_portmap::Protocol::Upnp => lowlat_mapping::LOWLAT_MAPPING_UPNP,
-    }) as u32
+    }
+}
+
+/// The codes the session thread publishes for the status, by the header's
+/// names: each matched against what its producer writes rather than against
+/// a number, and none, or not yet, for anything else -- which is zero before
+/// a build.
+fn decoder_state_of(code: u32) -> lowlat_decoder_state {
+    use ::lowlat_client::driver::{DECODER_BUILT, DECODER_FAILED};
+    match code {
+        DECODER_BUILT => lowlat_decoder_state::LOWLAT_DECODER_STATE_BUILT,
+        DECODER_FAILED => lowlat_decoder_state::LOWLAT_DECODER_STATE_FAILED,
+        _ => lowlat_decoder_state::LOWLAT_DECODER_STATE_NONE_YET,
+    }
+}
+
+/// A video codec as the session thread publishes it: its number on the wire.
+fn codec_of(code: u32) -> lowlat_codec {
+    use ::lowlat_core::video::Codec;
+    match code {
+        c if c == u32::from(Codec::H264.wire()) => lowlat_codec::LOWLAT_CODEC_H264,
+        c if c == u32::from(Codec::H265.wire()) => lowlat_codec::LOWLAT_CODEC_HEVC,
+        _ => lowlat_codec::LOWLAT_CODEC_NONE,
+    }
+}
+
+/// A sound codec as the session thread publishes it: its number on the wire.
+fn audio_codec_of(code: u32) -> lowlat_audio_codec {
+    use ::lowlat_core::audio::Codec;
+    match code {
+        c if c == Codec::Opus as u32 => lowlat_audio_codec::LOWLAT_AUDIO_OPUS,
+        c if c == Codec::Pcm as u32 => lowlat_audio_codec::LOWLAT_AUDIO_PCM,
+        _ => lowlat_audio_codec::LOWLAT_AUDIO_NONE,
+    }
+}
+
+/// A layout as the client codes it. The codes are the names' own values,
+/// which a test holds layout by layout.
+fn format_of(code: u32) -> lowlat_format {
+    use lowlat_format::*;
+    [
+        LOWLAT_FORMAT_NV12,
+        LOWLAT_FORMAT_P010,
+        LOWLAT_FORMAT_YUV444,
+        LOWLAT_FORMAT_YUV444_16,
+        LOWLAT_FORMAT_NV24,
+        LOWLAT_FORMAT_P410,
+    ]
+    .into_iter()
+    .find(|format| *format as u32 == code)
+    .unwrap_or(LOWLAT_FORMAT_NONE)
 }
 
 /// The gateway's mapping as the status carries it.
@@ -639,7 +687,7 @@ pub struct lowlat_nat_probe {
 
 /// How the translation in front of a client's port maps it (minor 23), as
 /// [`lowlat_nat_info`] reports it.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_nat_mapping {
     /// Nothing to compare: no result yet, or answers from fewer than two
@@ -662,30 +710,47 @@ pub enum lowlat_nat_mapping {
 }
 
 /// The numbering game consoles report a translation by, as
-/// `lowlat_nat_info.nat_type` carries it (minor 23): unknown while the
-/// answers cannot tell.
-pub const LOWLAT_NAT_TYPE_UNKNOWN: u32 = 0;
-/// Nothing translates.
-pub const LOWLAT_NAT_TYPE_1: u32 = 1;
-/// One public port serves every destination, or the gateway's mapping of the
-/// port is confirmed: a peer reaches the port at the address it is told.
-pub const LOWLAT_NAT_TYPE_2: u32 = 2;
-/// A public port per destination, or no answer at all: the address a peer
-/// is told was made for somebody else.
-pub const LOWLAT_NAT_TYPE_3: u32 = 3;
+/// `lowlat_nat_info.nat_type` carries it (minor 23).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_nat_type {
+    /// Unknown while the answers cannot tell.
+    LOWLAT_NAT_TYPE_UNKNOWN = 0,
+    /// Nothing translates.
+    LOWLAT_NAT_TYPE_1 = 1,
+    /// One public port serves every destination, or the gateway's mapping of
+    /// the port is confirmed: a peer reaches the port at the address it is
+    /// told.
+    LOWLAT_NAT_TYPE_2 = 2,
+    /// A public port per destination, or no answer at all: the address a peer
+    /// is told was made for somebody else.
+    LOWLAT_NAT_TYPE_3 = 3,
+}
 
-/// Where [`lowlat_nat_info`] stands (minor 23): nothing asked yet.
-pub const LOWLAT_NAT_STATE_NONE: u32 = 0;
-/// A probe is running; the fields still say what was known before it.
-pub const LOWLAT_NAT_STATE_PROBING: u32 = 1;
-/// A result is in.
-pub const LOWLAT_NAT_STATE_DONE: u32 = 2;
+/// Where [`lowlat_nat_info`] stands (minor 23).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_nat_state {
+    /// Nothing asked yet.
+    LOWLAT_NAT_STATE_NONE = 0,
+    /// A probe is running; the fields still say what was known before it.
+    LOWLAT_NAT_STATE_PROBING = 1,
+    /// A result is in.
+    LOWLAT_NAT_STATE_DONE = 2,
+}
 
-/// What [`lowlat_nat_info`]'s result was read from (minor 23), zero before
-/// there is one: a probe.
-pub const LOWLAT_NAT_SOURCE_PROBE: u32 = 1;
-/// An attempt's own reflexive answers, once two server addresses answered.
-pub const LOWLAT_NAT_SOURCE_ATTEMPT: u32 = 2;
+/// What [`lowlat_nat_info`]'s result was read from (minor 23).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_nat_source {
+    /// No result yet.
+    LOWLAT_NAT_SOURCE_NONE = 0,
+    /// A probe.
+    LOWLAT_NAT_SOURCE_PROBE = 1,
+    /// An attempt's own reflexive answers, once two server addresses
+    /// answered.
+    LOWLAT_NAT_SOURCE_ATTEMPT = 2,
+}
 
 /// The translation in front of a client's port (minor 23,
 /// [`lowlat_client_get_nat`]).
@@ -694,15 +759,12 @@ pub const LOWLAT_NAT_SOURCE_ATTEMPT: u32 = 2;
 pub struct lowlat_nat_info {
     /// Set by the caller to `sizeof(lowlat_nat_info)`.
     pub size: u32,
-    /// One of `LOWLAT_NAT_STATE_*`.
-    pub state: u32,
-    /// One of `LOWLAT_NAT_TYPE_*`. A confirmed mapping on the gateway numbers
-    /// 2 whatever `mapping` says, since a peer reaches it at the address it
-    /// is told.
-    pub nat_type: u32,
-    /// One of [`lowlat_nat_mapping`]: how the translation itself maps the
-    /// port, beside the number.
-    pub mapping: u32,
+    pub state: lowlat_nat_state,
+    /// A confirmed mapping on the gateway numbers 2 whatever `mapping` says,
+    /// since a peer reaches it at the address it is told.
+    pub nat_type: lowlat_nat_type,
+    /// How the translation itself maps the port, beside the number.
+    pub mapping: lowlat_nat_mapping,
     /// Where the first server to answer saw the port, NUL-terminated, and
     /// the port it saw; empty and zero without an answer.
     pub public_address: [c_char; LOWLAT_ADDRESS_MAX],
@@ -723,11 +785,9 @@ pub struct lowlat_nat_info {
     /// Servers asked, and how many of them answered.
     pub servers_asked: u32,
     pub servers_answered: u32,
-    /// One of `LOWLAT_NAT_SOURCE_*`.
-    pub source: u32,
-    /// What keeps the port mapped on the gateway as this is read: one of
-    /// [`lowlat_mapping`].
-    pub gateway: u32,
+    pub source: lowlat_nat_source,
+    /// What keeps the port mapped on the gateway as this is read.
+    pub gateway: lowlat_mapping,
 }
 
 /// What one channel did, seen from the receiving end.
@@ -779,76 +839,103 @@ pub struct lowlat_client_metrics {
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
 /// reports it.
-pub const LOWLAT_AUDIO_OPUS: u32 = 1;
-pub const LOWLAT_AUDIO_PCM: u32 = 2;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_audio_codec {
+    /// No sound decoder has been built yet.
+    LOWLAT_AUDIO_NONE = 0,
+    LOWLAT_AUDIO_OPUS = 1,
+    LOWLAT_AUDIO_PCM = 2,
+}
 
-/// Modifier bits for [`lowlat_client_send_key`]. The lock bits are the toggles'
-/// state, which a host reads to keep its own locks in step.
-pub const LOWLAT_MOD_LSHIFT: u32 = 0x0001;
-pub const LOWLAT_MOD_RSHIFT: u32 = 0x0002;
-pub const LOWLAT_MOD_LCTRL: u32 = 0x0040;
-pub const LOWLAT_MOD_RCTRL: u32 = 0x0080;
-pub const LOWLAT_MOD_LALT: u32 = 0x0100;
-pub const LOWLAT_MOD_RALT: u32 = 0x0200;
-pub const LOWLAT_MOD_LGUI: u32 = 0x0400;
-pub const LOWLAT_MOD_RGUI: u32 = 0x0800;
-pub const LOWLAT_MOD_NUM: u32 = 0x1000;
-pub const LOWLAT_MOD_CAPS: u32 = 0x2000;
+/// Modifier bits for [`lowlat_client_send_key`], OR-ed into its integer. The
+/// lock bits are the toggles' state, which a host reads to keep its own locks
+/// in step.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_keymod {
+    LOWLAT_MOD_LSHIFT = 0x0001,
+    LOWLAT_MOD_RSHIFT = 0x0002,
+    LOWLAT_MOD_LCTRL = 0x0040,
+    LOWLAT_MOD_RCTRL = 0x0080,
+    LOWLAT_MOD_LALT = 0x0100,
+    LOWLAT_MOD_RALT = 0x0200,
+    LOWLAT_MOD_LGUI = 0x0400,
+    LOWLAT_MOD_RGUI = 0x0800,
+    LOWLAT_MOD_NUM = 0x1000,
+    LOWLAT_MOD_CAPS = 0x2000,
+}
 
 /// Mouse buttons for [`lowlat_client_send_mouse_button`].
-pub const LOWLAT_MOUSE_LEFT: u32 = 1;
-pub const LOWLAT_MOUSE_MIDDLE: u32 = 2;
-pub const LOWLAT_MOUSE_RIGHT: u32 = 3;
-pub const LOWLAT_MOUSE_X1: u32 = 4;
-pub const LOWLAT_MOUSE_X2: u32 = 5;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_mouse_button {
+    LOWLAT_MOUSE_LEFT = 1,
+    LOWLAT_MOUSE_MIDDLE = 2,
+    LOWLAT_MOUSE_RIGHT = 3,
+    LOWLAT_MOUSE_X1 = 4,
+    LOWLAT_MOUSE_X2 = 5,
+}
 
 /// Pad buttons for [`lowlat_client_send_pad_button`], by index.
 ///
 /// **Not the bits of [`lowlat_pad_state`]**: the two forms number the
 /// buttons differently and neither is derivable from the other.
-pub const LOWLAT_PAD_A: u32 = 0;
-pub const LOWLAT_PAD_B: u32 = 1;
-pub const LOWLAT_PAD_X: u32 = 2;
-pub const LOWLAT_PAD_Y: u32 = 3;
-pub const LOWLAT_PAD_BACK: u32 = 4;
-pub const LOWLAT_PAD_GUIDE: u32 = 5;
-pub const LOWLAT_PAD_START: u32 = 6;
-pub const LOWLAT_PAD_LSTICK: u32 = 7;
-pub const LOWLAT_PAD_RSTICK: u32 = 8;
-pub const LOWLAT_PAD_LSHOULDER: u32 = 9;
-pub const LOWLAT_PAD_RSHOULDER: u32 = 10;
-pub const LOWLAT_PAD_DPAD_UP: u32 = 11;
-pub const LOWLAT_PAD_DPAD_DOWN: u32 = 12;
-pub const LOWLAT_PAD_DPAD_LEFT: u32 = 13;
-pub const LOWLAT_PAD_DPAD_RIGHT: u32 = 14;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_button {
+    LOWLAT_PAD_BUTTON_A = 0,
+    LOWLAT_PAD_BUTTON_B = 1,
+    LOWLAT_PAD_BUTTON_X = 2,
+    LOWLAT_PAD_BUTTON_Y = 3,
+    LOWLAT_PAD_BUTTON_BACK = 4,
+    LOWLAT_PAD_BUTTON_GUIDE = 5,
+    LOWLAT_PAD_BUTTON_START = 6,
+    LOWLAT_PAD_BUTTON_LSTICK = 7,
+    LOWLAT_PAD_BUTTON_RSTICK = 8,
+    LOWLAT_PAD_BUTTON_LSHOULDER = 9,
+    LOWLAT_PAD_BUTTON_RSHOULDER = 10,
+    LOWLAT_PAD_BUTTON_DPAD_UP = 11,
+    LOWLAT_PAD_BUTTON_DPAD_DOWN = 12,
+    LOWLAT_PAD_BUTTON_DPAD_LEFT = 13,
+    LOWLAT_PAD_BUTTON_DPAD_RIGHT = 14,
+}
 
 /// Pad axes for [`lowlat_client_send_pad_axis`]. Sticks span the signed range,
 /// pushed right or away from the player positive, as in [`lowlat_pad_state`];
 /// triggers run from zero.
-pub const LOWLAT_PAD_AXIS_LX: u32 = 0;
-pub const LOWLAT_PAD_AXIS_LY: u32 = 1;
-pub const LOWLAT_PAD_AXIS_RX: u32 = 2;
-pub const LOWLAT_PAD_AXIS_RY: u32 = 3;
-pub const LOWLAT_PAD_AXIS_LT: u32 = 4;
-pub const LOWLAT_PAD_AXIS_RT: u32 = 5;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_axis {
+    LOWLAT_PAD_AXIS_LX = 0,
+    LOWLAT_PAD_AXIS_LY = 1,
+    LOWLAT_PAD_AXIS_RX = 2,
+    LOWLAT_PAD_AXIS_RY = 3,
+    LOWLAT_PAD_AXIS_LT = 4,
+    LOWLAT_PAD_AXIS_RT = 5,
+}
 
-/// Button bits for [`lowlat_pad_state`].
-pub const LOWLAT_PAD_STATE_DPAD_UP: u16 = 0x0001;
-pub const LOWLAT_PAD_STATE_DPAD_DOWN: u16 = 0x0002;
-pub const LOWLAT_PAD_STATE_DPAD_LEFT: u16 = 0x0004;
-pub const LOWLAT_PAD_STATE_DPAD_RIGHT: u16 = 0x0008;
-pub const LOWLAT_PAD_STATE_START: u16 = 0x0010;
-pub const LOWLAT_PAD_STATE_BACK: u16 = 0x0020;
-pub const LOWLAT_PAD_STATE_LSTICK: u16 = 0x0040;
-pub const LOWLAT_PAD_STATE_RSTICK: u16 = 0x0080;
-pub const LOWLAT_PAD_STATE_LSHOULDER: u16 = 0x0100;
-pub const LOWLAT_PAD_STATE_RSHOULDER: u16 = 0x0200;
-pub const LOWLAT_PAD_STATE_GUIDE: u16 = 0x0400;
-pub const LOWLAT_PAD_STATE_TOUCHPAD: u16 = 0x0800;
-pub const LOWLAT_PAD_STATE_A: u16 = 0x1000;
-pub const LOWLAT_PAD_STATE_B: u16 = 0x2000;
-pub const LOWLAT_PAD_STATE_X: u16 = 0x4000;
-pub const LOWLAT_PAD_STATE_Y: u16 = 0x8000;
+/// Button bits for [`lowlat_pad_state`], OR-ed into its `buttons`.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_state_button {
+    LOWLAT_PAD_STATE_DPAD_UP = 0x0001,
+    LOWLAT_PAD_STATE_DPAD_DOWN = 0x0002,
+    LOWLAT_PAD_STATE_DPAD_LEFT = 0x0004,
+    LOWLAT_PAD_STATE_DPAD_RIGHT = 0x0008,
+    LOWLAT_PAD_STATE_START = 0x0010,
+    LOWLAT_PAD_STATE_BACK = 0x0020,
+    LOWLAT_PAD_STATE_LSTICK = 0x0040,
+    LOWLAT_PAD_STATE_RSTICK = 0x0080,
+    LOWLAT_PAD_STATE_LSHOULDER = 0x0100,
+    LOWLAT_PAD_STATE_RSHOULDER = 0x0200,
+    LOWLAT_PAD_STATE_GUIDE = 0x0400,
+    LOWLAT_PAD_STATE_TOUCHPAD = 0x0800,
+    LOWLAT_PAD_STATE_A = 0x1000,
+    LOWLAT_PAD_STATE_B = 0x2000,
+    LOWLAT_PAD_STATE_X = 0x4000,
+    LOWLAT_PAD_STATE_Y = 0x8000,
+}
 
 /// A whole pad at one moment, for [`lowlat_client_send_pad_state`]. Sticks
 /// span the signed range, pushed right or away from the player positive;
@@ -858,7 +945,7 @@ pub const LOWLAT_PAD_STATE_Y: u16 = 0x8000;
 pub struct lowlat_pad_state {
     /// Set by the caller to `sizeof(lowlat_pad_state)`.
     pub size: u32,
-    /// `LOWLAT_PAD_STATE_*` bits.
+    /// [`lowlat_pad_state_button`] bits.
     pub buttons: u16,
     pub lx: i16,
     pub ly: i16,
@@ -868,12 +955,18 @@ pub struct lowlat_pad_state {
     pub rt: u8,
 }
 
-/// No decoder has been built yet: no parameter set has arrived.
-pub const LOWLAT_DECODER_NONE_YET: u32 = 0;
-/// A decoder exists and is being fed.
-pub const LOWLAT_DECODER_BUILT: u32 = 1;
-/// No decoder can serve the stream; the ended event said so.
-pub const LOWLAT_DECODER_FAILED: u32 = 2;
+/// Where a client's decoder stands, as `lowlat_client_status.decoder`
+/// reports it.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_decoder_state {
+    /// No decoder has been built yet: no parameter set has arrived.
+    LOWLAT_DECODER_STATE_NONE_YET = 0,
+    /// A decoder exists and is being fed.
+    LOWLAT_DECODER_STATE_BUILT = 1,
+    /// No decoder can serve the stream; the ended event said so.
+    LOWLAT_DECODER_STATE_FAILED = 2,
+}
 
 /// One plane of a picture.
 #[repr(C)]
@@ -890,14 +983,13 @@ pub struct lowlat_plane {
     pub offset: u64,
 }
 
-/// How a picture's planes are laid out.
-///
-/// **Named by an enumeration and carried as an integer**, as
-/// [`lowlat_frame_kind`] is: [`lowlat_frame`]'s `format` and
-/// [`lowlat_client_status`]'s `stream_format` hold one of these.
-#[repr(C)]
+/// How a picture's planes are laid out: what [`lowlat_frame`]'s `format`
+/// and [`lowlat_client_status`]'s `stream_format` say.
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_format {
+    /// Nothing has been decoded yet: what a status says before a build.
+    LOWLAT_FORMAT_NONE = 0,
     /// Eight bits: a luma plane and an interleaved chroma plane at half the
     /// rows.
     LOWLAT_FORMAT_NV12 = 1,
@@ -929,14 +1021,13 @@ pub enum lowlat_format {
 pub struct lowlat_frame {
     /// Set by the caller to `sizeof(lowlat_frame)`.
     pub size: u32,
-    /// One of [`lowlat_frame_kind`]: what the picture is handed out as.
-    pub kind: u32,
-    /// One of [`lowlat_format`].
-    pub format: u32,
+    /// What the picture is handed out as.
+    pub kind: lowlat_frame_kind,
+    pub format: lowlat_format,
     pub width: u32,
     pub height: u32,
-    /// One of [`lowlat_rotation`], applied at present time.
-    pub rotation: u32,
+    /// Applied at present time.
+    pub rotation: lowlat_rotation,
     /// The encoder generation the picture belongs to.
     pub generation: u32,
     /// The picture's order in its stream: a later picture has a higher
@@ -946,8 +1037,8 @@ pub struct lowlat_frame {
     pub planes: [lowlat_plane; 3],
     /// Which slot this is, for the release.
     pub slot: u32,
-    /// One of [`lowlat_handle_kind`]: none for a frame of the planes kind.
-    pub handle_kind: u32,
+    /// None for a frame of the planes kind.
+    pub handle_kind: lowlat_handle_kind,
     /// The descriptor, for [`lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD`];
     /// negative otherwise.
     pub fd: i32,
@@ -1020,21 +1111,27 @@ pub struct lowlat_fence {
     pub value: u64,
 }
 
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_fence_kind {
     /// Reusable now.
     LOWLAT_FENCE_NONE = 0,
 }
 
-/// No attempt has been made.
-pub const LOWLAT_CLIENT_IDLE: u32 = 0;
-/// Connectivity is running.
-pub const LOWLAT_CLIENT_CONNECTING: u32 = 1;
-/// The session is up.
-pub const LOWLAT_CLIENT_ESTABLISHED: u32 = 2;
-/// The session is over; the ended event says why.
-pub const LOWLAT_CLIENT_OVER: u32 = 3;
+/// Where a client's session stands, as `lowlat_client_status.state` reports
+/// it.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_client_state {
+    /// No attempt has been made.
+    LOWLAT_CLIENT_IDLE = 0,
+    /// Connectivity is running.
+    LOWLAT_CLIENT_CONNECTING = 1,
+    /// The session is up.
+    LOWLAT_CLIENT_ESTABLISHED = 2,
+    /// The session is over; the ended event says why.
+    LOWLAT_CLIENT_OVER = 3,
+}
 
 /// One client, as the application holds it.
 ///
@@ -1736,7 +1833,7 @@ fn report(cl: *mut lowlat_client, input: ::lowlat_client::input::Input) -> lowla
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
 /// @param[in] code The usage code.
-/// @param[in] mods `LOWLAT_MOD_*` bits in effect, lock state included.
+/// @param[in] mods [`lowlat_keymod`] bits in effect, lock state included.
 /// @param[in] pressed Down or up.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
 ///
@@ -1764,7 +1861,7 @@ pub unsafe extern "C" fn lowlat_client_send_key(
 /// outside the picture's rectangle is not sent; a release always is.
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
-/// @param[in] button One of `LOWLAT_MOUSE_*`.
+/// @param[in] button One of [`lowlat_mouse_button`].
 /// @param[in] pressed Down or up.
 /// @param[in] x Where the pointer was.
 /// @param[in] y Where the pointer was.
@@ -1841,7 +1938,7 @@ pub unsafe extern "C" fn lowlat_client_send_mouse_motion(
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
 /// @param[in] pad The pad.
-/// @param[in] button One of `LOWLAT_PAD_*`, the index form.
+/// @param[in] button One of [`lowlat_pad_button`], the index form.
 /// @param[in] pressed Down or up.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
 ///
@@ -1869,7 +1966,7 @@ pub unsafe extern "C" fn lowlat_client_send_pad_button(
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
 /// @param[in] pad The pad.
-/// @param[in] axis One of `LOWLAT_PAD_AXIS_*`.
+/// @param[in] axis One of [`lowlat_pad_axis`].
 /// @param[in] value The position: a stick over the signed range, away from the player
 /// positive as in a whole state, a trigger from zero.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
@@ -2233,25 +2330,25 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 pictures: t.pictures.load(Ordering::Relaxed),
                 skipped: t.skipped.load(Ordering::Relaxed),
                 audio_packets: t.audio_packets.load(Ordering::Relaxed),
-                decoder: t.decoder.load(Ordering::Relaxed),
+                decoder: decoder_state_of(t.decoder.load(Ordering::Relaxed)),
                 queue_depth: t.queue_depth.load(Ordering::Relaxed),
                 decode_us: t.decode_us.load(Ordering::Relaxed),
                 readback_us: t.readback_us.load(Ordering::Relaxed),
                 decoded: t.decoded.load(Ordering::Relaxed),
                 video_bytes: t.video_bytes.load(Ordering::Relaxed),
                 encode_us: t.encode_us.load(Ordering::Relaxed),
-                codec: t.codec.load(Ordering::Relaxed),
+                codec: codec_of(t.codec.load(Ordering::Relaxed)),
                 backend: match held
                     .seam
                     .opened()
                     .map(::lowlat_client::seam::Opened::backend)
                 {
-                    Some(Backend::Vaapi) => lowlat_decoder::LOWLAT_DECODER_OPEN as u32,
-                    Some(Backend::Nvdec) => lowlat_decoder::LOWLAT_DECODER_VENDOR as u32,
-                    Some(Backend::Software) => lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32,
-                    Some(Backend::System) => lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32,
+                    Some(Backend::Vaapi) => lowlat_decoder::LOWLAT_DECODER_OPEN,
+                    Some(Backend::Nvdec) => lowlat_decoder::LOWLAT_DECODER_VENDOR,
+                    Some(Backend::Software) => lowlat_decoder::LOWLAT_DECODER_SOFTWARE,
+                    Some(Backend::System) => lowlat_decoder::LOWLAT_DECODER_SYSTEM,
                     Some(Backend::Auto | Backend::None) | None => {
-                        lowlat_decoder::LOWLAT_DECODER_NONE as u32
+                        lowlat_decoder::LOWLAT_DECODER_NONE
                     }
                 },
                 input_dropped: t.input_dropped.load(Ordering::Relaxed),
@@ -2260,12 +2357,12 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 audio_refused: t.audio_refused.load(Ordering::Relaxed),
                 audio_queued: u32::try_from(held.seam.sound_queued()).unwrap_or(u32::MAX),
                 audio_age_ms: t.audio_age_ms.load(Ordering::Relaxed),
-                audio_codec: t.audio_codec.load(Ordering::Relaxed),
+                audio_codec: audio_codec_of(t.audio_codec.load(Ordering::Relaxed)),
                 decode_reported_us: t.decode_reported_us.load(Ordering::Relaxed),
                 audio_reported_us: t.audio_reported_us.load(Ordering::Relaxed),
                 asked_flags: t.asked_flags.load(Ordering::Relaxed),
                 declared_flags: t.declared_flags.load(Ordering::Relaxed),
-                stream_format: t.stream_format.load(Ordering::Relaxed),
+                stream_format: format_of(t.stream_format.load(Ordering::Relaxed)),
                 number: t.number.load(Ordering::Relaxed),
                 cursor_images: t.cursor_images.load(Ordering::Relaxed),
                 cursor_misses: t.cursor_misses.load(Ordering::Relaxed),
@@ -2277,11 +2374,11 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 relay_port: 0,
                 relayed: t.path_relayed.load(Ordering::Relaxed),
                 reserved: 0,
-                mapping: 0,
+                mapping: lowlat_mapping::LOWLAT_MAPPING_NONE,
                 mapped_address: [0; LOWLAT_ADDRESS_MAX],
                 mapped_port: 0,
                 mapping_refusal: 0,
-                mapping_refused_by: 0,
+                mapping_refused_by: lowlat_mapping::LOWLAT_MAPPING_NONE,
                 microphone_sent: t.microphone_sent.load(Ordering::Relaxed),
                 microphone_dropped: t.microphone_dropped.load(Ordering::Relaxed),
                 microphone: !t.microphone_off.load(Ordering::Relaxed),
@@ -2408,8 +2505,13 @@ fn nat_info(size: u32, nat: &::lowlat_client::nat::Nat) -> lowlat_nat_info {
             State::Probing => LOWLAT_NAT_STATE_PROBING,
             State::Done => LOWLAT_NAT_STATE_DONE,
         },
-        nat_type: nat.number.map_or(LOWLAT_NAT_TYPE_UNKNOWN, u32::from),
-        mapping: mapping as u32,
+        nat_type: match nat.number {
+            Some(1) => LOWLAT_NAT_TYPE_1,
+            Some(2) => LOWLAT_NAT_TYPE_2,
+            Some(3) => LOWLAT_NAT_TYPE_3,
+            _ => LOWLAT_NAT_TYPE_UNKNOWN,
+        },
+        mapping,
         public_address: [0; LOWLAT_ADDRESS_MAX],
         public_port: 0,
         port_preserved: nat.port_preserved,
@@ -2419,7 +2521,7 @@ fn nat_info(size: u32, nat: &::lowlat_client::nat::Nat) -> lowlat_nat_info {
         servers_asked: u32::try_from(nat.asked).unwrap_or(u32::MAX),
         servers_answered: u32::try_from(nat.answered).unwrap_or(u32::MAX),
         source: match (nat.mapping, nat.source) {
-            (None, _) => 0,
+            (None, _) => LOWLAT_NAT_SOURCE_NONE,
             (Some(_), Source::Probe) => LOWLAT_NAT_SOURCE_PROBE,
             (Some(_), Source::Attempt) => LOWLAT_NAT_SOURCE_ATTEMPT,
         },
@@ -2668,8 +2770,8 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     lowlat_frame_kind::LOWLAT_FRAME_HANDLE
                 } else {
                     lowlat_frame_kind::LOWLAT_FRAME_PLANES
-                } as u32,
-                format: ::lowlat_client::decode::format_code(taken.frame.format),
+                },
+                format: format_of(::lowlat_client::decode::format_code(taken.frame.format)),
                 width: taken.frame.width,
                 height: taken.frame.height,
                 rotation: match taken.frame.rotation {
@@ -2677,7 +2779,7 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     ::lowlat_core::video::Rotation::Deg180 => lowlat_rotation::LOWLAT_ROTATION_180,
                     ::lowlat_core::video::Rotation::Deg270 => lowlat_rotation::LOWLAT_ROTATION_270,
                     _ => lowlat_rotation::LOWLAT_ROTATION_NONE,
-                } as u32,
+                },
                 generation: taken.frame.generation,
                 sequence: taken.seq,
                 planes,
@@ -2709,7 +2811,7 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
 
 /// A device slot's handle as a frame carries it.
 struct HandleFields {
-    kind: u32,
+    kind: lowlat_handle_kind,
     fd: i32,
     allocation: u32,
     size: u64,
@@ -2720,7 +2822,7 @@ struct HandleFields {
 
 impl HandleFields {
     const NONE: Self = Self {
-        kind: lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32,
+        kind: lowlat_handle_kind::LOWLAT_HANDLE_NONE,
         fd: -1,
         allocation: 0,
         size: 0,
@@ -2735,7 +2837,7 @@ impl HandleFields {
 fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
     match handle {
         Some(h) => HandleFields {
-            kind: lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD as u32,
+            kind: lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD,
             fd: h.fd,
             allocation: h.allocation,
             size: h.size as u64,
@@ -2751,7 +2853,7 @@ fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleField
 fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
     match handle {
         Some(h) => HandleFields {
-            kind: lowlat_handle_kind::LOWLAT_HANDLE_D3D11_SHARED as u32,
+            kind: lowlat_handle_kind::LOWLAT_HANDLE_D3D11_SHARED,
             allocation: h.allocation,
             textures: h.textures,
             // The low part first, as the system lays the identity out.
@@ -2768,7 +2870,7 @@ fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleField
 fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
     match handle {
         Some(h) => HandleFields {
-            kind: lowlat_handle_kind::LOWLAT_HANDLE_IOSURFACE as u32,
+            kind: lowlat_handle_kind::LOWLAT_HANDLE_IOSURFACE,
             allocation: h.allocation,
             size: h.size as u64,
             surface: h.surface,
@@ -3219,7 +3321,7 @@ fn described(
                 body: lowlat_event_body {
                     pad_report: lowlat_pad_report_event {
                         pad: *pad,
-                        kind: kind as u32,
+                        kind,
                         len: u32::try_from(len).unwrap_or(u32::MAX),
                         report: lent.as_ptr(),
                     },
@@ -3354,12 +3456,12 @@ mod tests {
                 refusal: Some((Protocol::Pcp, 2)),
             },
         );
-        assert_eq!(status.mapping, lowlat_mapping::LOWLAT_MAPPING_UPNP as u32);
+        assert_eq!(status.mapping, lowlat_mapping::LOWLAT_MAPPING_UPNP);
         assert_eq!(taken(&status.mapped_address), Some("203.0.113.7"));
         assert_eq!(status.mapped_port, 24137);
         assert_eq!(
             (status.mapping_refusal, status.mapping_refused_by),
-            (2, lowlat_mapping::LOWLAT_MAPPING_PCP as u32)
+            (2, lowlat_mapping::LOWLAT_MAPPING_PCP)
         );
         // SAFETY: plain data.
         let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
@@ -3373,12 +3475,12 @@ mod tests {
                 refusal: None,
             },
         );
-        assert_eq!(
-            status.mapping,
-            lowlat_mapping::LOWLAT_MAPPING_NAT_PMP as u32
-        );
+        assert_eq!(status.mapping, lowlat_mapping::LOWLAT_MAPPING_NAT_PMP);
         assert_eq!(taken(&status.mapped_address), Some(""));
-        assert_eq!((status.mapping_refusal, status.mapping_refused_by), (0, 0));
+        assert_eq!(
+            (status.mapping_refusal, status.mapping_refused_by),
+            (0, lowlat_mapping::LOWLAT_MAPPING_NONE)
+        );
     }
 
     /// A reflexive server at `at` answering `limit` requests with the source
@@ -3493,8 +3595,8 @@ mod tests {
             (
                 LOWLAT_NAT_STATE_NONE,
                 LOWLAT_NAT_TYPE_UNKNOWN,
-                lowlat_nat_mapping::LOWLAT_NAT_MAPPING_UNKNOWN as u32,
-                0
+                lowlat_nat_mapping::LOWLAT_NAT_MAPPING_UNKNOWN,
+                LOWLAT_NAT_SOURCE_NONE
             )
         );
         assert_eq!(taken(&before.public_address), Some(""));
@@ -3556,7 +3658,7 @@ mod tests {
         assert_eq!(after.nat_type, LOWLAT_NAT_TYPE_2);
         assert_eq!(
             after.mapping,
-            lowlat_nat_mapping::LOWLAT_NAT_MAPPING_INDEPENDENT as u32
+            lowlat_nat_mapping::LOWLAT_NAT_MAPPING_INDEPENDENT
         );
         assert_eq!(after.source, LOWLAT_NAT_SOURCE_PROBE);
         assert_eq!((after.servers_asked, after.servers_answered), (2, 2));
@@ -3568,7 +3670,7 @@ mod tests {
                 after.gateway_confirmed,
                 after.double_translation
             ),
-            (lowlat_mapping::LOWLAT_MAPPING_NONE as u32, false, false)
+            (lowlat_mapping::LOWLAT_MAPPING_NONE, false, false)
         );
         unsafe { lowlat_client_destroy(handle) };
     }
@@ -3601,7 +3703,51 @@ mod tests {
                 named as u32,
                 "{format:?}"
             );
+            assert_eq!(
+                format_of(::lowlat_client::decode::format_code(format)),
+                named,
+                "{format:?}"
+            );
         }
+        assert_eq!(format_of(0), lowlat_format::LOWLAT_FORMAT_NONE);
+    }
+
+    /// **Every other code the session thread publishes for the status is the
+    /// header's name for it**, and zero, which it holds before a build, is
+    /// none: each is made outside this crate and named here.
+    #[test]
+    fn every_code_the_status_carries_has_the_headers_name() {
+        use ::lowlat_client::driver::{DECODER_BUILT, DECODER_FAILED};
+        use ::lowlat_core::{audio, video};
+        assert_eq!(
+            [0, DECODER_BUILT, DECODER_FAILED].map(decoder_state_of),
+            [
+                lowlat_decoder_state::LOWLAT_DECODER_STATE_NONE_YET,
+                lowlat_decoder_state::LOWLAT_DECODER_STATE_BUILT,
+                lowlat_decoder_state::LOWLAT_DECODER_STATE_FAILED,
+            ]
+        );
+        assert_eq!(
+            [
+                0,
+                u32::from(video::Codec::H264.wire()),
+                u32::from(video::Codec::H265.wire()),
+            ]
+            .map(codec_of),
+            [
+                lowlat_codec::LOWLAT_CODEC_NONE,
+                lowlat_codec::LOWLAT_CODEC_H264,
+                lowlat_codec::LOWLAT_CODEC_HEVC,
+            ]
+        );
+        assert_eq!(
+            [0, audio::Codec::Opus as u32, audio::Codec::Pcm as u32].map(audio_codec_of),
+            [
+                lowlat_audio_codec::LOWLAT_AUDIO_NONE,
+                lowlat_audio_codec::LOWLAT_AUDIO_OPUS,
+                lowlat_audio_codec::LOWLAT_AUDIO_PCM,
+            ]
+        );
     }
 
     /// **Each structure is the size its fields come to**, written out rather
@@ -3672,11 +3818,11 @@ mod tests {
         // No session: nothing to acquire from.
         let mut frame = lowlat_frame {
             size: core::mem::size_of::<lowlat_frame>() as u32,
-            kind: 0,
-            format: 0,
+            kind: lowlat_frame_kind::LOWLAT_FRAME_PLANES,
+            format: lowlat_format::LOWLAT_FORMAT_NONE,
             width: 0,
             height: 0,
-            rotation: 0,
+            rotation: lowlat_rotation::LOWLAT_ROTATION_NONE,
             generation: 0,
             sequence: 0,
             planes: [lowlat_plane {
@@ -3685,7 +3831,7 @@ mod tests {
                 offset: 0,
             }; 3],
             slot: 0,
-            handle_kind: 0,
+            handle_kind: lowlat_handle_kind::LOWLAT_HANDLE_NONE,
             fd: -1,
             allocation: 0,
             handle_size: 0,
@@ -3737,9 +3883,10 @@ mod tests {
             fingerprint: [0; LOWLAT_FINGERPRINT_MAX],
             aes256: [0; LOWLAT_ICE_MAX],
         };
+        // Every value the call must replace is one it would not write here.
         let mut status = lowlat_client_status {
             size: core::mem::size_of::<lowlat_client_status>() as u32,
-            state: 99,
+            state: LOWLAT_CLIENT_OVER,
             disconnect: 0,
             rtt_ms: 0,
             behind: 0,
@@ -3747,27 +3894,27 @@ mod tests {
             pictures: 0,
             skipped: 0,
             audio_packets: 0,
-            decoder: 0,
+            decoder: lowlat_decoder_state::LOWLAT_DECODER_STATE_NONE_YET,
             queue_depth: 0,
             decode_us: 0,
             readback_us: 0,
             decoded: 0,
             video_bytes: 0,
             encode_us: 0,
-            codec: 0,
-            backend: 0,
+            codec: lowlat_codec::LOWLAT_CODEC_NONE,
+            backend: lowlat_decoder::LOWLAT_DECODER_AUTO,
             input_dropped: 0,
             audio_decoded: 0,
             audio_dropped: 0,
             audio_refused: 0,
             audio_queued: 0,
             audio_age_ms: 0,
-            audio_codec: 0,
+            audio_codec: lowlat_audio_codec::LOWLAT_AUDIO_NONE,
             decode_reported_us: 0,
             audio_reported_us: 0,
             asked_flags: 0,
             declared_flags: 0,
-            stream_format: 0,
+            stream_format: lowlat_format::LOWLAT_FORMAT_NONE,
             number: 0,
             cursor_images: 0,
             cursor_misses: 0,
@@ -3779,11 +3926,11 @@ mod tests {
             relay_port: 7,
             relayed: true,
             reserved: 0,
-            mapping: 7,
+            mapping: lowlat_mapping::LOWLAT_MAPPING_UPNP,
             mapped_address: [0; LOWLAT_ADDRESS_MAX],
             mapped_port: 7,
             mapping_refusal: 7,
-            mapping_refused_by: 7,
+            mapping_refused_by: lowlat_mapping::LOWLAT_MAPPING_PCP,
             microphone_sent: 7,
             microphone_dropped: 7,
             microphone: false,
@@ -3804,14 +3951,19 @@ mod tests {
                 status.mapping_refusal,
                 status.mapping_refused_by
             ),
-            (lowlat_mapping::LOWLAT_MAPPING_NONE as u32, 0, 0, 0)
+            (
+                lowlat_mapping::LOWLAT_MAPPING_NONE,
+                0,
+                0,
+                lowlat_mapping::LOWLAT_MAPPING_NONE
+            )
         );
         // A caller built against the header before the relay's fields gets
         // the fields it knows and nothing past them; one shorter still is
         // refused.
         status.size = u32::try_from(STATUS_MINOR_13).unwrap();
         status.relay_port = 7;
-        status.state = 99;
+        status.state = LOWLAT_CLIENT_OVER;
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
             LOWLAT_OK
@@ -4394,10 +4546,7 @@ mod tests {
             allocation: 70,
             size: 1 << 20,
         }));
-        assert_eq!(
-            fields.kind,
-            lowlat_handle_kind::LOWLAT_HANDLE_IOSURFACE as u32
-        );
+        assert_eq!(fields.kind, lowlat_handle_kind::LOWLAT_HANDLE_IOSURFACE);
         assert_eq!(
             (fields.surface, fields.allocation, fields.size),
             (surface, 70, 1 << 20)
@@ -4408,7 +4557,7 @@ mod tests {
         );
         let none = handle_fields(None);
         assert!(none.surface.is_null());
-        assert_eq!(none.kind, lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32);
+        assert_eq!(none.kind, lowlat_handle_kind::LOWLAT_HANDLE_NONE);
     }
 
     /// A frame kind the decoder named does not export is refused at
@@ -4476,10 +4625,7 @@ mod tests {
                     unsafe { lowlat_client_get_status(handle, &raw mut status) },
                     LOWLAT_OK
                 );
-                assert_eq!(
-                    status.backend,
-                    lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
-                );
+                assert_eq!(status.backend, lowlat_decoder::LOWLAT_DECODER_SOFTWARE);
                 unsafe { lowlat_client_destroy(handle) };
             }
             LOWLAT_ERR_NO_DECODER_LICENCE
@@ -4515,7 +4661,7 @@ mod tests {
             );
             status.backend
         };
-        assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE as u32);
+        assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE);
         assert_eq!(
             unsafe { lowlat_client_set_decoder(handle, 42, core::ptr::null()) },
             LOWLAT_ERR_INVALID_ARGUMENT
@@ -4546,7 +4692,7 @@ mod tests {
             );
             assert_eq!(
                 backend(handle),
-                lowlat_decoder::LOWLAT_DECODER_NONE as u32,
+                lowlat_decoder::LOWLAT_DECODER_NONE,
                 "a refused choice moved the decoder"
             );
         }
@@ -4560,15 +4706,12 @@ mod tests {
         };
         match software {
             LOWLAT_OK => {
-                assert_eq!(
-                    backend(handle),
-                    lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
-                );
+                assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_SOFTWARE);
             }
             LOWLAT_ERR_NO_DECODER_LICENCE
             | LOWLAT_ERR_NO_DECODER_RUNTIME
             | LOWLAT_ERR_NO_DECODER_PROFILE => {
-                assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE as u32);
+                assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE);
             }
             other => panic!("the software choice answered {other:?}"),
         }
@@ -4598,7 +4741,7 @@ mod tests {
                 | LOWLAT_ERR_NO_DECODER_PROFILE => lowlat_decoder::LOWLAT_DECODER_VENDOR,
                 other => panic!("a handle session's move answered {other:?}"),
             };
-            assert_eq!(backend(handle), now as u32);
+            assert_eq!(backend(handle), now);
             unsafe { lowlat_client_destroy(handle) };
         } else {
             println!("no vendor decoder here: the handle session's move not exercised");
@@ -4644,7 +4787,7 @@ mod tests {
             LOWLAT_OK
         );
         let settled = status.backend;
-        println!("the automatic order settled on {settled}");
+        println!("the automatic order settled on {settled:?}");
         let stale = std::ffi::CString::new("luid:7fffffff:00000001").expect("a name");
         assert_eq!(
             unsafe {
@@ -4746,10 +4889,10 @@ mod tests {
                 lowlat_decoder::LOWLAT_DECODER_SYSTEM
             } else {
                 lowlat_decoder::LOWLAT_DECODER_SOFTWARE
-            } as u32;
+            };
             assert_eq!(row.decoder, expected, "slot {count}");
             let interfaces: &[&str] = match expected {
-                x if x == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => {
+                lowlat_decoder::LOWLAT_DECODER_OPEN => {
                     if cfg!(windows) {
                         &["D3D11"]
                     } else {
@@ -4758,14 +4901,14 @@ mod tests {
                 }
                 // The maker's own: NVIDIA's everywhere, AMD's and Intel's
                 // on Windows.
-                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => {
+                lowlat_decoder::LOWLAT_DECODER_VENDOR => {
                     if cfg!(windows) {
                         &["NVDEC", "AMF", "VPL", "MFX"]
                     } else {
                         &["NVDEC"]
                     }
                 }
-                x if x == lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32 => {
+                lowlat_decoder::LOWLAT_DECODER_SYSTEM => {
                     if cfg!(windows) {
                         &["MF"]
                     } else {
@@ -4804,8 +4947,8 @@ mod tests {
             // and the open decoder one on Windows alone, where a device with a
             // fence splits its pictures into textures.
             match row.decoder {
-                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => assert!(row.handle),
-                x if x == lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32 => {
+                lowlat_decoder::LOWLAT_DECODER_VENDOR => assert!(row.handle),
+                lowlat_decoder::LOWLAT_DECODER_SYSTEM => {
                     // On macOS where the hardware decodes, as the words begin.
                     let hardware = driver.to_bytes().starts_with(b"hardware");
                     assert_eq!(
@@ -4814,7 +4957,7 @@ mod tests {
                         "slot {count}"
                     )
                 }
-                x if x == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 => {
+                lowlat_decoder::LOWLAT_DECODER_SOFTWARE => {
                     assert!(!row.handle)
                 }
                 _ => assert!(cfg!(windows) || !row.handle, "slot {count}"),
@@ -4823,7 +4966,7 @@ mod tests {
             // says it hands out a handle opens as one too, and one that says
             // not refuses the kind.
             let mut info = no_decoder();
-            info.decoder = row.decoder;
+            info.decoder = row.decoder as u32;
             info.device = row.device;
             let mut handle: *mut lowlat_client = core::ptr::null_mut();
             assert_eq!(
@@ -4837,8 +4980,8 @@ mod tests {
             if row.handle {
                 assert_eq!(made, LOWLAT_OK, "slot {count} did not open for handles");
                 unsafe { lowlat_client_destroy(handle) };
-            } else if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
-                || row.decoder == lowlat_decoder::LOWLAT_DECODER_SYSTEM as u32
+            } else if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE
+                || row.decoder == lowlat_decoder::LOWLAT_DECODER_SYSTEM
             {
                 assert_eq!(made, LOWLAT_ERR_DECODER_UNSUPPORTED);
             }
@@ -5045,7 +5188,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
         status.size = core::mem::size_of::<lowlat_client_status>() as u32;
-        status.state = 99;
+        status.state = LOWLAT_CLIENT_OVER;
         let began = Instant::now();
         let read = unsafe { lowlat_client_get_status(handle, &raw mut status) };
         let answered = began.elapsed();
@@ -5119,10 +5262,15 @@ mod tests {
         use std::time::Instant;
 
         let waited = |handle: *mut lowlat_client| {
-            let mut frame: lowlat_frame = unsafe { core::mem::zeroed() };
-            frame.size = core::mem::size_of::<lowlat_frame>() as u32;
+            // Only ever written to, as a caller's own memory is: nothing but
+            // the size is set.
+            let mut frame = core::mem::MaybeUninit::<lowlat_frame>::zeroed();
+            unsafe {
+                core::ptr::addr_of_mut!((*frame.as_mut_ptr()).size)
+                    .write(core::mem::size_of::<lowlat_frame>() as u32);
+            }
             let began = Instant::now();
-            let status = unsafe { lowlat_client_acquire_frame(handle, 0, 100, &raw mut frame) };
+            let status = unsafe { lowlat_client_acquire_frame(handle, 0, 100, frame.as_mut_ptr()) };
             (status, began.elapsed())
         };
         let (handle, mut host) = a_session();

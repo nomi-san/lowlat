@@ -20,13 +20,15 @@ const _: () = assert!(LOWLAT_SERVERS_MAX == ::lowlat_host::admission::SERVERS_MA
 
 /// How much colour the stream carries, relative to its luma.
 ///
-/// **Named by an enumeration and carried as an integer**, the same way
-/// [`lowlat_codec`] is, and an axis rather than a flag because it has
-/// somewhere to go: a third layout is in wide use elsewhere even though
-/// nothing here produces one.
-#[repr(C)]
+/// **Typed and carried as [`lowlat_codec`] is**, and an axis rather than a
+/// flag because it has somewhere to go: a third layout is in wide use
+/// elsewhere even though nothing here produces one.
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_chroma {
+    /// Nothing is being coded yet: what a status says before its stream
+    /// exists.
+    LOWLAT_CHROMA_NONE = 0,
     /// Colour at half resolution in both directions, which is what a session
     /// runs at until a guest asks otherwise.
     LOWLAT_CHROMA_420 = 1,
@@ -37,7 +39,7 @@ pub enum lowlat_chroma {
 }
 
 /// Which encoder to build.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_encoder {
     /// **The default, and the right one.** A conversion target is allocated on
@@ -63,7 +65,7 @@ pub enum lowlat_encoder {
 /// what the window floor hides. **Nothing is behind it yet**, so it behaves
 /// exactly as sensitive today; it is named here so that a signal which earns
 /// its measurement becomes a setting rather than a rebuild.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_cg_level {
     LOWLAT_CG_LEVEL_AGGRESSIVE = 0,
@@ -83,7 +85,7 @@ pub enum lowlat_cg_level {
 /// **Zero is the low-latency end, and that is deliberate**: a zeroed structure
 /// has to mean the sensible default, and for a product whose first goal is
 /// delay the sensible default is a bounded frame.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_quality {
     LOWLAT_QUALITY_LOWEST_LATENCY = 0,
@@ -263,7 +265,7 @@ pub struct lowlat_host_input_config {
 /// Where a report pad's reports go: which side holds the virtual device for
 /// a DualShock 4 or a DualSense a guest sends as its own reports
 /// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_pad_sink {
     /// This library presents a device of its own, which the kernel's own
@@ -1778,14 +1780,14 @@ pub struct lowlat_host_status {
     /// platform offers a depth above ten and one of them cannot describe one.
     pub ten_bit: bool,
     pub reserved: [u8; 1],
-    /// One of [`lowlat_codec`], and **zero until something is being coded**.
+    /// **None until something is being coded.**
     ///
     /// **What is coming out, not what was asked for.** A seated guest can move
     /// the codec and the depth while the stream runs, so the configuration
     /// stops being the answer as soon as one does.
-    pub codec: u32,
-    /// One of [`lowlat_chroma`], and zero until something is being coded.
-    pub chroma: u32,
+    pub codec: lowlat_codec,
+    /// None until something is being coded.
+    pub chroma: lowlat_chroma,
     /// The sound device being read, empty when none is.
     ///
     /// **What it landed on, not what was asked for.** An empty request means
@@ -1833,8 +1835,8 @@ pub unsafe extern "C" fn lowlat_host_get_status(
                 audio_active: false,
                 ten_bit: false,
                 reserved: [0; 1],
-                codec: 0,
-                chroma: 0,
+                codec: lowlat_codec::LOWLAT_CODEC_NONE,
+                chroma: lowlat_chroma::LOWLAT_CHROMA_NONE,
                 audio_device: [0; LOWLAT_OUTPUT_MAX],
             };
             let held = handle.held();
@@ -1849,31 +1851,35 @@ pub unsafe extern "C" fn lowlat_host_get_status(
             status.height = height;
             status.running = true;
             status.audio_active = reading;
-            // Zero and clear until an encoder exists, the same way a picture
+            // None and clear until an encoder exists, the same way a picture
             // of no size is reported before a display has been opened.
-            let (codec, ten_bit, chroma_444) = match seam.colour() {
+            let (codec, ten_bit, chroma) = match seam.colour() {
                 Some((::lowlat_host::stream::Codec::H264, ten_bit, chroma_444)) => (
-                    lowlat_codec::LOWLAT_CODEC_H264 as u32,
+                    lowlat_codec::LOWLAT_CODEC_H264,
                     ten_bit,
                     if chroma_444 {
-                        lowlat_chroma::LOWLAT_CHROMA_444 as u32
+                        lowlat_chroma::LOWLAT_CHROMA_444
                     } else {
-                        lowlat_chroma::LOWLAT_CHROMA_420 as u32
+                        lowlat_chroma::LOWLAT_CHROMA_420
                     },
                 ),
                 Some((::lowlat_host::stream::Codec::H265, ten_bit, chroma_444)) => (
-                    lowlat_codec::LOWLAT_CODEC_HEVC as u32,
+                    lowlat_codec::LOWLAT_CODEC_HEVC,
                     ten_bit,
                     if chroma_444 {
-                        lowlat_chroma::LOWLAT_CHROMA_444 as u32
+                        lowlat_chroma::LOWLAT_CHROMA_444
                     } else {
-                        lowlat_chroma::LOWLAT_CHROMA_420 as u32
+                        lowlat_chroma::LOWLAT_CHROMA_420
                     },
                 ),
-                None => (0, false, 0),
+                None => (
+                    lowlat_codec::LOWLAT_CODEC_NONE,
+                    false,
+                    lowlat_chroma::LOWLAT_CHROMA_NONE,
+                ),
             };
             status.codec = codec;
-            status.chroma = chroma_444;
+            status.chroma = chroma;
             status.ten_bit = ten_bit;
             put(
                 &mut status.audio_device,
@@ -2607,8 +2613,8 @@ pub unsafe extern "C" fn lowlat_host_poll_pad_report(
     timeout_ms: u32,
     guest: *mut u32,
     pad: *mut u32,
-    type_: *mut u32,
-    kind: *mut u32,
+    type_: *mut lowlat_pad_type,
+    kind: *mut lowlat_pad_report,
     report: *mut u8,
     len: *mut u32,
     dropped: *mut u32,
@@ -2660,7 +2666,7 @@ pub unsafe extern "C" fn lowlat_host_poll_pad_report(
                 } => {
                     guest.write(from);
                     pad.write(which);
-                    type_.write(pad_type(product) as u32);
+                    type_.write(pad_type(product));
                     kind.write(match what {
                         ::lowlat_host::padsink::Kind::Input => {
                             lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT
@@ -2671,7 +2677,7 @@ pub unsafe extern "C" fn lowlat_host_poll_pad_report(
                         ::lowlat_host::padsink::Kind::Unplug => {
                             lowlat_pad_report::LOWLAT_PAD_REPORT_UNPLUG
                         }
-                    } as u32);
+                    });
                     len.write(u32::try_from(written).unwrap_or(0));
                     if !dropped.is_null() {
                         dropped.write(lost);
@@ -4431,8 +4437,8 @@ mod pad_sink_tests {
         status: lowlat_status,
         guest: u32,
         pad: u32,
-        type_: u32,
-        kind: u32,
+        type_: lowlat_pad_type,
+        kind: lowlat_pad_report,
         len: u32,
         dropped: u32,
         report: [u8; LOWLAT_PAD_REPORT_MAX as usize],
@@ -4443,8 +4449,9 @@ mod pad_sink_tests {
             status: LOWLAT_OK,
             guest: 0,
             pad: 0,
-            type_: 0,
-            kind: 0,
+            // Neither is what the reports below come out as.
+            type_: lowlat_pad_type::LOWLAT_PAD_TYPE_DS5,
+            kind: lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT,
             len: LOWLAT_PAD_REPORT_MAX,
             dropped: 0,
             report: [0; LOWLAT_PAD_REPORT_MAX as usize],
@@ -4497,7 +4504,12 @@ mod pad_sink_tests {
         assert_eq!(polled.len, 0);
         assert!(lowlat_common::clock::elapsed_ms(began) >= 25.0, "spun");
         let mut len = 64u32;
-        let (mut guest, mut pad, mut type_, mut kind) = (0u32, 0u32, 0u32, 0u32);
+        let (mut guest, mut pad, mut type_, mut kind) = (
+            0u32,
+            0u32,
+            lowlat_pad_type::LOWLAT_PAD_TYPE_DS5,
+            lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT,
+        );
         let mut small = [0u8; 64];
         assert_eq!(
             unsafe {
@@ -4566,30 +4578,21 @@ mod pad_sink_tests {
         let polled = poll(handle, 1000);
         assert_eq!(polled.status, LOWLAT_OK);
         assert_eq!((polled.guest, polled.pad), (7, 3));
-        assert_eq!(polled.type_, lowlat_pad_type::LOWLAT_PAD_TYPE_DS4 as u32);
-        assert_eq!(
-            polled.kind,
-            lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32
-        );
+        assert_eq!(polled.type_, lowlat_pad_type::LOWLAT_PAD_TYPE_DS4);
+        assert_eq!(polled.kind, lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE);
         assert_eq!(polled.len as usize, calibration.len());
         assert_eq!(&polled.report[..calibration.len()], calibration);
         assert_eq!(polled.dropped, 0);
 
         let polled = poll(handle, 1000);
         assert_eq!(polled.status, LOWLAT_OK);
-        assert_eq!(
-            polled.kind,
-            lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT as u32
-        );
+        assert_eq!(polled.kind, lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT);
         assert_eq!(polled.len, 64);
         assert_eq!(&polled.report[..64], idle);
 
         let polled = poll(handle, 1000);
         assert_eq!(polled.status, LOWLAT_OK);
-        assert_eq!(
-            polled.kind,
-            lowlat_pad_report::LOWLAT_PAD_REPORT_UNPLUG as u32
-        );
+        assert_eq!(polled.kind, lowlat_pad_report::LOWLAT_PAD_REPORT_UNPLUG);
         assert_eq!(polled.len, 0);
         assert_eq!(poll(handle, 0).status, LOWLAT_TIMEOUT);
         unsafe { lowlat_host_destroy(handle) };
@@ -4751,8 +4754,8 @@ mod status_tests {
             audio_active: false,
             ten_bit: false,
             reserved: [0; 1],
-            codec: 0,
-            chroma: 0,
+            codec: lowlat_codec::LOWLAT_CODEC_NONE,
+            chroma: lowlat_chroma::LOWLAT_CHROMA_NONE,
             audio_device: [0; LOWLAT_OUTPUT_MAX],
         }
     }

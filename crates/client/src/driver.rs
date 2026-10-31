@@ -201,6 +201,8 @@ pub struct Lag {
     pub behind_ms: u32,
 }
 
+/// [`Telemetry::decoder`] once a decoder exists and is being fed.
+pub const DECODER_BUILT: u32 = 1;
 /// [`Telemetry::decoder`] once no decoder can serve the stream.
 pub const DECODER_FAILED: u32 = 2;
 

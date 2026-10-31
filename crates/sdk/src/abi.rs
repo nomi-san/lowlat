@@ -59,16 +59,20 @@ pub use vdd::*;
 ///
 /// A value is assigned once and never reused, including for a condition that
 /// is removed.
-// **`repr(C)` rather than `repr(i32)`, and every enumeration here follows
-// it.** Naming the width makes cbindgen state it in C, which only C23 and C++
-// have syntax for, so the header grows a `__STDC_VERSION__` fork and the same
-// name means an enumeration under one standard and an integer under another.
-// `repr(C)` is whatever the platform's C compiler picks, which is what the
-// application is compiling with anyway; `alone.c` asserts it is four bytes.
+// **`repr(i32)`, and every enumeration here names its width.** The header
+// states it in C++, `enum lowlat_status : int32_t`, and makes the name the
+// integer itself in C, forked on the language alone -- the generator's own
+// fork tests `__STDC_VERSION__`, which MSVC leaves undefined in its default C
+// mode, so the header test rewrites it. A structure field typed by one is four
+// bytes under every compiler and flag, reads into its enumeration in C++ with
+// no cast, and holds there any value a newer library writes. The cost is C's:
+// there the name is the integer and the tag a separate enumeration, so a
+// switch over one is not checked for missing cases, and `alone.c` asks that
+// the two be one type only in C++.
 //
 // Not a doc comment, because it describes this side of the boundary and the
 // header is written for the other one (AGENTS.md 1a).
-#[repr(C)]
+#[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_status {
     /// The call succeeded.
@@ -186,7 +190,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 35;
+pub const LOWLAT_ABI_MINOR: u32 = 36;
 
 /// Major and minor, packed.
 ///
@@ -199,21 +203,29 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
     (LOWLAT_ABI_MAJOR << 16) | LOWLAT_ABI_MINOR
 }
 
-/// The host half is in this build: every `lowlat_host_*` entry point exists.
-/// A library built for macOS carries the client half alone.
-pub const LOWLAT_FEATURE_HOST: u32 = 1;
-/// The client half is in this build: every `lowlat_client_*` entry point exists.
-pub const LOWLAT_FEATURE_CLIENT: u32 = 2;
-/// This build's software decoder loads a GPL build of the machine's codec
-/// library as well as an LGPL one (the `gpl-libavcodec` build feature; minor
-/// 12). A build without this bit refuses a GPL build with
-/// `LOWLAT_ERR_NO_DECODER_LICENCE`. The bit says what the build would load,
-/// not what it has: a codec library actually loaded is named with its
-/// licence by `lowlat_enum_decoders`.
-pub const LOWLAT_FEATURE_GPL_LIBAVCODEC: u32 = 4;
-/// The virtual displays are in this build (minor 26): every `lowlat_vdd_*`
-/// entry point exists. Windows alone.
-pub const LOWLAT_FEATURE_VDD: u32 = 8;
+/// What [`lowlat_features`] reports, a bit each: the halves this build
+/// carries and what else was decided when it was built. The bits are OR-ed
+/// into a plain integer, which no single one of these is.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_feature {
+    /// The host half is in this build: every `lowlat_host_*` entry point
+    /// exists. A library built for macOS carries the client half alone.
+    LOWLAT_FEATURE_HOST = 1,
+    /// The client half is in this build: every `lowlat_client_*` entry point
+    /// exists.
+    LOWLAT_FEATURE_CLIENT = 2,
+    /// This build's software decoder loads a GPL build of the machine's codec
+    /// library as well as an LGPL one (the `gpl-libavcodec` build feature;
+    /// minor 12). A build without this bit refuses a GPL build with
+    /// `LOWLAT_ERR_NO_DECODER_LICENCE`. The bit says what the build would
+    /// load, not what it has: a codec library actually loaded is named with
+    /// its licence by `lowlat_enum_decoders`.
+    LOWLAT_FEATURE_GPL_LIBAVCODEC = 4,
+    /// The virtual displays are in this build (minor 26): every
+    /// `lowlat_vdd_*` entry point exists. Windows alone.
+    LOWLAT_FEATURE_VDD = 8,
+}
 
 /// Which halves this build of the library carries, and what else was
 /// decided when it was built.
@@ -224,21 +236,21 @@ pub const LOWLAT_FEATURE_VDD: u32 = 8;
 /// hides the same halves under the same names (`LOWLAT_HOST`, `LOWLAT_CLIENT`),
 /// so an application compiled for one build cannot name what it lacks.
 ///
-/// @returns `LOWLAT_FEATURE_*` bits, OR-ed.
+/// @returns [`lowlat_feature`] bits, OR-ed.
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_features() -> u32 {
     let mut bits = 0;
     if cfg!(all(feature = "host", not(target_os = "macos"))) {
-        bits |= LOWLAT_FEATURE_HOST;
+        bits |= lowlat_feature::LOWLAT_FEATURE_HOST as u32;
     }
     if cfg!(feature = "client") {
-        bits |= LOWLAT_FEATURE_CLIENT;
+        bits |= lowlat_feature::LOWLAT_FEATURE_CLIENT as u32;
     }
     if cfg!(feature = "gpl-libavcodec") {
-        bits |= LOWLAT_FEATURE_GPL_LIBAVCODEC;
+        bits |= lowlat_feature::LOWLAT_FEATURE_GPL_LIBAVCODEC as u32;
     }
     if cfg!(all(feature = "vdd", windows)) {
-        bits |= LOWLAT_FEATURE_VDD;
+        bits |= lowlat_feature::LOWLAT_FEATURE_VDD as u32;
     }
     bits
 }
@@ -392,7 +404,7 @@ pub extern "C" fn lowlat_status_string(status: i32) -> *const c_char {
 }
 
 /// How severe a log line is.
-#[repr(C)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_log_level {
     LOWLAT_LOG_ERROR = 0,
@@ -407,8 +419,21 @@ pub enum lowlat_log_level {
 /// **The one place this library calls into an application**, and the single
 /// exception to being poll-based. It is cold, it fires on whichever thread
 /// logged, and it must not call back in.
-pub type lowlat_log_fn =
-    Option<unsafe extern "C" fn(level: u32, message: *const c_char, opaque: *mut c_void)>;
+pub type lowlat_log_fn = Option<
+    unsafe extern "C" fn(level: lowlat_log_level, message: *const c_char, opaque: *mut c_void),
+>;
+
+/// The header's name for a level.
+fn named(level: lowlat_common::log::Level) -> lowlat_log_level {
+    use lowlat_common::log::Level;
+    match level {
+        Level::Error => lowlat_log_level::LOWLAT_LOG_ERROR,
+        Level::Warn => lowlat_log_level::LOWLAT_LOG_WARN,
+        Level::Info => lowlat_log_level::LOWLAT_LOG_INFO,
+        Level::Debug => lowlat_log_level::LOWLAT_LOG_DEBUG,
+        Level::Trace => lowlat_log_level::LOWLAT_LOG_TRACE,
+    }
+}
 
 /// The callback and whatever the application wanted handed back with it.
 ///
@@ -445,10 +470,10 @@ fn to_application(level: lowlat_common::log::Level, message: &str) {
         ) else {
             return;
         };
-        unsafe { callback(level as u32, truncated.as_ptr(), opaque as *mut c_void) };
+        unsafe { callback(named(level), truncated.as_ptr(), opaque as *mut c_void) };
         return;
     };
-    unsafe { callback(level as u32, text.as_ptr(), opaque as *mut c_void) };
+    unsafe { callback(named(level), text.as_ptr(), opaque as *mut c_void) };
 }
 
 /// Receive log messages from every part of this library.
@@ -558,25 +583,29 @@ mod tests {
     /// decoder loads a GPL codec library.
     #[test]
     fn the_features_are_the_builds_own() {
+        use lowlat_feature::*;
         let bits = lowlat_features();
         assert_eq!(
-            bits & LOWLAT_FEATURE_HOST != 0,
+            bits & LOWLAT_FEATURE_HOST as u32 != 0,
             cfg!(all(feature = "host", not(target_os = "macos")))
         );
-        assert_eq!(bits & LOWLAT_FEATURE_CLIENT != 0, cfg!(feature = "client"));
         assert_eq!(
-            bits & LOWLAT_FEATURE_GPL_LIBAVCODEC != 0,
+            bits & LOWLAT_FEATURE_CLIENT as u32 != 0,
+            cfg!(feature = "client")
+        );
+        assert_eq!(
+            bits & LOWLAT_FEATURE_GPL_LIBAVCODEC as u32 != 0,
             cfg!(feature = "gpl-libavcodec")
         );
         assert_eq!(
-            bits & LOWLAT_FEATURE_VDD != 0,
+            bits & LOWLAT_FEATURE_VDD as u32 != 0,
             cfg!(all(feature = "vdd", windows))
         );
         assert_eq!(
-            bits & !(LOWLAT_FEATURE_HOST
-                | LOWLAT_FEATURE_CLIENT
-                | LOWLAT_FEATURE_GPL_LIBAVCODEC
-                | LOWLAT_FEATURE_VDD),
+            bits & !(LOWLAT_FEATURE_HOST as u32
+                | LOWLAT_FEATURE_CLIENT as u32
+                | LOWLAT_FEATURE_GPL_LIBAVCODEC as u32
+                | LOWLAT_FEATURE_VDD as u32),
             0,
             "a bit no feature names"
         );
@@ -641,7 +670,11 @@ mod logging_tests {
     static TERMINATED: AtomicU32 = AtomicU32::new(0);
     static OPAQUE_KEPT: AtomicU32 = AtomicU32::new(0);
 
-    unsafe extern "C" fn counted(level: u32, message: *const c_char, opaque: *mut c_void) {
+    unsafe extern "C" fn counted(
+        level: lowlat_log_level,
+        message: *const c_char,
+        opaque: *mut c_void,
+    ) {
         if message.is_null() {
             return;
         }
@@ -659,18 +692,22 @@ mod logging_tests {
         if opaque as usize == 0x1234 {
             OPAQUE_KEPT.fetch_add(1, Ordering::Relaxed);
         }
-        LEVEL_SEEN.store(level, Ordering::Relaxed);
+        LEVEL_SEEN.store(level as u32, Ordering::Relaxed);
         SEEN.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Forward to standard error, so clearing the callback at the end of this
     /// test does not silence every test that runs after it.
-    unsafe extern "C" fn to_stderr(level: u32, message: *const c_char, _opaque: *mut c_void) {
+    unsafe extern "C" fn to_stderr(
+        level: lowlat_log_level,
+        message: *const c_char,
+        _opaque: *mut c_void,
+    ) {
         if message.is_null() {
             return;
         }
         let text = unsafe { CStr::from_ptr(message) };
-        eprintln!("[{level}] {}", text.to_string_lossy());
+        eprintln!("[{}] {}", level as u32, text.to_string_lossy());
     }
 
     /// **The line reaches the application terminated, with its own pointer
