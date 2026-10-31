@@ -13,6 +13,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Guide is the owner's alone** ([05 §7.2](05-host.md)): for a guest that does not own the host
   a press of Guide is dropped and a whole state is taken without it, on Windows also from a pad
   played on the bus from its reports. The header says what `owner` decides.
+### Decided
+- **A release taps no lock** ([05 §7](05-host.md)): a guest leaving, losing the keyboard or losing
+  focus leaves the host's locks as they are.
+- **Pen and touch stay deferred on the host** ([05 §7](05-host.md)), as on the client.
 
 ## 2026-10-31 - M1: the macOS client's gate
 
