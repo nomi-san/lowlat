@@ -315,7 +315,7 @@ pub struct lowlat_host_config {
     /// One of [`lowlat_cg_level`]. **Default: sensitive**, which is the tuning
     /// every other one is judged against. **Zero is not the default**, and a
     /// structure zeroed by its caller asks for the most aggressive setting
-    /// rather than this one -- start from [`lowlat_host_config_default`].
+    /// rather than this one -- start from [`lowlat_host_default_config`].
     pub cg_level: u32,
     /// One of [`lowlat_quality`]. **Settled when hosting starts**: it is what
     /// the encoder is built with, and one encode serves every seat.
@@ -405,7 +405,7 @@ pub const LOWLAT_GUESTS_MAX: u32 = 16;
 ///
 /// `out` is null or points to one [`lowlat_host_config`] whose `size` is set.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_host_config_default(out: *mut lowlat_host_config) -> lowlat_status {
+pub unsafe extern "C" fn lowlat_host_default_config(out: *mut lowlat_host_config) -> lowlat_status {
     guard(LOWLAT_ERR_INTERNAL, || {
         if out.is_null() {
             return LOWLAT_ERR_INVALID_ARGUMENT;
@@ -428,7 +428,7 @@ pub unsafe extern "C" fn lowlat_host_config_default(out: *mut lowlat_host_config
     })
 }
 
-/// What a host would choose for itself, as [`lowlat_host_config_default`]
+/// What a host would choose for itself, as [`lowlat_host_default_config`]
 /// fills it.
 fn default_config() -> lowlat_host_config {
     lowlat_host_config {
@@ -3577,7 +3577,7 @@ mod start_tests {
         // Filled through the caller's pointer: refused when there is none, and
         // when the size is short, with not a byte of the structure written.
         assert_eq!(
-            unsafe { lowlat_host_config_default(core::ptr::null_mut()) },
+            unsafe { lowlat_host_default_config(core::ptr::null_mut()) },
             LOWLAT_ERR_INVALID_ARGUMENT
         );
         let whole = core::mem::size_of::<lowlat_host_config>();
@@ -3589,7 +3589,7 @@ mod start_tests {
             core::ptr::addr_of_mut!((*cfg.as_mut_ptr()).size).write(size - 1);
         }
         assert_eq!(
-            unsafe { lowlat_host_config_default(cfg.as_mut_ptr()) },
+            unsafe { lowlat_host_default_config(cfg.as_mut_ptr()) },
             LOWLAT_ERR_INVALID_ARGUMENT
         );
         let after = unsafe { core::slice::from_raw_parts(bytes.add(4), whole - 4) };
@@ -3599,7 +3599,7 @@ mod start_tests {
         );
         unsafe { core::ptr::addr_of_mut!((*cfg.as_mut_ptr()).size).write(size) };
         assert_eq!(
-            unsafe { lowlat_host_config_default(cfg.as_mut_ptr()) },
+            unsafe { lowlat_host_default_config(cfg.as_mut_ptr()) },
             LOWLAT_OK
         );
         // SAFETY: the call wrote the whole of it.

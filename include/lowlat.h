@@ -1180,7 +1180,7 @@ typedef struct lowlat_host_config {
     /// One of `lowlat_cg_level`. **Default: sensitive**, which is the tuning
     /// every other one is judged against. **Zero is not the default**, and a
     /// structure zeroed by its caller asks for the most aggressive setting
-    /// rather than this one -- start from `lowlat_host_config_default`.
+    /// rather than this one -- start from `lowlat_host_default_config`.
     uint32_t cg_level;
     /// One of `lowlat_quality`. **Settled when hosting starts**: it is what
     /// the encoder is built with, and one encode serves every seat.
@@ -2440,7 +2440,7 @@ lowlat_status lowlat_set_log_level(uint32_t level) LOWLAT_NOEXCEPT;
 /// or a `size` shorter than the configuration.
 ///
 /// @attention `out` is null or points to one `lowlat_host_config` whose `size` is set.
-lowlat_status lowlat_host_config_default(lowlat_host_config *out) LOWLAT_NOEXCEPT;
+lowlat_status lowlat_host_default_config(lowlat_host_config *out) LOWLAT_NOEXCEPT;
 
 /// Create a handle.
 ///
