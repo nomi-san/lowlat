@@ -49,6 +49,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Alternating the kinds every 30 seconds at 1080p: 25 percent of a core by handle against 35 by
   planes, 31 against 39 under the translation layer, and a picture on screen 2.6 to 7 ms sooner
   at the median; the decode 0.2 to 1.4 ms slower by handle.
+### Corrected after CI
+- **The decoder table's tests judge each probe by itself.** On CI's x86_64 macOS runner, under
+  the translation layer, a probe made seconds after another found no session the hardware
+  decodes where the first had found one, while the other tests' hardware sessions were failing
+  their first pictures, and the table's test had compared the two. It now reads the table's
+  handle against the same probe's words, and the handle test judges each choice by its own
+  outcome; each failed when broken.
 
 ## 2026-10-30 - M1.2: the system's decoder and the demo on macOS
 
