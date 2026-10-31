@@ -60,15 +60,14 @@ pub use vdd::*;
 /// A value is assigned once and never reused, including for a condition that
 /// is removed.
 // **`repr(i32)`, and every enumeration here names its width.** The header
-// states it in C++, `enum lowlat_status : int32_t`, and makes the name the
-// integer itself in C, forked on the language alone -- the generator's own
-// fork tests `__STDC_VERSION__`, which MSVC leaves undefined in its default C
-// mode, so the header test rewrites it. A structure field typed by one is four
-// bytes under every compiler and flag, reads into its enumeration in C++ with
-// no cast, and holds there any value a newer library writes. The cost is C's:
-// there the name is the integer and the tag a separate enumeration, so a
-// switch over one is not checked for missing cases, and `alone.c` asks that
-// the two be one type only in C++.
+// states it in C++ through `LOWLAT_ENUM_BASE`, `typedef enum lowlat_status
+// : int32_t { ... } lowlat_status`, so a structure field typed by one reads
+// into its enumeration there with no cast and holds any value a newer library
+// writes. In C the macro is empty and the enumeration the platform's, four
+// bytes on every target this builds for, which `alone.c` asserts. One
+// `typedef enum` serves both: the header test rewrites the generator's own
+// form, which forks on `__STDC_VERSION__`, a macro MSVC leaves undefined in
+// its default C mode.
 //
 // Not a doc comment, because it describes this side of the boundary and the
 // header is written for the other one (AGENTS.md 1a).

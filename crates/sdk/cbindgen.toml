@@ -33,6 +33,18 @@ after_includes = """
 #define LOWLAT_NOEXCEPT
 #endif
 
+/// An enumeration's width: `: uint32_t`, or `: int32_t` for a status, after
+/// its tag in C++, which fixes it there, so a field reads into its enumeration
+/// with no cast and holds any value a newer library writes; nothing in C,
+/// where each enumeration is the platform's, four bytes on every target this
+/// library builds for. One `typedef enum` serves both languages, and its tag
+/// and its name are one type in each.
+#ifdef __cplusplus
+#define LOWLAT_ENUM_BASE(type) : type
+#else
+#define LOWLAT_ENUM_BASE(type)
+#endif
+
 /// The two halves, declared unless the application says otherwise.
 ///
 /// **A plain include declares everything.** An application built against a

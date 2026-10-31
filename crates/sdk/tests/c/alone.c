@@ -24,11 +24,11 @@ static_assert(sizeof(bool) == 1, "a bool is not one byte on this target");
  * than it expects, so a C translation unit that disagreed with the library
  * about a structure's size could not start a host at all. */
 
-/* **Every enumeration a call returns or a structure holds is four bytes**,
- * whichever language reads the header: in C++ by the width it declares, in C
- * as the 32-bit integer its name is. One sized otherwise would put every field
- * after it at the wrong offset, so it is asserted here rather than discovered
- * at the first event. */
+/* **Every enumeration a call returns or a structure holds is four bytes**: in
+ * C++ by the width it declares, in C as the platform's enumeration, which every
+ * ABI this builds for makes four bytes and `-fshort-enums` would not. One sized
+ * otherwise would put every field after it at the wrong offset, so it is
+ * asserted here rather than discovered at the first event. */
 static_assert(sizeof(lowlat_status) == 4, "lowlat_status is not four bytes");
 static_assert(sizeof(lowlat_event_type) == 4, "lowlat_event_type is not four bytes");
 static_assert(sizeof(lowlat_outcome) == 4, "lowlat_outcome is not four bytes");
@@ -54,14 +54,11 @@ static_assert(sizeof(lowlat_nat_source) == 4, "lowlat_nat_source is not four byt
 static_assert(sizeof(lowlat_chroma) == 4, "lowlat_chroma is not four bytes");
 #endif
 
-/* **In C++ the tag survives the typedef**, so an application may write either
- * `lowlat_status` or `enum lowlat_status` and mean the same type. Repeating a
- * typedef is legal only when it names an identical type, which is what this
- * asks. In C the name is the integer and the tag a separate enumeration, so
- * the two are not one type there and this is not asked. */
-#if defined(__cplusplus)
+/* **The tag survives the typedef**, so an application may write either
+ * `lowlat_status` or `enum lowlat_status` and mean the same type, and may
+ * forward-declare one. Repeating a typedef is legal only when it names an
+ * identical type, in C11 and in C++ alike, which is what this asks. */
 typedef enum lowlat_status lowlat_status;
-#endif
 
 /* **The shared types are there whichever half is hidden**, and a half that is
  * hidden declares nothing: the seam's credentials and events belong to both,

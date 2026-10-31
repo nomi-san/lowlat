@@ -96,7 +96,7 @@ static double now_ms(void)
 
 /* Counts the lines the library hands over, and proves each is a usable C
  * string with the caller's own pointer alongside it. */
-static void logged(uint32_t level, const char *message, void *opaque)
+static void logged(lowlat_log_level level, const char *message, void *opaque)
 {
     (void) level;
     if (message == NULL || opaque == NULL || message[0] == '\0') {
@@ -897,7 +897,7 @@ int main(int argc, char **argv)
     uint32_t (*abi_version)(void);
     uint32_t (*features)(void);
     const char *(*status_string)(lowlat_status);
-    lowlat_status (*set_log_callback)(void (*)(uint32_t, const char *, void *), void *);
+    lowlat_status (*set_log_callback)(lowlat_log_fn, void *);
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(features, lib, "lowlat_features");
     RESOLVE(status_string, lib, "lowlat_status_string");
