@@ -1271,8 +1271,8 @@ typedef struct lowlat_attempt_info {
     char aes256[LOWLAT_ICE_MAX];
     /// What signaling says this peer may drive.
     lowlat_permissions permissions;
-    /// Whether this peer owns the machine, which decides exactly one thing: it
-    /// takes the pointer from another guest rather than waiting for it.
+    /// Whether this peer owns the machine: it takes the pointer from another
+    /// guest rather than waiting for it, and it alone presses a pad's Guide.
     bool owner;
     uint8_t reserved2[3];
     /// Which pipe the offer asked for, a `lowlat_transport` value.
@@ -1361,8 +1361,8 @@ typedef struct lowlat_guest {
     /// roster the application sends.
     uint32_t number;
     lowlat_permissions permissions;
-    /// Whether this guest owns the machine, which decides exactly one thing:
-    /// it takes the pointer from another guest rather than waiting for it.
+    /// Whether this guest owns the machine: it takes the pointer from another
+    /// guest rather than waiting for it, and it alone presses a pad's Guide.
     bool owner;
     uint8_t reserved[3];
     /// The identifier this attempt was registered under.

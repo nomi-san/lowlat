@@ -146,6 +146,12 @@ pub trait Sink {
         true
     }
 
+    /// Whether this guest may press Guide, for a sink that plays a pad from
+    /// its own reports as the sixteen-button pad rather than from the events
+    /// made here (docs/05-host.md section 7.2). What is made here leaves
+    /// Guide out already where it may not.
+    fn guide(&mut self, _allowed: bool) {}
+
     /// The host's own lock state, where the platform can read it.
     ///
     /// **Nothing below a display server can**, which is the default; where it
@@ -301,6 +307,8 @@ pub struct Injector {
     /// pointer is the one thing they genuinely share, because the display
     /// stack merges every pointer device on a seat into one cursor.
     floor: bool,
+    /// Whether this guest owns the host, which alone lets it press Guide.
+    owner: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
     /// What has arrived, for the line a live run is read from.
@@ -342,6 +350,7 @@ impl Injector {
             num_lock: None,
             caps_lock: None,
             floor: true,
+            owner: false,
             pads: [None; MAX_PADS],
             tally: Tally::default(),
             scratch: [Event {
@@ -369,6 +378,22 @@ impl Injector {
         if was.pointer && !permissions.pointer {
             self.release_buttons(out);
         }
+        if was.gamepad && !permissions.gamepad {
+            self.release_pads(out);
+        }
+    }
+
+    /// Say whether this guest owns the host.
+    ///
+    /// **Guide is the owner's alone.** On the Xbox pad it raises the host's
+    /// own overlay -- the system's game bar, a launcher's -- which reaches
+    /// past whatever a guest was given to play, so for a guest that does not
+    /// own the host a press of Guide alone is dropped and a whole state is
+    /// taken without it. A pad presented as its product keeps its own button,
+    /// which is the product's.
+    pub fn set_owner(&mut self, owner: bool, out: &mut impl Sink) {
+        self.owner = owner;
+        out.guide(owner);
     }
 
     /// Say whether this guest currently has the pointer.
@@ -470,6 +495,9 @@ impl Injector {
                 let Some(bit) = gamepad::bit_for_index(message.a0) else {
                     return;
                 };
+                if bit == gamepad::bit::GUIDE && !self.owner {
+                    return;
+                }
                 let Some(index) = self.standard_pad(message.a2, out) else {
                     return;
                 };
@@ -497,7 +525,10 @@ impl Injector {
                 let value = high16_signed(message.a1 << 16);
                 self.axis(id, message.a0, value, out);
             }
-            op::GAMEPAD_UNPLUG if self.permissions.gamepad => {
+            // **An unplug lets go and presses nothing**, so it needs no
+            // permission: a guest whose pads were taken from it may still take
+            // them away.
+            op::GAMEPAD_UNPLUG => {
                 self.unplug(message.a2, out);
             }
             op::GAMEPAD_STATE if self.permissions.gamepad => {
@@ -633,6 +664,21 @@ impl Injector {
         out.unplug(id);
     }
 
+    /// Let go of every pad, as a withdrawn pad permission does
+    /// (docs/05-host.md section 7.2): a sixteen-button pad is centred and
+    /// stays, and a report pad is unplugged, since its reports are refused
+    /// from now on and its device has no state but the last of them.
+    fn release_pads(&mut self, out: &mut impl Sink) {
+        self.centre_pads(out);
+        for index in 0..MAX_PADS {
+            if let Some(pad) = self.pads.get(index).copied().flatten()
+                && pad.raw
+            {
+                self.unplug(pad.id, out);
+            }
+        }
+    }
+
     /// Centre every pad without taking any away. A report pad is what its
     /// last report says, and its reports keep coming whether or not the peer
     /// has focus, so it is left alone.
@@ -734,7 +780,10 @@ impl Injector {
             ]
         };
         let at = |offset: usize| i16::from_be_bytes(pair(offset));
-        let buttons = u16::from_be_bytes(pair(0));
+        let mut buttons = u16::from_be_bytes(pair(0));
+        if !self.owner {
+            buttons &= !gamepad::bit::GUIDE;
+        }
         let Some(index) = self.standard_pad(id, out) else {
             return;
         };
@@ -1324,6 +1373,8 @@ mod tests {
         locks: Option<Locks>,
         /// A sink with nowhere to put a pad's own report.
         refuses_reports: bool,
+        /// What the sink was last told of Guide.
+        guide: Option<bool>,
     }
 
     impl Sink for Recorder {
@@ -1342,6 +1393,10 @@ mod tests {
 
         fn takes_reports(&self) -> bool {
             !self.refuses_reports
+        }
+
+        fn guide(&mut self, allowed: bool) {
+            self.guide = Some(allowed);
         }
 
         fn host_locks(&self) -> Option<Locks> {
@@ -2411,6 +2466,8 @@ mod tests {
     #[test]
     fn a_whole_state_folds_back_into_the_report_it_came_from() {
         let (mut inject, mut out) = (injector(), Recorder::default());
+        // Guide is among the buttons, and the owner's alone.
+        inject.set_owner(true, &mut out);
         let sent = gamepad::Report {
             buttons: gamepad::bit::A
                 | gamepad::bit::Y
@@ -2665,6 +2722,113 @@ mod tests {
             &mut out,
         );
         assert!(out.batches.is_empty());
+    }
+
+    /// **Withdrawing the pad permission lets go of every pad**, as withdrawing
+    /// the keyboard does of its keys: a sixteen-button pad is centred and
+    /// stays plugged in, and a pad sent as its reports is unplugged, since its
+    /// reports are refused from then on and nothing else brings it to rest.
+    #[test]
+    fn withdrawing_the_pad_permission_lets_go_of_every_pad() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        inject.on_control(
+            &state(1, &pad_state_body(gamepad::bit::A, 900, 0, 0, 0, 40, 0)),
+            &mut out,
+        );
+        inject.on_control(
+            &Control {
+                a0: 64,
+                a1: 2,
+                a2: 0x0CE6,
+                opcode: op::PAD_REPORT,
+                body: ds5,
+            },
+            &mut out,
+        );
+        assert_eq!(out.reports, vec![(2, true)]);
+        out.batches.clear();
+
+        inject.set_permissions(
+            Permissions {
+                gamepad: false,
+                ..Permissions::default()
+            },
+            &mut out,
+        );
+        assert_eq!(out.keys_at(0), vec![gamepad::key::SOUTH]);
+        let centred = abs(&out);
+        for axis in [gamepad::axis::X, gamepad::axis::Z] {
+            assert!(
+                centred.contains(&(axis, 0)),
+                "{axis:#x} was left where it was"
+            );
+        }
+        assert!(
+            out.devices().iter().all(|d| *d == Device::Gamepad(1)),
+            "a pad other than the sixteen-button one was written"
+        );
+        assert_eq!(
+            out.unplugged,
+            vec![2],
+            "the report pad was left at its last report"
+        );
+    }
+
+    /// **An unplug lets go and presses nothing**, so it is taken without the
+    /// pad permission: a guest whose pads were taken from it can still take
+    /// them away.
+    #[test]
+    fn an_unplug_needs_no_pad_permission() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&state(1, &pad_state_body(0, 0, 0, 0, 0, 0, 0)), &mut out);
+        inject.set_permissions(
+            Permissions {
+                gamepad: false,
+                ..Permissions::default()
+            },
+            &mut out,
+        );
+        inject.on_control(&control(op::GAMEPAD_UNPLUG, 0, 0, 1), &mut out);
+        assert_eq!(out.unplugged, vec![1]);
+    }
+
+    /// **Guide is the owner's alone**: on the Xbox pad it raises the host's
+    /// own overlay. A guest is not the owner until it is said to be; its press
+    /// of Guide alone is dropped and its whole states are taken without it,
+    /// the rest of them intact. The owner's reaches the pad both ways, and the
+    /// sink is told.
+    #[test]
+    fn guide_is_pressed_for_the_owner_alone() {
+        let (mut guest, mut out) = (injector(), Recorder::default());
+        guest.on_control(&control(op::GAMEPAD_BUTTON, 5, 1, 1), &mut out);
+        assert!(out.batches.is_empty(), "a guest's Guide reached a pad");
+        let both = gamepad::bit::GUIDE | gamepad::bit::A;
+        guest.on_control(
+            &state(2, &pad_state_body(both, 900, 0, 0, 0, 0, 0)),
+            &mut out,
+        );
+        assert_eq!(
+            out.keys_at(1),
+            vec![gamepad::key::SOUTH],
+            "the state kept Guide, or lost A"
+        );
+        assert!(
+            abs(&out)
+                .iter()
+                .any(|&(code, value)| code == gamepad::axis::X && value != 0),
+            "the state's stick went with Guide"
+        );
+
+        let (mut owner, mut out) = (injector(), Recorder::default());
+        owner.set_owner(true, &mut out);
+        assert_eq!(out.guide, Some(true), "the sink was not told");
+        owner.on_control(&control(op::GAMEPAD_BUTTON, 5, 1, 1), &mut out);
+        owner.on_control(
+            &state(2, &pad_state_body(gamepad::bit::GUIDE, 0, 0, 0, 0, 0, 0)),
+            &mut out,
+        );
+        assert_eq!(out.keys_at(1), vec![gamepad::key::MODE, gamepad::key::MODE]);
     }
 
     /// A body too short to hold a pad must not read past it.

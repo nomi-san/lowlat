@@ -509,8 +509,8 @@ pub struct lowlat_attempt_info {
     pub aes256: [c_char; LOWLAT_ICE_MAX],
     /// What signaling says this peer may drive.
     pub permissions: lowlat_permissions,
-    /// Whether this peer owns the machine, which decides exactly one thing: it
-    /// takes the pointer from another guest rather than waiting for it.
+    /// Whether this peer owns the machine: it takes the pointer from another
+    /// guest rather than waiting for it, and it alone presses a pad's Guide.
     pub owner: bool,
     pub reserved2: [u8; 3],
     /// Which pipe the offer asked for, a [`lowlat_transport`] value.
@@ -554,8 +554,8 @@ pub struct lowlat_guest {
     /// roster the application sends.
     pub number: u32,
     pub permissions: lowlat_permissions,
-    /// Whether this guest owns the machine, which decides exactly one thing:
-    /// it takes the pointer from another guest rather than waiting for it.
+    /// Whether this guest owns the machine: it takes the pointer from another
+    /// guest rather than waiting for it, and it alone presses a pad's Guide.
     pub owner: bool,
     pub reserved: [u8; 3],
     /// The identifier this attempt was registered under.

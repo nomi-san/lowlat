@@ -171,6 +171,9 @@ pub struct Devices {
     hid_pads: [Option<HidPad>; MAX_PADS],
     /// The middle of every such pad's address: this guest's.
     middle: [u8; 3],
+    /// Whether this guest may press Guide, as the expander says: a pad played
+    /// on the bus from its own reports leaves it out where not.
+    guide: bool,
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
     desktop: Option<Desktop>,
@@ -220,6 +223,7 @@ impl Devices {
             no_hid_pads: false,
             hid_pads: [const { None }; MAX_PADS],
             middle: answers::middle(guest),
+            guide: false,
             refusing: false,
             desktop,
             _aware: aware,
@@ -566,7 +570,7 @@ impl Devices {
             false
         };
         if on_bus {
-            self.play_on_bus(id, bus_report(product, &report));
+            self.play_on_bus(id, bus_report(product, &report, self.guide));
         }
     }
 
@@ -626,7 +630,7 @@ impl Devices {
                 None
             };
             if let Some((id, product, report)) = held {
-                self.play_on_bus(id, bus_report(product, &report));
+                self.play_on_bus(id, bus_report(product, &report, self.guide));
             }
         }
     }
@@ -877,6 +881,10 @@ impl Sink for Devices {
     /// them whatever this says.
     fn takes_reports(&self) -> bool {
         self.forward.is_some() || (self.virtual_pads && !self.no_hid_pads)
+    }
+
+    fn guide(&mut self, allowed: bool) {
+        self.guide = allowed;
     }
 
     fn host_locks(&self) -> Option<Locks> {
@@ -1606,11 +1614,15 @@ fn table(product: Product, features: &answers::Features, address: &[u8; 6]) -> F
 
 /// The bus pad's report for what a pad's own report says: the sixteen-button
 /// state it carries, but for the touchpad's click, which the bus pad has no
-/// button for.
-fn bus_report(product: Product, report: &[u8; pad::INPUT_LEN]) -> gamepad::Report {
+/// button for, and Guide where the guest may not press it.
+fn bus_report(product: Product, report: &[u8; pad::INPUT_LEN], guide: bool) -> gamepad::Report {
     let state = pad::state(product, report);
+    let mut left_out = gamepad::bit::TOUCHPAD;
+    if !guide {
+        left_out |= gamepad::bit::GUIDE;
+    }
     gamepad::Report {
-        buttons: state.buttons & !gamepad::bit::TOUCHPAD,
+        buttons: state.buttons & !left_out,
         lx: state.lx,
         ly: state.ly,
         rx: state.rx,
@@ -2935,7 +2947,7 @@ mod pad_tests {
             (Product::DualSense, DS5_HELD),
         ] {
             let state = pad::state(product, held);
-            let bus = bus_report(product, held);
+            let bus = bus_report(product, held, true);
             assert_ne!(
                 bus.buttons & gamepad::bit::A,
                 0,
@@ -2961,13 +2973,50 @@ mod pad_tests {
             pad::state(Product::DualSense, &clicked).buttons & gamepad::bit::TOUCHPAD,
             0
         );
-        let bus = bus_report(Product::DualSense, &clicked);
+        let bus = bus_report(Product::DualSense, &clicked, true);
         assert_eq!(
             bus.buttons & gamepad::bit::TOUCHPAD,
             0,
             "the touchpad's click on the bus"
         );
         assert_ne!(bus.buttons & gamepad::bit::A, 0);
+    }
+
+    /// **Guide is the owner's alone on the bus too**: a report pad played
+    /// there has its PS button as Guide, which only an owner's report keeps;
+    /// a guest's loses it and nothing else.
+    #[test]
+    fn a_report_pad_on_the_bus_presses_guide_for_the_owner_alone() {
+        // The third button byte's first bit, wherever each product has it.
+        for (product, held, at) in [
+            (Product::DualShock4, DS4_HELD, 7),
+            (Product::DualSense, DS5_HELD, 10),
+        ] {
+            let mut ps = *held;
+            ps[at] |= 0x01;
+            assert_ne!(
+                pad::state(product, &ps).buttons & gamepad::bit::GUIDE,
+                0,
+                "{product:?}"
+            );
+            let owner = bus_report(product, &ps, true);
+            let guest = bus_report(product, &ps, false);
+            assert_ne!(
+                owner.buttons & gamepad::bit::GUIDE,
+                0,
+                "{product:?}: the owner's"
+            );
+            assert_eq!(
+                guest.buttons & gamepad::bit::GUIDE,
+                0,
+                "{product:?}: a guest's"
+            );
+            assert_eq!(
+                guest.buttons | gamepad::bit::GUIDE,
+                owner.buttons,
+                "{product:?}"
+            );
+        }
     }
 
     /// **A report pad's table is the answers the Linux host gives**: its

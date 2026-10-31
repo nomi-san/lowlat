@@ -2546,6 +2546,7 @@ fn drive<M: Media>(
         input
             .injector
             .set_permissions(args.permissions, &mut input.sink);
+        input.injector.set_owner(args.owner, &mut input.sink);
         // **On the input driver's devices from admission**, where the switch
         // is on, so their readiness overlaps the connection's setup as the
         // other devices' does.
