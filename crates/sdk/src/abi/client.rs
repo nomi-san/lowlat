@@ -308,19 +308,21 @@ const DECODER_INFO_MINOR_12: usize = core::mem::offset_of!(lowlat_decoder_info, 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decoder_info) -> bool {
     guard(false, || {
-        // SAFETY: the caller's contract.
-        let Some(out) = (unsafe { out.as_mut() }) else {
+        if out.is_null() {
             return false;
-        };
-        let size = out.size as usize;
-        if size < DECODER_INFO_MINOR_12 {
+        }
+        // Read through the pointer, never a reference to the whole: a caller
+        // built against an older header passes a shorter one.
+        // SAFETY: the caller's contract.
+        let size = unsafe { core::ptr::addr_of!((*out).size).read_unaligned() };
+        if (size as usize) < DECODER_INFO_MINOR_12 {
             return false;
         }
         let Some(row) = ::lowlat_client::enumerate::probe(index) else {
             return false;
         };
         let mut info = lowlat_decoder_info {
-            size: out.size,
+            size,
             index,
             decoder: match row.backend {
                 Backend::Nvdec => lowlat_decoder::LOWLAT_DECODER_VENDOR,
@@ -349,15 +351,11 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
         put(&mut info.driver, &row.driver);
         // As much of the row as the caller's size reaches, and no more:
         // what lies past the caller's structure is the caller's.
-        let bytes = size.min(core::mem::size_of::<lowlat_decoder_info>());
+        let bytes = (size as usize).min(core::mem::size_of::<lowlat_decoder_info>());
         // SAFETY: `out` is a live structure of at least `bytes` bytes by the
         // caller's contract, `info` a whole one, both plain data.
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                (&raw const info).cast::<u8>(),
-                core::ptr::from_mut(out).cast::<u8>(),
-                bytes,
-            );
+            core::ptr::copy_nonoverlapping((&raw const info).cast::<u8>(), out.cast::<u8>(), bytes);
         }
         true
     })
@@ -2453,14 +2451,17 @@ pub unsafe extern "C" fn lowlat_client_get_nat(
 ) -> lowlat_status {
     unsafe {
         entered(cl, |handle| {
-            let Some(out) = out.as_mut() else {
+            if out.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            if (out.size as usize) < core::mem::size_of::<lowlat_nat_info>() {
+            }
+            // Read through the pointer and written whole: a reference to the
+            // caller's structure would say it already holds valid values.
+            let size = core::ptr::addr_of!((*out).size).read_unaligned();
+            if (size as usize) < core::mem::size_of::<lowlat_nat_info>() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             let nat = handle.held().seam.nat();
-            *out = nat_info(out.size, &nat);
+            out.write(nat_info(size, &nat));
             LOWLAT_OK
         })
     }
@@ -2806,16 +2807,19 @@ pub unsafe extern "C" fn lowlat_client_release_frame(
 ) -> lowlat_status {
     unsafe {
         entered(cl, |handle| {
-            let Some(frame) = frame.as_ref() else {
+            if frame.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
+            }
             if let Some(done) = done.as_ref()
                 && done.kind != lowlat_fence_kind::LOWLAT_FENCE_NONE as u32
             {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
+            // Read through the pointer, never a reference to the whole: a
+            // caller built against an older header passes a shorter one.
+            let slot = core::ptr::addr_of!((*frame).slot).read_unaligned();
             let frames = std::sync::Arc::clone(handle.held().seam.frames());
-            frames.release(frame.slot as usize);
+            frames.release(slot as usize);
             LOWLAT_OK
         })
     }

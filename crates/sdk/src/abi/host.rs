@@ -1815,33 +1815,40 @@ pub unsafe extern "C" fn lowlat_host_get_status(
 ) -> lowlat_status {
     unsafe {
         entered(hl, |handle| {
-            let Some(slot) = out.as_mut() else {
-                return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            if (slot.size as usize) < core::mem::size_of::<lowlat_host_status>() {
+            if out.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
+            // Read through the pointer and written whole: a reference to the
+            // caller's structure would say it already holds valid values.
+            let size = core::ptr::addr_of!((*out).size).read_unaligned();
+            if (size as usize) < core::mem::size_of::<lowlat_host_status>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut status = lowlat_host_status {
+                size,
+                guests: 0,
+                width: 0,
+                height: 0,
+                running: false,
+                audio_active: false,
+                ten_bit: false,
+                reserved: [0; 1],
+                codec: 0,
+                chroma: 0,
+                audio_device: [0; LOWLAT_OUTPUT_MAX],
+            };
             let held = handle.held();
             let Some(seam) = held.seam.as_ref() else {
-                slot.guests = 0;
-                slot.width = 0;
-                slot.height = 0;
-                slot.running = false;
-                slot.audio_active = false;
-                slot.ten_bit = false;
-                slot.codec = 0;
-                slot.chroma = 0;
-                slot.reserved = [0; 1];
-                put(&mut slot.audio_device, "");
+                out.write(status);
                 return LOWLAT_OK;
             };
             let (width, height) = seam.picture().unwrap_or((0, 0));
             let (reading, device) = seam.audio_state();
-            slot.guests = u32::try_from(seam.guests().len()).unwrap_or(u32::MAX);
-            slot.width = width;
-            slot.height = height;
-            slot.running = true;
-            slot.audio_active = reading;
+            status.guests = u32::try_from(seam.guests().len()).unwrap_or(u32::MAX);
+            status.width = width;
+            status.height = height;
+            status.running = true;
+            status.audio_active = reading;
             // Zero and clear until an encoder exists, the same way a picture
             // of no size is reported before a display has been opened.
             let (codec, ten_bit, chroma_444) = match seam.colour() {
@@ -1865,14 +1872,14 @@ pub unsafe extern "C" fn lowlat_host_get_status(
                 ),
                 None => (0, false, 0),
             };
-            slot.codec = codec;
-            slot.chroma = chroma_444;
-            slot.ten_bit = ten_bit;
-            slot.reserved = [0; 1];
+            status.codec = codec;
+            status.chroma = chroma_444;
+            status.ten_bit = ten_bit;
             put(
-                &mut slot.audio_device,
+                &mut status.audio_device,
                 device.as_deref().unwrap_or_default(),
             );
+            out.write(status);
             LOWLAT_OK
         })
     }
