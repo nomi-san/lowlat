@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-31 - M1.5: the client's macOS zip
+
+### Added
+- **The client's macOS zip** ([06 §3b](06-api.md)): the client half as one static library holding
+  arm64 and x86_64, with the header, from the build workflow and the script it runs
+  (`scripts/package-client-macos.sh`), every check read from the copies it zips; no shared
+  library in it and nothing signed. A second job links the zip's library natively on Intel and on
+  the oldest system a runner offers.
+### Fixed
+- **Every macOS build is for macOS 11** ([07 §13](07-platforms.md)): the C and assembly the crates
+  compile took the SDK's own version, 26.4, so an application linking the static library for 11
+  was warned of each such member. The workspace's cargo configuration names the floor.
+### Changed
+- **The ABI gate's static test links three ways on macOS**, for macOS 11 with the linker's
+  warnings as errors: as C, and with thin link-time optimisation and dead-stripping as C and as
+  C++, the C++ program throwing exceptions of its own on either side of the contained panic.
+- **A C++ application's log callback lets no exception out** ([06 §9](06-api.md)).
+### Measured
+- An application's link-time optimisation, thin or full, in C or C++, links the static library as
+  it is on both architectures; dead-stripping takes the test program from 2.0 to 0.82 MB. A
+  bitcode library for optimisation across the languages is refused by Xcode's linker, whose LLVM
+  is older than the compiler's.
+
 ## 2026-10-30 - M1.4: the desk on macOS
 
 ### Fixed

@@ -1051,15 +1051,20 @@ arrangement works at all, and three of its settings fail silently.
 no host on macOS and none is planned** ([00 D14](00-overview.md)), so the capture, encode,
 injection, daemon and driver crates build empty there.
 
-- **macOS 11 on arm64 and x86_64.** The library ships as one universal shared and static library,
-  each architecture built and tested on its own and the two joined; CI tests x86_64 under the
-  system's translation layer. An entry point newer than 11 is found at run time, since a symbol
-  linked by name and missing stops the load on an older system.
-- **Signing is ad hoc**, notarization only with a developer identity; an unsigned download is
-  quarantined by the system until the user allows it. The hardened runtime, which notarization
-  requires, also refuses to load a library signed by neither the system nor the application's
-  own team (measured), so an application that loads the machine's codec pair under it takes the
-  entitlement that turns library validation off.
+- **macOS 11 on arm64 and x86_64.** The client ships as one universal static library (*amended at
+  M1.5, 2026-10-31*; [06 §3b](06-api.md)), each architecture built and tested on its own and the
+  two joined; the shared library builds the same way and is not shipped. CI tests x86_64 under
+  the system's translation layer. **Every macOS build is for 11**, the workspace's cargo
+  configuration naming it: unset, the compiler takes the SDK's own version for the C and
+  assembly the crates compile (26.4, measured), and a static library built so warns an
+  application linking for 11 of each such member. An entry point newer than 11 is found at run
+  time, since a symbol linked by name and missing stops the load on an older system.
+- **Nothing is signed** (*amended at M1.5*): an archive carries no signature, and the application
+  that links it signs what it makes, and notarizes it with a developer identity; an unsigned
+  download is quarantined by the system until the user allows it. The hardened runtime, which
+  notarization requires, also refuses to load a library signed by neither the system nor the
+  application's own team (measured), so an application that loads the machine's codec pair under
+  it takes the entitlement that turns library validation off.
 - **Timed waits are coalesced**: the system lets a sleep or a timeout run late by an eighth to a
   quarter of its length, up to 1 and 5 ms, unless it is a kernel-queue timer marked critical
   ([02 §2](02-io-shell.md)).

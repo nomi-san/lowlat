@@ -807,7 +807,8 @@ between its devices.
 **On macOS since M1.2** (*2026-10-30*, minor 34; [10 §4.3, §5.3](10-client.md)): the library
 is `liblowlat.dylib`, whose install name is `@rpath/liblowlat.dylib`, so an application finds
 it through its own run path, and `liblowlat.a`, asked for by name as on Windows; each is built
-for one architecture until M1.5 joins them. It carries the client half alone: no host is built
+for one architecture, and the client's zip joins the static one's two (below). It carries the
+client half alone: no host is built
 there whatever the build asks for, `lowlat_features` reports none, and the header declares none
 where `__APPLE__` is defined, a `LOWLAT_HOST` the application defines declaring nothing more.
 `LOWLAT_DECODER_SYSTEM` is the system's decoder, VideoToolbox -- the hardware where the Mac has
@@ -948,6 +949,22 @@ load; the licences of the project, the application toolkit and SDL; this documen
 The DLL's and the demo's symbols are a second zip of the same run. No codec library is in it:
 the software decoder takes an LGPL pair named by `LOWLAT_FFMPEG_DIR` or kept beside the
 application.
+
+**The client's macOS zip** (*2026-10-31*, M1.5), from the build workflow and the script it runs
+(`scripts/package-client-macos.sh`): `lib/liblowlat.a`, the client half as one static library
+holding arm64 and x86_64; `include/lowlat.h` as committed; the project's licence, this document
+and [10](10-client.md); and `FEATURES`, the version and feature bits each architecture's library
+reports. No shared library is in it and nothing is signed: an archive carries no signature, and
+the application that links it signs what it makes. **Every member is built for macOS 11 or
+earlier**, so an application linked for 11 is warned of none. **An application's link-time
+optimisation links it as it is**, on macOS as on Windows (MSVC's and clang-cl's alike): thin or
+full, from C or C++, the application's own code is optimised at its link and the library's is
+whole already; dead-stripping is what trims the library's share. Optimisation across the two
+languages is not offered, since the library's code would have to be bitcode, which Xcode's
+linker reads through an older LLVM than the compiler that wrote it. The runtime's own members
+carry bitcode of that kind beside their machine code, which `nm` stops on unless told
+`--no-llvm-bc`; a link reads the machine code. No codec library is in the zip: the software
+decoder takes the machine's own pair as [10 §5.3](10-client.md) describes.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -1422,6 +1439,10 @@ undefined behavior, and this library loads into processes we do not control.
 - **The shared library keeps unwinding enabled.** Building it to abort on panic silently
   disables all of the above, which is why the release profile is split
   ([AGENTS.md](../AGENTS.md) §17).
+- **A C++ application's log callback lets no exception out.** It is called from the library's
+  own frames, and an exception unwinding through them is undefined: catch inside it, or declare
+  it `noexcept`. A C++ program's exceptions elsewhere and the library's contained panics share
+  the system's one unwinder, both checked in one program on macOS.
 - A deliberately panicking call is a named test at [Phase 8](impl-plan.md): for each half
   the object carries, `lowlat_debug_panic` on a host handle and `lowlat_client_debug_panic`
   on a client handle (minor 18), run against the shipped object on Linux and on Windows; and

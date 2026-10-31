@@ -3,7 +3,9 @@
 **Status:** planned 2026-10-29 at its interview. macOS gets the client only: there is no host on
 macOS and none is planned. The platform seams (M0) come first and the client (M1) after them.
 *Amended 2026-10-29:* M0 built and closed the same day; M1 is next. *Amended 2026-10-29:* M1.1
-built, the network shell and the port mapper's platform side; M1.2 is next.
+built, the network shell and the port mapper's platform side; M1.2 is next. *Amended 2026-10-31:*
+M1.5 replanned at its interview -- the client ships as one universal static library with its
+header, unsigned, and no demo -- and built but for the relay's check from the development Mac.
 
 ## Why the seams come first
 
@@ -81,6 +83,9 @@ and D14's amendment [00](00-overview.md).
 - **macOS 11 on arm64 and x86_64, and the library ships universal.** Each architecture is built
   and tested on its own, then the two are joined; CI tests arm64 natively and x86_64 under the
   system's translation layer. Signing is ad hoc, notarization only with a developer identity.
+  *Amended at M1.5 (2026-10-31)*: the client ships as the static library alone, which carries no
+  signature; the application that links it signs what it makes, and notarizes it with a
+  developer identity.
   Nothing planned needs a later system: VideoToolbox's HEVC and its hardware query are 10.13, an
   IOSurface imported into Metal 10.11, the kernel queue's user event 10.6, the network service
   type 10.12, and the language's own floor is 11 on arm64. An entry point newer than 11 is found
@@ -262,7 +267,32 @@ and D14's amendment [00](00-overview.md).
   the translation layer with sound, input and the pad -- and by the library's new tests, each
   failing when broken, Windows, Linux and both Mac architectures as before.
 - [ ] **M1.5 packaging**: the universal library, the header and the demo's application bundle in
-  a zip from the build workflow, signed ad hoc.
+  a zip from the build workflow, signed ad hoc. *Replanned at its interview (2026-10-31)*: the
+  client half as one universal static library with the header, in a zip from the build
+  workflow -- no shared library in it, nothing signed, no demo built or bundled -- ready for an
+  application's link-time optimisation in C and in C++; and the relay checked from the
+  development Mac, which no session there had crossed. *Built 2026-10-31 but for the relay.*
+  **Every macOS build is for macOS 11**: unset, the compiler took the SDK's own version for the C
+  and assembly the crates compile, so 24 of the arm64 library's 399 members and 30 of the x86_64
+  one's 310 said 26.4, and an application linking it for 11 was warned of each -- which the ABI
+  gate's static test, whose warnings-as-errors were the compiler's, never failed. The
+  workspace's cargo configuration names the floor now, a builder's own value standing, and the
+  test links the library for 11 with the linker's warnings as errors, three ways: as C, and with
+  thin link-time optimisation and dead-stripping as C and as C++, the C++ program throwing and
+  catching exceptions of its own on either side of the contained panic; a later floor and an
+  uncaught exception each fail it. **An application's link-time optimisation links the library as
+  it is** (measured with Xcode 26.4.1): thin or full, C or C++, both architectures, its own code
+  optimised at its link and the library's whole already; dead-stripping takes the test program
+  from 2.0 MB to 0.82, with or without it. Cross-language optimisation is not offered: the
+  library's code would have to be bitcode, which Xcode's linker reads through an older LLVM than
+  the compiler's and refused, and the runtime's own members carry such bitcode beside their
+  machine code, which `nm` stops on unless told `--no-llvm-bc`. The zip,
+  `lowlat-sdk-macos-universal-client-<sha>.zip`, 6.0 MB around an 18.6 MB library, comes from
+  `scripts/package-client-macos.sh`, which checks the copies it zips -- both architectures, no
+  member later than 11, no host entry point, the three links run, x86_64's under the translation
+  layer -- and that the zip unpacked equals them; each check failed when broken. A second job
+  links the zip's library the same three ways natively on an Intel runner and on the oldest
+  system a runner offers.
 
 **Gate:** Gate C ([impl-plan-client.md](impl-plan-client.md)) on the development Mac over Wi-Fi,
 against an established host and this project's host on the development machine:
@@ -272,6 +302,10 @@ against an established host and this project's host on the development machine:
 - the keyboard, Command's and Caps Lock's cases included, against the established host; the
   mouse in both modes; a DualSense; sound and the microphone;
 - x86_64 under the translation layer, for video and input;
+- Game Mode (*added at M1.5's interview*), forced on and off in alternating legs by Xcode's
+  `gamepolicyctl` around the demo started from a terminal: the decode at p50, p95 and p99 and a
+  Bluetooth DualSense's reports a second -- first, whether a policy forced on reaches an
+  application that has no bundle;
 - the software pair: the default build refusing the machine's GPL pair by its licence, and a
   build that allows a GPL pair decoding both codecs through it from the package manager's
   directory, with no variable set;
@@ -279,6 +313,9 @@ against an established host and this project's host on the development machine:
 
 ## Change log
 
+- 2026-10-31: M1.5 replanned at its interview -- the static library alone, unsigned, no demo; an
+  application's link-time optimisation checked in C and C++; the relay from the development Mac
+  -- and built but for the relay; every macOS build for macOS 11; the gate gains Game Mode.
 - 2026-10-30: M1.4 built: the toolkit's macOS window keeps the host's cursor at its size and
   hears every key let go; Command sent as the GUI key; a wireless DualSense's lights reset once
   a connection; Caps Lock as the window reports it (the interview's press and release
