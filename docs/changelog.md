@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-31 - W4.3: a withdrawn pad permission, and Guide
+
+### Fixed
+- **A withdrawn pad permission lets go of every pad** ([05 §7.2](05-host.md)): a sixteen-button
+  pad is centred and a pad sent as its reports unplugged. Both had kept their last state until the
+  guest left, the guest's own unplug refused for want of the permission; an unplug needs none now.
+### Changed
+- **Guide is the owner's alone** ([05 §7.2](05-host.md)): for a guest that does not own the host
+  a press of Guide is dropped and a whole state is taken without it, on Windows also from a pad
+  played on the bus from its reports. The header says what `owner` decides.
+
 ## 2026-10-31 - M1: the macOS client's gate
 
 ### Fixed

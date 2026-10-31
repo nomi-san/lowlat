@@ -1109,6 +1109,19 @@ one fact: **a host does not know how many pads a guest has until it sends one.**
   disconnect need no held-button walk -- but only if the device is genuinely destroyed, which
   makes it something to test rather than something to assume.
 
+**A withdrawn pad permission lets go of every pad the guest holds** (*2026-10-31*), as a withdrawn
+keyboard lets go of its keys ([§7](#7-input-injection)): a sixteen-button pad is centred and stays
+plugged in, and a pad sent as its reports is unplugged, since its reports are refused from then on
+and its device has nothing but the last of them to say. An unplug needs no permission: it lets go
+and presses nothing.
+
+**Guide is the owner's alone** (*2026-10-31*). On the Xbox pad it raises the host's own overlay --
+the system's game bar, a launcher's -- which reaches past whatever a guest was given to play, so
+for a guest that does not own the host a press of Guide alone is dropped and a whole state is
+taken without it, the rest of the state intact; on Windows a pad played on the bus from its own
+reports loses it the same way. A pad presented as its product keeps its own button, which is the
+product's.
+
 **Force feedback travels back to the peer.** A local application raising a rumble effect on the
 virtual pad reaches the guest that owns it as a rumble message. Only the simple magnitude effect
 is offered: it is what the common controller libraries raise, and the shaped effects would
