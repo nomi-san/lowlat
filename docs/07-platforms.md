@@ -1080,7 +1080,10 @@ injection, daemon and driver crates build empty there.
   ([06 §3b](06-api.md)).
 - **The socket's platform facts are [02 §5](02-io-shell.md)'s**: every v4-level option refused on a
   dual-stack socket, the mark and the source per datagram on IPv4, and a port held for IPv4 by
-  another socket not stopping a dual-stack bind.
+  another socket not stopping a dual-stack bind. **A relay attempt crosses both carriers**
+  (*measured at M1.5*): through a public relay service to a host across the Internet, over UDP
+  through the dual-stack socket's IPv4 path and over TCP on a stream in the relay's own family,
+  each session leaving as asked ([10 §11](10-client.md)).
 - **A library installed on the machine is a package manager's**: the dynamic linker's own search
   reaches `/usr/local/lib` and `/usr/lib` but not Homebrew's directory on Apple Silicon, so what
   the library loads from the machine it finds by full path in the package managers' directories

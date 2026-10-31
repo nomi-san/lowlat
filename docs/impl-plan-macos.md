@@ -5,7 +5,7 @@ macOS and none is planned. The platform seams (M0) come first and the client (M1
 *Amended 2026-10-29:* M0 built and closed the same day; M1 is next. *Amended 2026-10-29:* M1.1
 built, the network shell and the port mapper's platform side; M1.2 is next. *Amended 2026-10-31:*
 M1.5 replanned at its interview -- the client ships as one universal static library with its
-header, unsigned, and no demo -- and built but for the relay's check from the development Mac.
+header, unsigned, and no demo -- and built, the relay checked from the development Mac.
 
 ## Why the seams come first
 
@@ -266,12 +266,12 @@ and D14's amendment [00](00-overview.md).
   mid-session; sound and the tone; App Nap with and without sound; and the x86_64 demo under
   the translation layer with sound, input and the pad -- and by the library's new tests, each
   failing when broken, Windows, Linux and both Mac architectures as before.
-- [ ] **M1.5 packaging**: the universal library, the header and the demo's application bundle in
+- [x] **M1.5 packaging**: the universal library, the header and the demo's application bundle in
   a zip from the build workflow, signed ad hoc. *Replanned at its interview (2026-10-31)*: the
   client half as one universal static library with the header, in a zip from the build
   workflow -- no shared library in it, nothing signed, no demo built or bundled -- ready for an
   application's link-time optimisation in C and in C++; and the relay checked from the
-  development Mac, which no session there had crossed. *Built 2026-10-31 but for the relay.*
+  development Mac, which no session there had crossed. *Built 2026-10-31.*
   **Every macOS build is for macOS 11**: unset, the compiler took the SDK's own version for the C
   and assembly the crates compile, so 24 of the arm64 library's 399 members and 30 of the x86_64
   one's 310 said 26.4, and an application linking it for 11 was warned of each -- which the ABI
@@ -291,8 +291,15 @@ and D14's amendment [00](00-overview.md).
   `scripts/package-client-macos.sh`, which checks the copies it zips -- both architectures, no
   member later than 11, no host entry point, the three links run, x86_64's under the translation
   layer -- and that the zip unpacked equals them; each check failed when broken. A second job
-  links the zip's library the same three ways natively on an Intel runner and on the oldest
-  system a runner offers.
+  links the zip's library the same three ways and runs it natively on an Intel runner (macOS
+  15.7.9) and on the oldest system a runner offers (14.8.9); both passed. **The relay from the
+  development Mac**, relay-only attempts through a public relay service to an established host
+  across the Internet, which the direct path reached only with a reflexive server named: over
+  UDP for five minutes, the relay ready 162 ms after the socket opened, the round trip 110 ms
+  against 28 direct and at most 0.01 percent lost in any 30 seconds; over TCP, the stream opened
+  in the relay's own family, 113 ms and at most 0.55 percent, the service's own stream stalls
+  ([10 §11](10-client.md)) as from Windows; over UDP under the translation layer, two minutes
+  with nothing lost; every session left as asked.
 
 **Gate:** Gate C ([impl-plan-client.md](impl-plan-client.md)) on the development Mac over Wi-Fi,
 against an established host and this project's host on the development machine:
@@ -315,7 +322,7 @@ against an established host and this project's host on the development machine:
 
 - 2026-10-31: M1.5 replanned at its interview -- the static library alone, unsigned, no demo; an
   application's link-time optimisation checked in C and C++; the relay from the development Mac
-  -- and built but for the relay; every macOS build for macOS 11; the gate gains Game Mode.
+  -- and built; every macOS build for macOS 11; the gate gains Game Mode.
 - 2026-10-30: M1.4 built: the toolkit's macOS window keeps the host's cursor at its size and
   hears every key let go; Command sent as the GUI key; a wireless DualSense's lights reset once
   a connection; Caps Lock as the window reports it (the interview's press and release

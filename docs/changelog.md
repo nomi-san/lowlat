@@ -25,6 +25,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it is on both architectures; dead-stripping takes the test program from 2.0 to 0.82 MB. A
   bitcode library for optimisation across the languages is refused by Xcode's linker, whose LLVM
   is older than the compiler's.
+- The zip's library linked and ran natively on Intel (macOS 15.7.9) and on macOS 14.8.9.
+- From the development Mac through a public relay service to a host across the Internet: over UDP
+  for five minutes the round trip 110 ms against 28 direct and at most 0.01 percent lost in any 30
+  seconds; over TCP 113 ms and at most 0.55 percent, the service's stream stalls as from Windows;
+  over UDP under the translation layer nothing lost.
 
 ## 2026-10-30 - M1.4: the desk on macOS
 
