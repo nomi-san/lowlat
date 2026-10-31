@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-31 - The header's enumerations, minor 36
+
+### Changed
+- **Every family of values in the header is an enumeration** ([06 §11](06-api.md)): thirteen
+  runs of defines are enumerations with the values they had. The decoder's state and the pad
+  buttons take their families' prefixes, `LOWLAT_DECODER_STATE_*` and `LOWLAT_PAD_BUTTON_*`.
+- **Every enumeration is 32 bits wide, and what the library writes is typed by one**
+  ([06 §1](06-api.md)): in C++ a field reads into its enumeration with no cast and holds any
+  value a newer library writes; in C each name is the 32-bit integer it was. Five enumerations
+  name the zero a status reports before a build. No byte moves.
+- **`lowlat_host_config_default` fills the caller's structure** ([06 §3](06-api.md)) and returns
+  a status, refusing one shorter than the configuration: by value, a newer library wrote its
+  whole structure into a return slot a caller built against an older header had sized.
+### Fixed
+- **No call makes a reference of the caller's structure.** The release read a whole frame
+  where a caller built against an older header passes a shorter one, and three calls that fill
+  a structure claimed a valid value in every field before writing one.
+- **The header's generation keeps every feature guard**: a guard closed with a comment, which
+  only the widths brought into a feature's block, had left the next guard read as already open
+  and dropped.
+### Decided
+- **The header forks on the language alone** ([06 §1](06-api.md)): the generator's own fork
+  also tests the C standard's version, which MSVC leaves undefined in its default C mode, so the
+  header test rewrites it.
+
 ## 2026-10-31 - W4.3: a withdrawn pad permission, and Guide
 
 ### Fixed

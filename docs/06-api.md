@@ -22,7 +22,16 @@ Six rules, each of which removes a class of integration failure.
    reused, never renumbered, and never reordered; new variants append. A code travels **outward**
    as its enumeration and **inward** as a plain integer, because a value the application wrote
    is whatever the application wrote, and reading one nothing defined is undefined behaviour.
-   Every such field is checked at the boundary rather than converted.
+   Every such field is checked at the boundary rather than converted. *Amended 2026-10-31
+   (minor 36):* outward is also every structure field and out-parameter the library writes
+   with a value one of its enumerations names, each typed by it, and every enumeration is 32
+   bits wide. In C++ it declares its width (`enum lowlat_rotation : uint32_t`), so a field reads
+   into it with no cast and holds any value a newer library writes; in C its name is the 32-bit
+   integer and its enumerators name the values. The header forks on the language alone, never
+   on a C standard's version, which MSVC leaves undefined in its default C mode. A structure
+   the application writes keeps its integers even where the library fills it too
+   (`lowlat_host_config_default`), since the library reads it back; a family of bits names one
+   bit an enumerator, and whatever holds them OR-ed stays an integer.
 4. **A boolean field is a `bool`.** One byte on every target this builds for, asserted at
    compile time by the header's own test, and C normalizes anything assigned to one.
 5. **Poll based, not callback based.** The application asks for events on its own thread at its
@@ -237,9 +246,9 @@ the configuration holds is what was asked for at the start and what this holds i
 coming out now. `codec` and `chroma` are enumerations, `ten_bit` is a flag -- **an enumeration
 where the axis can grow and a flag where it cannot**: a codec may gain another entry and chroma
 already has a third layout in wide use, while no encoder on this platform offers a depth above
-ten and one of them cannot express one. All three read zero, zero and clear on a handle that is
-not streaming, the same way the picture's size does, because until then there is nothing
-truthful to report.
+ten and one of them cannot express one. All three read none, none and clear
+(`LOWLAT_CODEC_NONE`, `LOWLAT_CHROMA_NONE`) on a handle that is not streaming, the same way the
+picture's size reads zero, because until then there is nothing truthful to report.
 
 **Sound is there for the same reason, and it is the half the settings cannot express.**
 `audio_active` is whether a device is being read right now, which is clear in an empty room
@@ -310,12 +319,16 @@ display is put keeping it. A call for it, added while this was being built, was 
 it was published.
 
 **A configuration nobody filled in is not a zeroed one.** Every enumerated field here is
-validated rather than clamped, so a structure the caller zeroed is a *valid* request for the
-first variant of each -- including the most aggressive congestion level -- and the boundary
-cannot tell that apart from an application that meant it. `lowlat_host_config_default` returns
-what a host would choose for itself, `size` fields included, and is the thing to start from and
-overwrite. **A null configuration to `lowlat_host_start` means exactly those defaults**, which
-is the one reading of a null pointer there that cannot be a mistake.
+validated rather than clamped, so a structure the caller zeroed asks for the first variant of
+each -- the most aggressive congestion level among them -- and names no codec, which is
+refused; the boundary cannot tell a zero that was meant from one that was not.
+`lowlat_host_config_default` fills the caller's structure with what a host would choose for
+itself, the inner `size` fields included, and is the thing to start from and overwrite. The
+caller sets `size`, as for every other structure filled here, and one shorter than the
+configuration is refused rather than written past (*amended 2026-10-31*, minor 36: it returned
+the structure by value, which a newer library wrote whole into a return slot a caller built
+against an older header had sized). **A null configuration to `lowlat_host_start` means exactly
+those defaults**, which is the one reading of a null pointer there that cannot be a mistake.
 
 Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
 
@@ -977,7 +990,7 @@ application's and its buffer is the playback window ([10 §6](10-client.md)). Pa
 application has not taken wait in a pool of 32, past which the newest is dropped and counted
 in status, which is a caller that stopped calling. Status carries the packets decoded,
 dropped and refused, those waiting, the last packet's age between the wire and the call, and
-the codec the decoder was built for (`LOWLAT_AUDIO_OPUS`, `LOWLAT_AUDIO_PCM`).
+the codec the decoder was built for (`lowlat_audio_codec`, none before a build).
 
 **The microphone goes the other way** (minor 25, *2026-10-12*, [10 §6](10-client.md)):
 `lowlat_client_send_microphone(cl, samples, count)` takes sixteen-bit mono samples at 48 kHz,
@@ -1004,10 +1017,11 @@ the picture** with `set_viewport`, a rectangle in the same units as the position
 and that is all the library knows about the window: no fit is computed, so stretching,
 shrinking, a percent scale and a rotated picture are the application's ways of producing one
 rectangle, and a display scale factor never enters; the picture's own size is the stream's.
-Keys are usage codes with the modifier mask in the wire's bits (`LOWLAT_MOD_*`), the lock
-bits included because a host keeps its own locks in step from them; mouse buttons, pad
-buttons by index, pad axes and pad state bits have their `LOWLAT_*` names, and the two pad
-forms number the buttons differently on purpose, as the wire does. A press outside the
+Keys are usage codes with the modifier mask in the wire's bits (`lowlat_keymod`), the lock
+bits included because a host keeps its own locks in step from them; mouse buttons
+(`lowlat_mouse_button`), pad buttons by index (`lowlat_pad_button`), pad axes
+(`lowlat_pad_axis`) and pad state bits (`lowlat_pad_state_button`) have their enumerations, and
+the two pad forms number the buttons differently on purpose, as the wire does. A press outside the
 rectangle is not sent and a release always is; a key of code zero is not sent; an unchanged
 pad state is not repeated. **A relative motion is sent as the device reported it**, not
 scaled by the size the picture is drawn at (*corrected 2026-09-24*: it was scaled, and a
@@ -1691,6 +1705,30 @@ the names no longer finds it, so an application asks the minor instead.
 (4), and `lowlat_frame.surface` appended after `adapter` on every platform, null wherever the
 kind is not the surface's. The frame grows by the field's size; a caller built against an
 earlier minor passes the size it knows and gets the fields it knows, as before.
+
+**Minor 36** (2026-10-31) names every family of values by an enumeration and types what the
+library writes ([§1](#1-shape), rule 3). The defines left -- the feature bits, the
+translation's number, state and source, the sound codec, the client's and its decoder's state,
+the modifier bits, the mouse and pad buttons, the pad axes and state bits, a display's lifetime
+-- are `lowlat_feature`, `lowlat_nat_type`, `lowlat_nat_state`, `lowlat_nat_source`,
+`lowlat_audio_codec`, `lowlat_client_state`, `lowlat_decoder_state`, `lowlat_keymod`,
+`lowlat_mouse_button`, `lowlat_pad_button`, `lowlat_pad_axis`, `lowlat_pad_state_button` and
+`lowlat_vdd_lifetime`, with the values they had. Two families take their names' prefixes: the
+decoder's state is `LOWLAT_DECODER_STATE_NONE_YET`, `_BUILT` and `_FAILED`, which had stood
+beside `LOWLAT_DECODER_NONE`, a decoder of none; the pad buttons are `LOWLAT_PAD_BUTTON_A` to
+`LOWLAT_PAD_BUTTON_DPAD_RIGHT`. Every enumeration is 32 bits wide, and every structure field and
+out-parameter the library writes is typed by its own: the frame's kind, format, rotation and
+handle kind; the client's status's state, decoder state, codecs, backend, format and mappings;
+the translation's state, number, mapping, source and gateway; a decoder row's decoder; the
+host's status's codec and chroma; a pad report's kind and `lowlat_host_poll_pad_report`'s type
+and kind; the log callback's level. Five zeros a status reports before a build are named:
+`LOWLAT_CODEC_NONE`, `LOWLAT_FORMAT_NONE`, `LOWLAT_AUDIO_NONE`, `LOWLAT_CHROMA_NONE` and
+`LOWLAT_NAT_SOURCE_NONE`. `lowlat_host_config_default` takes the structure to fill and returns
+a status ([§3](#3-host)). **No byte moves.** In C each type is the 32-bit integer it was; in C++
+a field reads into its enumeration with no cast, a bare integer written into one takes a cast,
+a log callback takes `lowlat_log_level`, and `enum lowlat_status` is the same type as
+`lowlat_status` there alone. A test of the preprocessor for one of the names no longer finds
+it, as at minor 34.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
