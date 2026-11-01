@@ -461,15 +461,17 @@ device will emit is a capability it reports, not a constant.
 **One setting, three points, and everything else stays a default.** An encoder has a dozen knobs
 and almost none of them are a person's business; what a person actually wants to say is whether
 they would rather wait less or look at more. That is `lowlat_quality`
-([06 §quality](06-api.md)), **settled when hosting starts** -- one encode serves every seat, so
-moving it under a running session would change the picture every guest is watching on one
-guest's behalf -- and it moves two levers underneath.
+([06 §quality](06-api.md)), **moved while a host runs** (*amended 2026-11-01*, minor 37; it was
+settled when hosting started), and it moves two levers underneath.
 
 | | Quantiser floor | Search effort |
 |---|---|---|
-| lowest latency, the default | 5 | the most a device offers |
-| balanced | none | the most a device offers |
-| highest | none | the least, and two passes where the encoder has them |
+| lowest latency, the default | 5 | the least a device offers |
+| balanced | none | the least a device offers |
+| highest | none | the most, and a second pass where the encoder has one |
+
+(*Corrected 2026-11-01*: the effort column had the two ends swapped, against the paragraph
+below and against what the host does.)
 
 **The floor is a latency control, not a quality one**, and it reads backwards until the chain is
 laid out: a lower floor lets the encoder spend more bits refining a picture, more bits is a larger
@@ -496,6 +498,31 @@ track none of them -- its own default is already as quick as anything it offers,
 its range is slower than sending nothing at all. Asking for the top serves both without any
 knowledge of which device is which, and a device advertising no range is sent nothing, because a
 level it never offered is a configuration it did not agree to.
+
+**A move while the host runs is the encoder's to make** (*added 2026-11-01*), asked of it only
+when the setting differs from the one it runs at, and answered three ways: taken as it runs, taken
+at a keyframe of its own, or not taken, which rebuilds it at the new setting. The floor alone
+moves on every encoder as it runs. The effort is where they differ:
+
+- **NVIDIA's moves as it runs, in both codecs**, its preset and its second pass with it, in one
+  reconfiguration of under 5 ms. Left to its presets, its H.265 codes one reference at the
+  fastest and four at the most thorough, the sequence and picture sets say so, and a
+  reconfiguration resends neither: moved that way, the decoder refused the first picture after
+  the move into the highest setting, and decoded every picture after the move out of it wrong
+  with no error at all. **It codes one reference at every setting**, as every other encoder here
+  does, and the sets are then the same at all three.
+- **AMD's takes its preset as it runs and its second pass only at a re-initialisation.** Both
+  are read back as written, but the second pass's cost never arrives until the encoder is
+  initialised again. So a move that keeps the pass is taken as it runs, and one in or out of the
+  highest setting re-initialises before the next picture, once the encoder holds none -- 1.4 to
+  2.4 ms -- and that picture is a keyframe with its sets.
+- **Intel's takes the effort with a reset** of under half a millisecond, made before the next
+  picture goes in, after the runtime's own check of the parameters that corrects the floor --
+  several milliseconds in H.265, once. In H.264 the reset continues the sequence; in H.265 a
+  change of effort is refused unless it starts a new one, so there it costs a keyframe. A reset
+  the runtime refuses leaves the encoder as it was, coding on at the setting it had.
+- **VA-API and Vulkan Video are rebuilt** at the new setting: neither has been shown to move as
+  it runs.
 
 **What a device does not implement, a host does not pretend it did -- and it cannot tell.** No
 interface here reports whether a driver acted on either lever, and the drivers differ: one takes

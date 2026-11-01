@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-01 - The quality, live, minor 37
+
+### Changed
+- **The quality moves while a host runs** ([06 §3](06-api.md)): it is
+  `lowlat_host_video_config.quality`, set with the rest of the video configuration and read back
+  with it. A move is asked of the encoder only when it differs from the one it runs at, and costs
+  what the encoder makes it cost ([05 §4.1](05-host.md)): nothing on NVIDIA's encoder and on
+  Intel's H.264, one keyframe on AMD's and on Intel's H.265 in or out of the highest setting, a
+  rebuild on VA-API and Vulkan Video. The configuration's own `quality` is `reserved2`.
+- **NVIDIA's encoder codes one reference at every setting**, in both codecs, which keeps its
+  parameter sets the same at all three.
+### Fixed
+- **The effort each setting asks for is stated the right way round** ([06 §quality](06-api.md),
+  [05 §4.1](05-host.md)): the tables had the fastest and the most thorough swapped.
+
 ## 2026-10-31 - The header's enumerations, minor 36
 
 ### Changed

@@ -292,6 +292,7 @@ whole:
 | `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
 | `output` | yes | The exception in cost rather than in kind: a picture from another output cannot be absorbed into a stream built for one, so it rebuilds around the new source for **one coded refresh** and every guest keeps its seat and its channel. `virtual` is the host's own display, plugged when it is asked for and kept for the host's life (Windows alone; refused elsewhere, at the call). (*Corrected 2026-10-25, at W2.8's gate*: an output asked for while the stream is being rebuilt for another reason -- a joining guest's codec, say -- is the next one built. It was left unread until something else rebuilt, and the stream stayed on the output it had been asked to leave.) |
 | `virtual_width`, `virtual_height` | yes | The host's own display's size, both or neither (minor 27). **Zero lets the host decide**: the size an owner states as it joins an empty room, else the size the display has, 1920x1080 when first plugged, either within the largest picture that guest accepts. A size is put through the system's display configuration where the monitor lists it and by plugging the monitor again with it added where it does not; the stream follows as it follows any resize. Refused outside 640x480 to 7680x4320 rather than clamped. Read back as asked, which the display's own size is not: that is the picture's, on the status. (*Amended 2026-10-21, at W3.11*: put as it is asked, and after that only over the mode the system's store holds for the display, which another monitor's arrival and a program leaving exclusive fullscreen put back; any other mode stands -- a program's own in exclusive fullscreen -- the stream following it.) |
+| `quality` | yes (minor 37) | One of [`lowlat_quality`](#quality). **Moves the running encoder**, asked of it only when it differs from what the stream runs at, so a configuration sent again as it stands moves nothing. One encode serves every seat, so a move changes what every guest is watching at once, and it is the application's to make. What it costs is the encoder's, below: most moves none, one keyframe where an encoder takes a change of effort only with a new sequence, and a rebuild, as an output change costs, where an encoder cannot move at all. (*Moved here 2026-11-01*: it was settled at start, on the configuration, whose field it was is `reserved2`.) |
 | `virtual_hz` | yes | The host's own display's refresh (minor 27). **Zero is the frame rate's ceiling**, `fps`, and 60 where that is zero too: a display composing faster than the stream takes pictures composes pictures nobody is sent. 24 to 480. (*Amended 2026-10-20, at W3.8*: where `fps` is zero too, **the display's own refresh**, which nothing puts back: the one the system restores for it as it is plugged -- the last its display settings saved -- 60 where it restores none, and whatever those settings set after, the stream pacing from it as from any display. Before, 60 was put back over a refresh a person set.) |
 
 **The fields only Windows acts on are declared on Windows alone** (*planned 2026-10-22*, W4;
@@ -339,7 +340,6 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 |---|---|
 | `codec` | One encode serves every seat and a session has one video configuration ([00 §D11](00-overview.md)). |
 | `encoder` | A consequence of where the display is rather than a preference, and changing it rebuilds the pipeline. Absent means **follow the display**, which is the right default; choosing one is an override. (*Amended 2026-10-20, at W2.7*: on Windows the vendor encoder is **the encoder of the captured output's GPU** -- NVIDIA's on an NVIDIA GPU, AMD's on an AMD GPU -- so it follows the display there as well; an output another GPU renders is refused rather than copied across, and the open kind is refused, there being no open stack to build it on, [05 §4](05-host.md). *Amended 2026-10-25, at W2.8*: and Intel's on an Intel GPU whose driver carries Intel's current runtime; an Intel GPU only the older runtime reaches is refused, as a GPU with no encoder here is.) |
-| `quality` | One of [`lowlat_quality`](#quality). It is what the encoder is built with, and one encode serves every seat, so moving it under a running session would change the picture every guest is watching on one guest's behalf. |
 | `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its thresholds are all zero, so every outstanding fragment classifies stale and congestion is declared on every pass once the send window passes its floor. The default is *sensitive*, and *adaptive* runs the same tuning while reserving a place for host-local signals (§10). |
 | `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
 | `max_guests` | Advertised capacity, read when a guest asks for a seat. |
@@ -354,9 +354,13 @@ encoder tuning this boundary exposes:
 
 | Value | Quantiser floor | Search effort |
 |---|---|---|
-| `LOWLAT_QUALITY_LOWEST_LATENCY` = 0 | 5 | the most a device offers |
-| `LOWLAT_QUALITY_BALANCED` = 1 | none | the most a device offers |
-| `LOWLAT_QUALITY_HIGHEST` = 2 | none | the least, and two passes where the encoder has them |
+| `LOWLAT_QUALITY_LOWEST_LATENCY` = 0 | 5 | the least a device offers |
+| `LOWLAT_QUALITY_BALANCED` = 1 | none | the least a device offers |
+| `LOWLAT_QUALITY_HIGHEST` = 2 | none | the most, and a second pass where the encoder has one |
+
+(*Corrected 2026-11-01*: the effort column had the two ends swapped. The first two settings ask
+for a device's fastest effort and the third for its most thorough, as the host has always done
+and as [05 §4.1](05-host.md) says.)
 
 **Zero is the low-latency end, and that is deliberate**: a zeroed structure has to mean the
 sensible default, and for a product whose first goal is delay the sensible default is the floor.
@@ -372,6 +376,23 @@ encoder looks -- motion range, sub-pixel refinement, how many modes it tries -- 
 it quantises. At a fixed rate more effort spends fewer bits on the same picture; it also takes
 longer, and on one device measured here the span between the extremes is 1.5 ms against 3.3 at
 1080p. That is why the highest setting carries a warning rather than being the default.
+
+**Moving it while a host runs costs what the encoder makes it cost** (*added 2026-11-01*, minor
+37). Between lowest latency and balanced only the floor moves, which every encoder here takes as
+it runs. In or out of the highest setting the effort moves too:
+
+| Encoder | In or out of highest |
+|---|---|
+| NVIDIA's | as it runs, both codecs |
+| AMD's | at one keyframe: its second pass is taken only at a re-initialisation |
+| Intel's | as it runs in H.264; at one keyframe in H.265, which takes a change of effort only with a new sequence |
+| VA-API and Vulkan Video (Linux) | by a rebuild, not yet shown to move as they run |
+
+A keyframe a move costs goes out with the next picture, whatever the desktop is doing, and is
+announced as any keyframe is; a rebuild is an output change's ([§3](#3-host)). An encoder that
+refuses a move is rebuilt at the setting asked for. **A move as it runs sends no parameter set
+again, so the sets have to stay as they were**: NVIDIA's encoder codes one reference at every
+setting so that its sequence and picture sets do not differ between them.
 
 **What a host reports back is what it asked for.** No interface here says whether a driver acted
 on a quantiser floor or an effort level, and the drivers differ: one encoder advertises thirty-two
@@ -1735,6 +1756,18 @@ had been a `uint32_t`, four bytes either way; in C++ it reads into its enumerati
 cast, and a bare integer written into one takes a cast; in both a log callback takes
 `lowlat_log_level`. A test of the preprocessor for one of the names no longer finds it, as at
 minor 34.
+
+**Minor 37** (2026-11-01) moves the quality into the live half ([§3](#3-host)):
+`lowlat_host_video_config.quality` is appended after every other field, with a zero word,
+`reserved2`, after it, on every platform, and `lowlat_host_set_video_config` moves it under a
+running stream. The configuration's own `quality` is `reserved2`, read by nothing, at the offset
+it had; a start takes the quality from `video.quality`. **The video configuration grows by eight
+bytes everywhere, and the word after the quality is why**: on Windows minor 36's ended in four
+bytes of padding, which the quality alone would have filled, leaving the size as it was -- a
+caller built against minor 36 would have been taken, its quality ignored where it had set it and
+its padding read as one. With the word, such a caller is refused at `lowlat_host_start` and at
+both video calls, as a shorter structure is: an application sets the quality where it now is and
+builds again.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
