@@ -156,6 +156,13 @@ internal struct HostVideoConfig
     public uint VirtualHeight;
     public uint VirtualHz;
 #endif
+    /// Where this host sits between delay and picture, one of [`Quality`]
+    /// (minor 37): moved while the host runs, so it is sent again as it
+    /// stands whenever anything else here changes.
+    public uint Quality;
+    /// Zero: what makes this structure eight bytes longer than minor 36's on
+    /// every platform, so a caller built against that minor is refused.
+    public uint Reserved2;
 }
 
 #if WINDOWS
@@ -254,13 +261,14 @@ internal struct HostConfig
     public uint Codec;
     public uint Encoder;
     public uint CgLevel;
-    /// Where this host sits between delay and picture, one of [`Quality`].
+    /// The quality's place to minor 36; it is `Video.Quality` since.
     ///
-    /// **Missing from this mirror for a whole phase**, which put every field
-    /// after it at the wrong offset and made `size` four bytes short -- so the
-    /// boundary refused `host_start` outright and named nothing but the
-    /// argument. A mirror is only checked by being run.
-    public uint Quality;
+    /// **Kept as a slot.** This field was once missing from this mirror for a
+    /// whole phase, which put every field after it at the wrong offset and
+    /// made `size` four bytes short -- so the boundary refused `host_start`
+    /// outright and named nothing but the argument. A mirror is only checked
+    /// by being run.
+    public uint Reserved2;
     public uint ExclusiveHoldMs;
     public byte ExclusivePointerByte;
     private byte reserved0, reserved1, reserved2;

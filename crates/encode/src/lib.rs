@@ -99,6 +99,20 @@ impl Quality {
     }
 }
 
+/// What moving a running encoder to another quality cost
+/// ([`Encoder::set_quality`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// Taken as it runs: no keyframe, the reference chain unbroken.
+    Live,
+    /// Taken, at a keyframe the encoder makes itself: the first unit of a
+    /// picture submitted after the change is one.
+    Refresh,
+    /// Not taken: the encoder is unchanged and has to be built again at the
+    /// new setting.
+    Rebuild,
+}
+
 /// What a collect found.
 ///
 /// Shared by every backend, because the caller downstream of an encoder is the
@@ -162,6 +176,18 @@ pub trait Encoder {
     /// those would put a visible stutter in the stream every time the network
     /// hiccuped.
     fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Self::Error>;
+
+    /// Move the running encoder to `quality` for subsequent pictures, and say
+    /// what that cost ([05 §4.1](../../../docs/05-host.md)).
+    ///
+    /// **A backend not shown to move answers [`Moved::Rebuild`]** and changes
+    /// nothing. Moving a preset can change what the parameter sets say, and a
+    /// change the encoder makes without resending them decodes into a picture
+    /// that is wrong with no error anywhere: measured on one vendor, until its
+    /// reference count was pinned.
+    fn set_quality(&mut self, _quality: Quality) -> Result<Moved, Self::Error> {
+        Ok(Moved::Rebuild)
+    }
 
     /// Sleep until the oldest picture in flight may be collected, or until
     /// `limit` passes, whichever is first; true when this slept on the

@@ -98,9 +98,10 @@ pub enum lowlat_quality {
 /// **Split out because the split is real.** Everything here is applied without
 /// rebuilding anything the session rests on: a bitrate re-bases the budget and
 /// reaches the encoder through the reconfigure the rate loop already performs,
-/// and a frame rate changes the pacing from the next frame. What is not here --
-/// the codec, the encoder, the guest limit, the ports -- is settled when
-/// hosting starts, because changing it means building the pipeline again.
+/// a frame rate changes the pacing from the next frame, and the quality moves
+/// the running encoder. What is not here -- the codec, the encoder, the guest
+/// limit, the ports -- is settled when hosting starts, because changing it
+/// means building the pipeline again.
 ///
 /// **There is no resolution and no rotation.** The display decides its own size
 /// and orientation and this host follows; asking it to be something else is a
@@ -152,6 +153,24 @@ pub struct lowlat_host_video_config {
     /// 24 to 480.
     #[cfg(windows)]
     pub virtual_hz: u32,
+    /// One of [`lowlat_quality`] (minor 37; before it, on the configuration,
+    /// and settled when hosting started). **Moved under a running stream**:
+    /// live where the encoder takes it as it runs, at one keyframe where it
+    /// takes it only with a new sequence, by a rebuild where it takes it not
+    /// at all (docs/06-api.md section 3).
+    ///
+    /// **What a host reports back is what it asked for, not what a device
+    /// did.** No interface here says whether a driver honoured a quantiser
+    /// floor or an effort level, and one measured takes the floor on one codec
+    /// and ignores it on the other, so a host logs its request and does not
+    /// claim more than that. **Default: lowest latency.**
+    pub quality: u32,
+    /// Zero (minor 37). **What makes this structure eight bytes longer than
+    /// minor 36's on every platform**, so a caller built against that minor
+    /// is refused rather than misread: on Windows the quality alone fills the
+    /// padding minor 36's ended in, and such a caller's size would have been
+    /// taken with whatever its padding held read as the quality.
+    pub reserved2: u32,
 }
 
 /// How sound is configured.
@@ -317,15 +336,9 @@ pub struct lowlat_host_config {
     /// structure zeroed by its caller asks for the most aggressive setting
     /// rather than this one -- start from [`lowlat_host_default_config`].
     pub cg_level: u32,
-    /// One of [`lowlat_quality`]. **Settled when hosting starts**: it is what
-    /// the encoder is built with, and one encode serves every seat.
-    ///
-    /// **What a host reports back is what it asked for, not what a device
-    /// did.** No interface here says whether a driver honoured a quantiser
-    /// floor or an effort level, and one measured takes the floor on one codec
-    /// and ignores it on the other, so a host logs its request once per stream
-    /// and does not claim more than that. **Default: lowest latency.**
-    pub quality: u32,
+    /// The quality's place to minor 36, read by nothing since: it is
+    /// `video.quality`, which can move while the host runs.
+    pub reserved2: u32,
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
@@ -372,10 +385,11 @@ pub struct lowlat_host_config {
 
 /// `sizeof(lowlat_host_config)` as minors 27 to 31 laid it out off Windows,
 /// with the video configuration's own display fields in it: **refused rather
-/// than misread**, as its sound half sits sixteen bytes further on than this
-/// library reads it (minor 32).
+/// than misread**, as its sound half sits sixteen bytes further on than minor
+/// 32 read it (minor 32), and eight further than this library does: minor 37
+/// made the video half eight bytes longer.
 #[cfg(not(windows))]
-const HOST_CONFIG_MINOR_31: usize = core::mem::size_of::<lowlat_host_config>() + 16;
+const HOST_CONFIG_MINOR_31: usize = core::mem::size_of::<lowlat_host_config>() + 8;
 
 /// The most guests a host may advertise, which is what the ring memory per
 /// guest is sized against.
@@ -441,7 +455,7 @@ fn default_config() -> lowlat_host_config {
         codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
         encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
         cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
-        quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
+        reserved2: 0,
         // The figure the pointer arbitration was tuned to. Held as a literal
         // because the field is whole milliseconds and `floor`'s is not; the
         // test below is what keeps the two the same number.
@@ -469,6 +483,8 @@ fn default_config() -> lowlat_host_config {
             virtual_height: 0,
             #[cfg(windows)]
             virtual_hz: 0,
+            quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
+            reserved2: 0,
         },
         audio: lowlat_host_audio_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_audio_config>())
@@ -758,22 +774,6 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
         }
         _ => return None,
     };
-    // **An unknown value is refused rather than rounded to something.** A
-    // setting nobody here recognises is a request this library cannot honour,
-    // and quietly serving the nearest one is how an application ends up
-    // believing it got what it asked for.
-    let quality = match cfg.quality {
-        code if code == lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32 => {
-            lowlat_encode::Quality::LowestLatency
-        }
-        code if code == lowlat_quality::LOWLAT_QUALITY_BALANCED as u32 => {
-            lowlat_encode::Quality::Balanced
-        }
-        code if code == lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32 => {
-            lowlat_encode::Quality::Highest
-        }
-        _ => return None,
-    };
     if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX {
         return None;
     }
@@ -885,7 +885,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
             configured_mbps: video.bitrate_mbps,
             min_mbps: video.min_mbps,
             full_fps: video.full_fps,
-            quality,
+            quality: video.quality,
             output: (!output.is_empty()).then(|| output.to_string()),
             virtual_fallback,
             wake_display,
@@ -970,12 +970,29 @@ fn video_configured(
     // Read for its terminator even where the value is not wanted here: a field
     // that was overrun is refused rather than half-read.
     taken(&cfg.output)?;
+    // **An unknown value is refused rather than rounded to something.** A
+    // setting nobody here recognises is a request this library cannot honour,
+    // and quietly serving the nearest one is how an application ends up
+    // believing it got what it asked for.
+    let quality = match cfg.quality {
+        code if code == lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32 => {
+            lowlat_encode::Quality::LowestLatency
+        }
+        code if code == lowlat_quality::LOWLAT_QUALITY_BALANCED as u32 => {
+            lowlat_encode::Quality::Balanced
+        }
+        code if code == lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32 => {
+            lowlat_encode::Quality::Highest
+        }
+        _ => return None,
+    };
     Some((
         ::lowlat_host::stream::LiveVideo {
             fps: cfg.fps,
             bitrate_mbps: cfg.bitrate_mbps,
             min_mbps: cfg.min_bitrate_mbps,
             full_fps: cfg.full_fps,
+            quality,
         },
         own_display,
     ))
@@ -2148,6 +2165,13 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 /// around the new source and costs one coded refresh, keeping every guest on
 /// its seat and its channel.
 ///
+/// **The quality moves the running encoder** (minor 37), asked of it only when
+/// it differs from what the stream runs at, so sending it again as it stands
+/// costs nothing. Most moves cost no keyframe; a move in or out of the highest
+/// setting costs one where the encoder takes a change of effort only with a
+/// new sequence, and an encoder that cannot move at all is rebuilt at the new
+/// setting, as an output change is.
+///
 /// Refused with [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not running,
 /// because there is nothing yet for the values to apply to and accepting them
 /// silently would report settings that never took.
@@ -2440,6 +2464,14 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
             slot.min_bitrate_mbps = video.min_mbps;
             slot.full_fps = video.full_fps;
             slot.reserved = [0; 3];
+            slot.quality = match video.quality {
+                lowlat_encode::Quality::LowestLatency => {
+                    lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32
+                }
+                lowlat_encode::Quality::Balanced => lowlat_quality::LOWLAT_QUALITY_BALANCED as u32,
+                lowlat_encode::Quality::Highest => lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32,
+            };
+            slot.reserved2 = 0;
             // **The request, as the sound device is**: the display's own size
             // is the picture's, on the status.
             #[cfg(windows)]
@@ -3161,6 +3193,8 @@ mod start_tests {
             virtual_height: 0,
             #[cfg(windows)]
             virtual_hz: 0,
+            quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
+            reserved2: 0,
         }
     }
 
@@ -3175,7 +3209,7 @@ mod start_tests {
             codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
             encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
             cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
-            quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
+            reserved2: 0,
             exclusive_hold_ms: 500,
             exclusive_pointer: false,
             pad_sink: 0,
@@ -3275,6 +3309,91 @@ mod start_tests {
         );
         assert!(back.full_fps, "a permission set at start was dropped");
         assert_eq!(back.fps, 45);
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **The quality reads back as asked, at start and live**, and one nobody
+    /// here names is refused at either, never served as the nearest: refused
+    /// live, the host keeps the one it has.
+    #[test]
+    fn the_quality_asked_is_read_back_and_an_unknown_one_refused() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.video.quality = lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let mut back = video();
+        assert_eq!(
+            unsafe { lowlat_host_get_video_config(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            back.quality,
+            lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32,
+            "the quality asked at start was dropped"
+        );
+
+        let mut live = video();
+        live.quality = lowlat_quality::LOWLAT_QUALITY_BALANCED as u32;
+        assert_eq!(
+            unsafe { lowlat_host_set_video_config(handle, &raw const live) },
+            LOWLAT_OK
+        );
+        live.quality = 3;
+        assert_eq!(
+            unsafe { lowlat_host_set_video_config(handle, &raw const live) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lowlat_host_get_video_config(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            back.quality,
+            lowlat_quality::LOWLAT_QUALITY_BALANCED as u32,
+            "a live quality was dropped, or a refused one taken"
+        );
+
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        cfg.video.quality = 3;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **A video configuration laid out as minor 36's is refused, never
+    /// misread**, on every platform: its quality is on the configuration, and
+    /// read here it would be whatever that caller's padding held.
+    #[test]
+    fn a_video_configuration_from_minor_36_is_refused() {
+        let shared = 4 + 4 + 8 + 8 + 1 + 3 + LOWLAT_OUTPUT_MAX;
+        let minor_36 = if cfg!(windows) {
+            shared + 12 + 4
+        } else {
+            shared
+        };
+        let handle = handle();
+        let mut whole = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const whole) },
+            LOWLAT_OK
+        );
+        let mut cfg = video();
+        cfg.size = u32::try_from(minor_36).unwrap();
+        assert_eq!(
+            unsafe { lowlat_host_set_video_config(handle, &raw const cfg) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        whole.video.size = u32::try_from(minor_36).unwrap();
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const whole) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
         unsafe { lowlat_host_destroy(handle) };
     }
 
@@ -3386,8 +3505,11 @@ mod start_tests {
         assert_eq!(shared, 288);
         #[cfg(windows)]
         {
-            // The three words, and four bytes taking it to a multiple of eight.
-            assert_eq!(video, shared + 12 + 4);
+            // The three words, the quality and the word after it (minor 37),
+            // and four bytes taking it to a multiple of eight. **Minor 36's
+            // ended at the three words and the four**, which the quality alone
+            // would have filled, leaving the size as it was.
+            assert_eq!(video, shared + 12 + 8 + 4);
             assert_eq!(core::mem::size_of::<lowlat_host_input_config>(), 8);
             // Minor 33's switch in the first reserved byte: nothing moved.
             assert_eq!(
@@ -3404,8 +3526,9 @@ mod start_tests {
         }
         #[cfg(not(windows))]
         {
-            assert_eq!(video, shared);
-            assert_eq!(HOST_CONFIG_MINOR_31, whole + 16);
+            // The quality and the word after it (minor 37).
+            assert_eq!(video, shared + 8);
+            assert_eq!(HOST_CONFIG_MINOR_31, whole + 8);
         }
     }
 

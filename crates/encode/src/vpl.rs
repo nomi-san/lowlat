@@ -245,10 +245,37 @@ fn kilobits(bps: u32) -> u64 {
     u64::from(bps) / 1000
 }
 
+/// The effort a setting asks for, as the runtime names it.
+const fn usage(thorough: bool) -> u16 {
+    if thorough { MOST_THOROUGH } else { FASTEST }
+}
+
+/// The quantiser floor `min_qp`, none at zero, and the ceiling the whole of
+/// the range wherever there is a floor.
+fn set_floor(options2: &mut mfxExtCodingOption2, min_qp: u32, ten: bool) {
+    // HEVC takes no floor under its own, ten (twenty-two at ten bits), and
+    // keeps that one: the query corrects it.
+    let (floor, top) = if min_qp > 0 {
+        (
+            u8::try_from(min_qp).unwrap_or(u8::MAX),
+            if ten { 63 } else { 51 },
+        )
+    } else {
+        (0, 0)
+    };
+    options2.MinQPI = floor;
+    options2.MinQPP = floor;
+    options2.MinQPB = floor;
+    options2.MaxQPI = top;
+    options2.MaxQPP = top;
+    options2.MaxQPB = top;
+}
+
 /// The parameters the encoder is built with and changed by, and the buffers
 /// they name. **A change starts from these, as the build left them, never
 /// from what the runtime reports back**: from that the first codec's first
 /// change is a keyframe.
+#[derive(Clone, Copy)]
 struct Params {
     video: mfxVideoParam,
     options: mfxExtCodingOption,
@@ -308,11 +335,7 @@ impl Params {
         mfx.BRCParamMultiplier = u16::try_from(multiplier).unwrap_or(u16::MAX);
         // SAFETY: as above.
         let coding = unsafe { &mut mfx.__bindgen_anon_1.__bindgen_anon_1 };
-        coding.TargetUsage = if config.thorough {
-            MOST_THOROUGH
-        } else {
-            FASTEST
-        };
+        coding.TargetUsage = usage(config.thorough);
         // Recovery is a keyframe asked for: nothing scheduled, nothing
         // reordered, one picture referenced.
         coding.GopPicSize = 0xffff;
@@ -364,18 +387,7 @@ impl Params {
         // No picture type of the runtime's choosing.
         options2.AdaptiveI = OFF;
         options2.AdaptiveB = OFF;
-        if config.min_qp > 0 {
-            // HEVC takes no floor under its own, ten (twenty-two at ten
-            // bits), and keeps that one: the query corrects it.
-            let floor = u8::try_from(config.min_qp).unwrap_or(u8::MAX);
-            let top = if ten { 63 } else { 51 };
-            options2.MinQPI = floor;
-            options2.MinQPP = floor;
-            options2.MinQPB = floor;
-            options2.MaxQPI = top;
-            options2.MaxQPP = top;
-            options2.MaxQPB = top;
-        }
+        set_floor(options2, config.min_qp, ten);
         let options3 = &mut params.options3;
         options3.Header = header::<mfxExtCodingOption3>(MFX_EXTBUFF_CODING_OPTION3);
         options3.TargetChromaFormatPlus1 = if full { YUV444 + 1 } else { YUV420 + 1 };
@@ -595,6 +607,9 @@ pub struct Encoder<'s> {
     /// A rate asked for while a picture was in the engine, made before the
     /// next goes in.
     wanted: Option<u32>,
+    /// A change of quality asked for while a picture was in the engine, made
+    /// before the next goes in ([`Encoder::set_quality`]).
+    requality: Option<crate::Quality>,
     /// The generator's input, written only with nothing in the engine; none
     /// at full chroma.
     slot: Option<Slot>,
@@ -671,6 +686,7 @@ impl<'s> Encoder<'s> {
             busy: Arc::new(AtomicBool::new(false)),
             output,
             wanted: None,
+            requality: None,
             slot,
             registered: Vec::new(),
         })
@@ -764,6 +780,19 @@ impl<'s> Encoder<'s> {
         if let Some(bitrate_bps) = self.wanted.take() {
             self.change_rate(bitrate_bps)?;
         }
+        let force_keyframe = if let Some(quality) = self.requality.take() {
+            match self.change_quality(quality) {
+                Ok(new_sequence) => new_sequence || force_keyframe,
+                Err(error) => {
+                    lowlat_common::log_warn!(
+                        "vpl: the quality change was refused ({error}), coding on as before"
+                    );
+                    force_keyframe
+                }
+            }
+        } else {
+            force_keyframe
+        };
         // SAFETY: the surface is one `runtime::input` made of a texture of
         // the session's device, the bitstream the output's over its own
         // memory; both stay in place until the encoder is closed, and neither
@@ -827,6 +856,84 @@ impl<'s> Encoder<'s> {
         self.change_rate(bitrate_bps)
     }
 
+    /// Move the encoder to `quality`: the effort and the floor, by a reset --
+    /// at once with nothing in the engine, else before the next picture goes
+    /// in.
+    ///
+    /// **The second codec takes no change of effort without a new
+    /// sequence**: asked to continue the old one it refuses the reset, so a
+    /// move of effort there -- in or out of the highest setting -- starts one,
+    /// at a keyframe ([`Moved::Refresh`](crate::Moved::Refresh)). The first
+    /// codec continues its sequence, and so does a move of the floor alone
+    /// ([`Moved::Live`](crate::Moved::Live)). The reset is under half a
+    /// millisecond, measured at 1080p; the query that corrects the floor is
+    /// several on the second codec.
+    pub fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
+        if self.in_engine.is_some() {
+            self.requality = Some(quality);
+            return Ok(self.moved_by(quality));
+        }
+        self.requality = None;
+        Ok(if self.change_quality(quality)? {
+            crate::Moved::Refresh
+        } else {
+            crate::Moved::Live
+        })
+    }
+
+    /// What moving to `quality` costs: a keyframe where the second codec's
+    /// effort changes.
+    fn moved_by(&self, quality: crate::Quality) -> crate::Moved {
+        if self.config.codec == Codec::H265 && self.config.thorough != quality.thorough() {
+            crate::Moved::Refresh
+        } else {
+            crate::Moved::Live
+        }
+    }
+
+    /// Make a change of quality, from the parameters the encoder was built
+    /// with: the effort and the floor of `quality`, corrected by the
+    /// runtime's query as the build's were, then a reset that starts a new
+    /// sequence only where the change needs one. True when it did, and the
+    /// next picture is a keyframe.
+    fn change_quality(&mut self, quality: crate::Quality) -> Result<bool, Error> {
+        let mut config = self.config;
+        config.min_qp = quality.min_qp();
+        config.thorough = quality.thorough();
+        if config == self.config {
+            return Ok(false);
+        }
+        let new_sequence = self.moved_by(quality) == crate::Moved::Refresh;
+        // **A refused change leaves the encoder as it was**, or every change
+        // of rate after it would ask for it again and be refused too.
+        let before = self.params;
+        if let Err(error) = self.reset_quality(&config, new_sequence) {
+            self.params = before;
+            return Err(error);
+        }
+        self.config = config;
+        Ok(new_sequence)
+    }
+
+    fn reset_quality(&mut self, config: &Config, new_sequence: bool) -> Result<(), Error> {
+        let ten = config.depth == Depth::Ten;
+        // SAFETY: the union's encoder half, every field of it plain data.
+        let mfx = unsafe { &mut self.params.video.__bindgen_anon_1.mfx };
+        // SAFETY: as above.
+        let coding = unsafe { &mut mfx.__bindgen_anon_1.__bindgen_anon_1 };
+        coding.TargetUsage = usage(config.thorough);
+        set_floor(&mut self.params.options2, config.min_qp, ten);
+        // SAFETY: the buffers the parameters name are their own, live for the
+        // call.
+        unsafe { self.session.query_encoder(self.params.named(false)) }?;
+        self.params.reset.StartNewSequence = if new_sequence { ON } else { OFF };
+        // SAFETY: as above.
+        let reset = unsafe { self.session.reset_encoder(self.params.named(true)) };
+        // Every change after this one continues the sequence again.
+        self.params.reset.StartNewSequence = OFF;
+        Ok(reset?)
+    }
+
     /// Make a change of rate, from the parameters the encoder was built with.
     fn change_rate(&mut self, bitrate_bps: u32) -> Result<(), Error> {
         self.params.set_rate(bitrate_bps, self.config.fps);
@@ -887,6 +994,10 @@ impl EncoderTrait for Encoder<'_> {
 
     fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Error> {
         Encoder::reconfigure(self, bitrate_bps)
+    }
+
+    fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
+        Encoder::set_quality(self, quality)
     }
 
     fn wait_finished(&mut self, limit: Duration) -> bool {

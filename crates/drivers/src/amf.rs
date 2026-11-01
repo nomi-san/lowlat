@@ -597,7 +597,7 @@ struct ComponentTable {
     has_property: unsafe extern "system" fn(*mut c_void, *const u16) -> u8,
     storage: [usize; 11],
     init: unsafe extern "system" fn(*mut c_void, i32, i32, i32) -> Status,
-    reinit: usize,
+    reinit: unsafe extern "system" fn(*mut c_void, i32, i32) -> Status,
     terminate: unsafe extern "system" fn(*mut c_void) -> Status,
     drain_flush: [usize; 2],
     submit_input: unsafe extern "system" fn(*mut c_void, *mut c_void) -> Status,
@@ -1242,6 +1242,16 @@ impl<'c> Encoder<'c> {
         let height = i32::try_from(height).map_err(|_| Error::TooLarge)?;
         // SAFETY: a live encoder.
         check(unsafe { (self.table().init)(self.raw.as_ptr(), format.code(), width, height) })
+    }
+
+    /// Initialise the encoder again at `width` x `height`, after settings
+    /// that are read only at an initialisation: nothing may be in the engine,
+    /// and the stream starts again at a keyframe.
+    pub fn reinit(&self, width: u32, height: u32) -> Result<()> {
+        let width = i32::try_from(width).map_err(|_| Error::TooLarge)?;
+        let height = i32::try_from(height).map_err(|_| Error::TooLarge)?;
+        // SAFETY: a live encoder.
+        check(unsafe { (self.table().reinit)(self.raw.as_ptr(), width, height) })
     }
 
     /// Hand `input` over for one picture: true when it was taken, false when

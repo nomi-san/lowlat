@@ -65,7 +65,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 36
+#define LOWLAT_ABI_MINOR 37
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// How many reflexive servers a seam may be given, and how long each may be.
@@ -987,9 +987,10 @@ typedef void (*lowlat_log_fn)(lowlat_log_level level, const char *message, void 
 /// **Split out because the split is real.** Everything here is applied without
 /// rebuilding anything the session rests on: a bitrate re-bases the budget and
 /// reaches the encoder through the reconfigure the rate loop already performs,
-/// and a frame rate changes the pacing from the next frame. What is not here --
-/// the codec, the encoder, the guest limit, the ports -- is settled when
-/// hosting starts, because changing it means building the pipeline again.
+/// a frame rate changes the pacing from the next frame, and the quality moves
+/// the running encoder. What is not here -- the codec, the encoder, the guest
+/// limit, the ports -- is settled when hosting starts, because changing it
+/// means building the pipeline again.
 ///
 /// **There is no resolution and no rotation.** The display decides its own size
 /// and orientation and this host follows; asking it to be something else is a
@@ -1038,6 +1039,24 @@ typedef struct lowlat_host_video_config {
     /// 24 to 480.
     uint32_t virtual_hz;
 #endif
+    /// One of `lowlat_quality` (minor 37; before it, on the configuration,
+    /// and settled when hosting started). **Moved under a running stream**:
+    /// live where the encoder takes it as it runs, at one keyframe where it
+    /// takes it only with a new sequence, by a rebuild where it takes it not
+    /// at all (docs/06-api.md section 3).
+    ///
+    /// **What a host reports back is what it asked for, not what a device
+    /// did.** No interface here says whether a driver honoured a quantiser
+    /// floor or an effort level, and one measured takes the floor on one codec
+    /// and ignores it on the other, so a host logs its request and does not
+    /// claim more than that. **Default: lowest latency.**
+    uint32_t quality;
+    /// Zero (minor 37). **What makes this structure eight bytes longer than
+    /// minor 36's on every platform**, so a caller built against that minor
+    /// is refused rather than misread: on Windows the quality alone fills the
+    /// padding minor 36's ended in, and such a caller's size would have been
+    /// taken with whatever its padding held read as the quality.
+    uint32_t reserved2;
 } lowlat_host_video_config;
 
 /// How sound is configured.
@@ -1182,15 +1201,9 @@ typedef struct lowlat_host_config {
     /// structure zeroed by its caller asks for the most aggressive setting
     /// rather than this one -- start from `lowlat_host_default_config`.
     uint32_t cg_level;
-    /// One of `lowlat_quality`. **Settled when hosting starts**: it is what
-    /// the encoder is built with, and one encode serves every seat.
-    ///
-    /// **What a host reports back is what it asked for, not what a device
-    /// did.** No interface here says whether a driver honoured a quantiser
-    /// floor or an effort level, and one measured takes the floor on one codec
-    /// and ignores it on the other, so a host logs its request once per stream
-    /// and does not claim more than that. **Default: lowest latency.**
-    uint32_t quality;
+    /// The quality's place to minor 36, read by nothing since: it is
+    /// `video.quality`, which can move while the host runs.
+    uint32_t reserved2;
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
@@ -2792,6 +2805,13 @@ lowlat_status lowlat_host_get_metrics(lowlat_host *hl,
 /// cannot be absorbed into a stream built for another one, so it rebuilds
 /// around the new source and costs one coded refresh, keeping every guest on
 /// its seat and its channel.
+///
+/// **The quality moves the running encoder** (minor 37), asked of it only when
+/// it differs from what the stream runs at, so sending it again as it stands
+/// costs nothing. Most moves cost no keyframe; a move in or out of the highest
+/// setting costs one where the encoder takes a change of effort only with a
+/// new sequence, and an encoder that cannot move at all is rebuilt at the new
+/// setting, as an output change is.
 ///
 /// Refused with `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not running,
 /// because there is nothing yet for the values to apply to and accepting them

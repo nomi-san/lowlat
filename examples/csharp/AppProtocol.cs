@@ -239,7 +239,11 @@ internal static class AppProtocol
             bitrate == 0 ? running.bitrateMbps : bitrate,
             running.minBitrateMbps,
             fullFps,
-            output);
+            output,
+            // **Sent as it stands**: zero is the lowest latency, so a
+            // structure that left it out would move the quality on every
+            // change of rate.
+            running.quality);
         if (applied != Status.Ok)
         {
             Console.WriteLine($"app: that configuration was refused: {Text.Describe(applied)}");

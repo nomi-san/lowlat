@@ -39,7 +39,7 @@ use std::sync::mpsc;
 
 use lowlat_capture::synthetic::{Marker, Synthetic};
 use lowlat_common::spsc::Ring;
-use lowlat_encode::{Encoder, Poll};
+use lowlat_encode::{Encoder, Moved, Poll};
 use lowlat_net::WakeHandle;
 
 use crate::display::Display;
@@ -1260,10 +1260,8 @@ pub struct Config {
     pub full_fps: bool,
     /// Where this host sits between delay and picture.
     ///
-    /// **Settled when hosting starts.** It is what the encoder is built with,
-    /// and one encode serves every seat, so moving it under a running session
-    /// would be changing the picture every guest is watching on one guest's
-    /// behalf.
+    /// **The initial value of the live setting**, as `full_fps` is; every
+    /// build after the first takes the live one ([`LiveVideo::quality`]).
     pub quality: lowlat_encode::Quality,
     /// Which congestion control level every guest's controller runs at.
     ///
@@ -1360,11 +1358,11 @@ pub fn own_size(current: (u32, u32), own: OwnDisplay, joining: Option<Declared>)
 
 /// The part of a video configuration that changes while the stream runs.
 ///
-/// **Everything here is applied without rebuilding anything.** The bitrate
+/// **Everything here is applied without rebuilding the session.** The bitrate
 /// re-bases the budget and reaches the encoder through the reconfigure it
-/// already does every pass; the frame rate changes the pacing. A field that
-/// needed the encoder rebuilt would belong with the codec instead, which is
-/// settled once and never moves.
+/// already does every pass; the frame rate changes the pacing; the quality
+/// moves the running encoder, at a keyframe where its backend needs one, and
+/// rebuilds it only where the backend cannot move at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveVideo {
     /// **A ceiling, not a target.** Capture runs at the display's own rate.
@@ -1380,6 +1378,9 @@ pub struct LiveVideo {
     /// being wrong. Defaulting it on would promise to spend that bitrate
     /// forever, which is not what anybody wants asked for on their behalf.
     pub full_fps: bool,
+    /// Where this host sits between delay and picture
+    /// ([`lowlat_encode::Encoder::set_quality`]).
+    pub quality: lowlat_encode::Quality,
 }
 
 impl Default for LiveVideo {
@@ -1389,6 +1390,7 @@ impl Default for LiveVideo {
             bitrate_mbps: 10.0,
             min_mbps: 1.0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
         }
     }
 }
@@ -1461,6 +1463,7 @@ impl Stream {
                 bitrate_mbps: config.configured_mbps,
                 min_mbps: config.min_mbps,
                 full_fps: config.full_fps,
+                quality: config.quality,
             }),
             asked_fps: AtomicU32::new(config.fps),
             own_asked: AtomicU32::new(0),
@@ -2242,6 +2245,13 @@ fn run(
         let joining = receive_joins(shared, arrivals, &mut roster);
         own.prepare(shared, &config, joining);
 
+        // **Built at the quality asked for last**, which a running stream
+        // may have moved since the configuration was made.
+        config.quality = shared
+            .video
+            .lock()
+            .map_or_else(|held| held.into_inner().quality, |held| held.quality);
+
         // **What this run will produce, published before it produces it.** A
         // status read from the configuration says what was asked for; a guest
         // can move the codec and the depth underneath it, and only the loop
@@ -2349,7 +2359,7 @@ fn run(
                     continue;
                 }
             }
-            Exit::Rediscover(_) | Exit::Reconfigure(..) => {
+            Exit::Rediscover(_) | Exit::Reconfigure(..) | Exit::Requality => {
                 refused_since = None;
                 // **Disarmed, because the output it was holding worked.** A
                 // run that got this far captured the screen it was asked for,
@@ -2376,6 +2386,10 @@ fn run(
                     // from the display on the way back in, which is the one
                     // place that knows.
                     lowlat_common::log_info!("stream: {why}, rebuilding");
+                } else {
+                    lowlat_common::log_info!(
+                        "stream: the encoder cannot move to the quality asked for, rebuilding"
+                    );
                 }
                 // **Every guest is latched and the generation moves.** The new
                 // encoder has no history at all, so a guest still expecting the
@@ -2498,6 +2512,9 @@ enum Exit {
     /// at least one asked for a configuration the running encoder does not
     /// produce.
     Reconfigure(Codec, bool, bool),
+    /// The quality was moved and the running encoder cannot follow it: built
+    /// again at the one asked for.
+    Requality,
     /// What is being captured changed, and the pipeline has to be found again.
     ///
     /// **The encoder is built around one display and cannot follow one.** A
@@ -3683,6 +3700,8 @@ fn encode_loop<E: Encoder + FromDevice>(
         .lock()
         .map_or_else(|held| *held.into_inner(), |held| *held);
     let mut video_seen = shared.video_asked.load(Ordering::Acquire);
+    // What the encoder was built with, which a live change moves.
+    let mut quality = config.quality;
     // What the host's own display was asked when this run began: a change is
     // its rebuild, below.
     let mut own_seen = shared.own_asked.load(Ordering::Acquire);
@@ -4182,12 +4201,46 @@ fn encode_loop<E: Encoder + FromDevice>(
                     controllers,
                 );
                 lowlat_common::log_info!(
-                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={}",
+                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={} \
+                     quality={:?}",
                     live.fps,
                     live.bitrate_mbps,
                     live.min_mbps,
-                    u8::from(live.full_fps)
+                    u8::from(live.full_fps),
+                    live.quality
                 );
+                // **Asked of the encoder only when it differs**: an
+                // application moving its bitrate sends the quality again as it
+                // was, and a move can cost a keyframe.
+                if live.quality != quality {
+                    match encoder.set_quality(live.quality) {
+                        Ok(Moved::Live) => {}
+                        // The next picture goes out whatever the desktop is
+                        // doing, so the keyframe lands now rather than at the
+                        // next change on screen.
+                        Ok(Moved::Refresh) => force_keyframe = true,
+                        Ok(Moved::Rebuild) => return Exit::Requality,
+                        Err(error) => {
+                            lowlat_common::log_warn!(
+                                "stream: the encoder refused the quality {:?} ({error}), \
+                                 rebuilding at it",
+                                live.quality
+                            );
+                            return Exit::Requality;
+                        }
+                    }
+                    lowlat_common::log_info!(
+                        "stream: quality {:?} -> {:?}, {}",
+                        quality,
+                        live.quality,
+                        if force_keyframe {
+                            "at a keyframe"
+                        } else {
+                            "live"
+                        }
+                    );
+                    quality = live.quality;
+                }
             }
 
             stages.pointer.record(lowlat_common::clock::diff_ms(
@@ -5114,6 +5167,7 @@ mod tests {
             bitrate_mbps: 4.0,
             min_mbps: 2.0,
             full_fps: false,
+            quality: lowlat_encode::Quality::Highest,
         };
         stream.set_video(wanted);
         assert!(
@@ -5151,6 +5205,31 @@ mod tests {
         /// Takes frames and produces none, which is how a second run of the
         /// loop can be made to change nothing it inherited.
         mute: bool,
+        /// What a move of quality answers, and what the loop asked of it.
+        moves: Arc<std::sync::Mutex<Moves>>,
+    }
+
+    /// The quality moves a [`Fake`] was asked for, and what came after.
+    #[derive(Debug)]
+    pub(super) struct Moves {
+        pub(super) answer: Moved,
+        pub(super) asked: Vec<lowlat_encode::Quality>,
+        pub(super) submitted: u32,
+        /// Whether the first picture after a move was asked to be a keyframe.
+        pub(super) after: Option<bool>,
+        pending: bool,
+    }
+
+    impl Default for Moves {
+        fn default() -> Self {
+            Self {
+                answer: Moved::Live,
+                asked: Vec::new(),
+                submitted: 0,
+                after: None,
+                pending: false,
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -5175,6 +5254,12 @@ mod tests {
             if force_keyframe {
                 self.forced.fetch_add(1, Ordering::Relaxed);
             }
+            if let Ok(mut moves) = self.moves.lock() {
+                moves.submitted += 1;
+                if core::mem::take(&mut moves.pending) {
+                    moves.after = Some(force_keyframe);
+                }
+            }
             self.queued.push_back(force_keyframe);
             Ok(())
         }
@@ -5198,6 +5283,13 @@ mod tests {
 
         fn reconfigure(&mut self, _bitrate_bps: u32) -> Result<(), Never> {
             Ok(())
+        }
+
+        fn set_quality(&mut self, quality: lowlat_encode::Quality) -> Result<Moved, Never> {
+            let mut moves = self.moves.lock().expect("the record");
+            moves.asked.push(quality);
+            moves.pending = true;
+            Ok(moves.answer)
         }
     }
 
@@ -5297,6 +5389,7 @@ mod tests {
                         forced: counter,
                         refuse: 0,
                         mute: false,
+                        moves: Arc::default(),
                     };
                     let mut roster = Roster::default();
                     encode_loop(
@@ -5556,6 +5649,7 @@ mod tests {
             forced: Arc::new(AtomicU32::new(0)),
             refuse: 0,
             mute: false,
+            moves: Arc::default(),
         }
     }
 
@@ -5956,6 +6050,101 @@ mod tests {
             "the name was not left for the next pass to take"
         );
         drop(held);
+    }
+
+    /// **A quality is asked of the encoder once per change, and its answer is
+    /// kept.** Asked while the loop runs and then set again as it stands, as
+    /// an application changing its bitrate does: one ask. A live move sends
+    /// the next picture as it would have gone, a move at a keyframe sends it
+    /// as one, and a move the encoder cannot make ends the run to be rebuilt
+    /// at the new setting.
+    #[test]
+    fn a_quality_is_asked_of_the_encoder_once_and_its_answer_kept() {
+        for answer in [Moved::Live, Moved::Refresh, Moved::Rebuild] {
+            let (shared, stream, arrivals) = parked();
+            let held = stream
+                .seats()
+                .take(wake_handle(), wake_handle(), Declared::default())
+                .expect("a seat");
+            let mut encoder = fake_encoder();
+            let moves = Arc::clone(&encoder.moves);
+            moves.lock().expect("the record").answer = answer;
+
+            // The change made from outside while the loop runs, as the seam
+            // makes it: the cell, then the count.
+            fn ask(shared: &Shared) {
+                if let Ok(mut live) = shared.video.lock() {
+                    live.quality = lowlat_encode::Quality::Highest;
+                }
+                shared.video_asked.fetch_add(1, Ordering::Release);
+            }
+            let watched = Arc::clone(&moves);
+            let (mut step, mut seen) = (0, 0);
+            let watchdog = watcher(&shared, move |shared| {
+                let (submitted, asked) = {
+                    let record = watched.lock().expect("the record");
+                    (record.submitted, record.asked.len())
+                };
+                match step {
+                    // Past the seat's own keyframe, so the one after the move
+                    // is the move's.
+                    0 if submitted >= 5 => {
+                        ask(shared);
+                        step = 1;
+                    }
+                    // The run ended on the first ask.
+                    1 if asked > 0 && answer == Moved::Rebuild => return true,
+                    // Asked: the same setting again, which is no change.
+                    1 if asked > 0 => {
+                        ask(shared);
+                        seen = submitted;
+                        step = 2;
+                    }
+                    // Long enough after for a second ask to have come.
+                    2 if submitted >= seen + 5 => return true,
+                    _ => {}
+                }
+                false
+            });
+            let exit = encode_loop(
+                &shared,
+                &arrivals,
+                test_config(Codec::H264),
+                &mut Roster::default(),
+                &mut encoder,
+                None,
+                None,
+            );
+            assert!(
+                watchdog.join().expect("watchdog"),
+                "{answer:?}: the change never landed"
+            );
+            let record = moves.lock().expect("the record");
+            assert_eq!(
+                record.asked,
+                [lowlat_encode::Quality::Highest],
+                "{answer:?}: asked once per change"
+            );
+            match answer {
+                Moved::Live => {
+                    assert_eq!(exit, Exit::Stopped);
+                    assert_eq!(record.after, Some(false), "a live move sent a refresh");
+                }
+                Moved::Refresh => {
+                    assert_eq!(exit, Exit::Stopped);
+                    assert_eq!(
+                        record.after,
+                        Some(true),
+                        "the move's keyframe was not asked"
+                    );
+                }
+                Moved::Rebuild => {
+                    assert_eq!(exit, Exit::Requality, "a move the encoder cannot make");
+                    assert_eq!(record.after, None, "a picture went in after it");
+                }
+            }
+            drop(held);
+        }
     }
 
     /// **A configuration set again rebuilds nothing.** An application changing
@@ -7298,6 +7487,7 @@ mod tests {
             forced: Arc::clone(&forced),
             refuse: 0,
             mute: false,
+            moves: Arc::default(),
         };
 
         let counted = Arc::clone(&forced);

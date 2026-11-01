@@ -236,6 +236,9 @@ pub struct Encoder<'c> {
     context: &'c Context<'c>,
     names: &'static Names,
     config: Config,
+    /// A change of quality the runtime takes only at its re-initialisation,
+    /// made once nothing is in the engine ([`Encoder::set_quality`]).
+    reinit_wanted: bool,
 }
 
 impl core::fmt::Debug for Encoder<'_> {
@@ -350,6 +353,7 @@ impl<'c> Encoder<'c> {
             context,
             names,
             config,
+            reinit_wanted: false,
         })
     }
 
@@ -417,6 +421,7 @@ impl<'c> Encoder<'c> {
             return Err(Error::QueueFull);
         }
         self.failed()?;
+        let force_keyframe = self.reinit_if_wanted()? || force_keyframe;
         let raw = texture.as_ptr();
         let at = match self.captured.iter().position(|(seen, _)| *seen == raw) {
             Some(at) => at,
@@ -454,6 +459,7 @@ impl<'c> Encoder<'c> {
             return Err(Error::QueueFull);
         }
         self.failed()?;
+        let force_keyframe = self.reinit_if_wanted()? || force_keyframe;
         let made = self.registered.get(input).ok_or(Error::Unregistered)?;
         queue(
             &self.component,
@@ -477,6 +483,7 @@ impl<'c> Encoder<'c> {
             return Err(Error::QueueFull);
         }
         self.failed()?;
+        let force_keyframe = self.reinit_if_wanted()? || force_keyframe;
         // An input is written again only once its picture was collected: as
         // many inputs as pictures may be held, taken in turn.
         let slot = self.next_slot;
@@ -518,6 +525,77 @@ impl<'c> Encoder<'c> {
         }
         self.failed()?;
         Ok(Poll::Pending)
+    }
+
+    /// Move the encoder to `quality`: the preset and the floor written as it
+    /// runs, and a change of the pass ahead of the encode made by the
+    /// runtime's re-initialisation.
+    ///
+    /// **The runtime takes the preset live and not the pass**, though its
+    /// header calls both fixed at initialisation: written after it, both are
+    /// read back as written, and the preset's cost arrives with the next
+    /// picture while the pass's never does. So a move that keeps the pass is
+    /// [`Moved::Live`](crate::Moved::Live), and one that changes it -- in or
+    /// out of the highest setting -- re-initialises before the next picture
+    /// once nothing is in the engine, which starts the stream again at a
+    /// keyframe: [`Moved::Refresh`](crate::Moved::Refresh). Measured at 1080p,
+    /// 1.4 to 2.4 ms for the re-initialisation.
+    pub fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
+        let names = self.names;
+        let mut config = self.config;
+        config.min_qp = quality.min_qp();
+        config.thorough = quality.thorough();
+        let set = |name: &'static str, value: i64| {
+            self.component
+                .set_int(name, value)
+                .map_err(|error| Error::Setting(name, error))
+        };
+        set(
+            names.quality_preset,
+            if config.thorough {
+                names.preset_quality
+            } else {
+                names.preset_speed
+            },
+        )?;
+        for name in names.min_qp {
+            set(name, i64::from(config.min_qp))?;
+        }
+        let moved = if config.thorough == self.config.thorough {
+            crate::Moved::Live
+        } else {
+            match self.config.codec {
+                Codec::H264 => set(names.preencode, i64::from(config.thorough))?,
+                Codec::H265 => self
+                    .component
+                    .set_bool(names.preencode, config.thorough)
+                    .map_err(|error| Error::Setting(names.preencode, error))?,
+            }
+            self.reinit_wanted = true;
+            crate::Moved::Refresh
+        };
+        self.config = config;
+        Ok(moved)
+    }
+
+    /// The re-initialisation a change of quality asked for, once nothing is
+    /// in the engine; until then a picture is refused as back pressure, and
+    /// the caller collects what is there and tries again. True when it was
+    /// made: the picture after it is coded as a keyframe with its parameter
+    /// sets, which the runtime writes only on a picture asked to be one.
+    fn reinit_if_wanted(&mut self) -> Result<bool, Error> {
+        if !self.reinit_wanted {
+            return Ok(false);
+        }
+        if self.outstanding > 0 {
+            return Err(Error::QueueFull);
+        }
+        // Asked once: a refusal is this picture's error, and the next goes in
+        // as the encoder is.
+        self.reinit_wanted = false;
+        self.component
+            .reinit(self.config.width, self.config.height)?;
+        Ok(true)
     }
 
     /// Change the rate, live: the target and the peak, and the buffer and
@@ -597,6 +675,10 @@ impl EncoderTrait for Encoder<'_> {
 
     fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Error> {
         Encoder::reconfigure(self, bitrate_bps)
+    }
+
+    fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
+        Encoder::set_quality(self, quality)
     }
 
     fn wait_finished(&mut self, limit: Duration) -> bool {

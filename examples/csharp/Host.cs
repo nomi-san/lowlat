@@ -58,6 +58,7 @@ internal sealed class Host
                     // repeated picture yet, so clearing this costs nothing;
                     // setting it would promise to spend the bitrate forever.
                     FullFps = false,
+                    Quality = (uint)Quality.LowestLatency,
                 },
                 Audio = new HostAudioConfig
                 {
@@ -180,7 +181,8 @@ internal sealed class Host
 
     /// What the stream is running at, read back rather than remembered: a
     /// guest may have changed it, and a display may have moved by itself.
-    public (uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output)
+    public (uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output,
+        uint quality)
         VideoConfig()
     {
         unsafe
@@ -188,19 +190,21 @@ internal sealed class Host
             var cfg = new HostVideoConfig { Size = (uint)sizeof(HostVideoConfig) };
             if (Native.lowlat_host_get_video_config(handle, &cfg) != Status.Ok)
             {
-                return (0, 0, 0, true, "");
+                return (0, 0, 0, true, "", (uint)Quality.LowestLatency);
             }
             return (
                 cfg.Fps,
                 cfg.BitrateMbps,
                 cfg.MinBitrateMbps,
                 cfg.FullFps,
-                Text.Take(((ReadOnlySpan<byte>)cfg.Output)[..Sizes.Output]));
+                Text.Take(((ReadOnlySpan<byte>)cfg.Output)[..Sizes.Output]),
+                cfg.Quality);
         }
     }
 
     public Status SetVideoConfig(
-        uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output)
+        uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output,
+        uint quality)
     {
         unsafe
         {
@@ -211,6 +215,7 @@ internal sealed class Host
                 BitrateMbps = bitrateMbps,
                 MinBitrateMbps = minBitrateMbps,
                 FullFps = fullFps,
+                Quality = quality,
             };
             Text.Put(((Span<byte>)cfg.Output)[..Sizes.Output], output);
             return Native.lowlat_host_set_video_config(handle, &cfg);
