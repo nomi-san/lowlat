@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-01 - The congestion level in each guest, the rate across a rebuild
+
+### Fixed
+- **The congestion level reaches each guest's session** ([06 §3](06-api.md),
+  [01 §10](01-protocol.md)): the session counted its stale fragments at the default's thresholds
+  whatever level was set, so a level moved only the controller's ratio. *Relaxed* now tolerates
+  its own delay, and level 0 is stale by construction, as both documents say.
+- **A rebuild is made at the rate and the floor a running stream was moved to**
+  ([06 §3](06-api.md)): a stream rebuilt for another output, a guest's codec or a display's mode
+  ran at the ones the host started with until the next change, while the configuration read
+  back the live ones.
+- **A guest's controller opens at the floor in its own unit**: it opened about five percent above
+  it until its first climb.
+
 ## 2026-11-01 - The quality, live, minor 37
 
 ### Changed
