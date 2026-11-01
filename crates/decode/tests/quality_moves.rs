@@ -1,27 +1,32 @@
 //! The quality setting moved under a running encoder, on each vendor's: every
 //! move between the three settings, the rate changing between them, and every
-//! access unit decoded by the library's own D3D11 decoder against the picture
-//! it was made from. A keyframe comes exactly where the move said it costs
-//! one, and nowhere else. Needs each vendor's GPU and driver, so off by
-//! default: `cargo test -p lowlat-decode --test quality_moves -- --ignored
-//! --nocapture`.
+//! access unit decoded by one of the library's own decoders -- D3D11's on
+//! Windows, NVIDIA's on Linux -- against the picture it was made from. A
+//! keyframe comes exactly where the move said it costs one, and nowhere else.
+//! Needs each vendor's GPU and driver, so off by default: `cargo test -p
+//! lowlat-decode --test quality_moves -- --ignored --nocapture`.
 
-// The encoders are bound to a D3D11 device on Windows alone.
-#![cfg(windows)]
+// NVIDIA's encoder on both; AMD's and Intel's on a D3D11 device, on Windows.
+#![cfg(any(windows, target_os = "linux"))]
 #![allow(clippy::cast_possible_truncation)]
 
+#[cfg(windows)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lowlat_capture::Frame;
 use lowlat_capture::synthetic::Synthetic;
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::d3d11::Backend;
 use lowlat_decode::{Decoder, Planes};
+#[cfg(windows)]
 use lowlat_drivers::amf::Amf;
+#[cfg(windows)]
 use lowlat_drivers::d3d11::{Adapter, D3d11, Device};
+#[cfg(windows)]
 use lowlat_drivers::vpl::Vpl;
-use lowlat_encode::{Encoder, Moved, Poll, Quality, amf, nvenc, vpl};
+use lowlat_encode::{Encoder, Moved, Poll, Quality, nvenc};
+#[cfg(windows)]
+use lowlat_encode::{amf, vpl};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -38,7 +43,9 @@ const WALK: [Quality; 7] = [
     Quality::Balanced,
     Quality::LowestLatency,
 ];
+#[cfg(windows)]
 const NVIDIA: u32 = 0x10de;
+#[cfg(windows)]
 const INTEL: u32 = 0x8086;
 
 fn header(codec: Codec) -> VideoHeader {
@@ -234,10 +241,14 @@ fn walk<E: Encoder>(
     (units, refreshes)
 }
 
-/// Every picture decoded in order: how many came back and the worst luma and
-/// chroma among them.
-fn decode_all(decoding: &Device, codec: Codec, units: &[(Vec<u8>, bool)]) -> (usize, f64, f64) {
-    let mut decoder = Backend::new(decoding, (4096, 4096));
+/// Every picture decoded in order by `decoder`, `drain` its own end of
+/// stream: how many came back and the worst luma and chroma among them.
+fn decode_all<D: Decoder>(
+    decoder: &mut D,
+    drain: impl Fn(&mut D),
+    codec: Codec,
+    units: &[(Vec<u8>, bool)],
+) -> (usize, f64, f64) {
     decoder.build(&header(codec)).expect("build");
     let mut reference = Synthetic::new(WIDTH, HEIGHT);
     // An odd pitch, so a pitch mistake shows.
@@ -250,7 +261,7 @@ fn decode_all(decoding: &Device, codec: Codec, units: &[(Vec<u8>, bool)]) -> (us
     for (index, (unit, _)) in units.iter().enumerate() {
         decoder.feed(unit).expect("feed");
         if index + 1 == units.len() {
-            decoder.drain();
+            drain(decoder);
         }
         loop {
             let mut planes = Planes {
@@ -277,7 +288,13 @@ fn decode_all(decoding: &Device, codec: Codec, units: &[(Vec<u8>, bool)]) -> (us
 
 /// What every walk must show: each picture back as it went in, a keyframe
 /// with its sets exactly where a move said one, and none anywhere else.
-fn check(name: &str, codec: Codec, decoding: &Device, walked: (Vec<(Vec<u8>, bool)>, Vec<usize>)) {
+fn check<D: Decoder>(
+    name: &str,
+    codec: Codec,
+    decoder: &mut D,
+    drain: impl Fn(&mut D),
+    walked: (Vec<(Vec<u8>, bool)>, Vec<usize>),
+) {
     let (units, refreshes) = walked;
     let total = WALK.len() * SEGMENT;
     assert_eq!(units.len(), total, "{name}: units went missing");
@@ -296,7 +313,7 @@ fn check(name: &str, codec: Codec, decoding: &Device, walked: (Vec<(Vec<u8>, boo
             );
         }
     }
-    let (decoded, luma, chroma) = decode_all(decoding, codec, &units);
+    let (decoded, luma, chroma) = decode_all(decoder, drain, codec, &units);
     println!(
         "{name}: {decoded}/{total} decoded, worst luma {luma:.1} dB, worst chroma {chroma:.1} dB, \
          keyframes at {refreshes:?}"
@@ -314,6 +331,20 @@ fn check(name: &str, codec: Codec, decoding: &Device, walked: (Vec<(Vec<u8>, boo
     );
 }
 
+/// [`check`], decoded by D3D11's decoder on a device of its own, as a
+/// client's is.
+#[cfg(windows)]
+fn check_d3d11(
+    name: &str,
+    codec: Codec,
+    decoding: &Device,
+    walked: (Vec<(Vec<u8>, bool)>, Vec<usize>),
+) {
+    let mut decoder = lowlat_decode::d3d11::Backend::new(decoding, (4096, 4096));
+    check(name, codec, &mut decoder, |d| d.drain(), walked);
+}
+
+#[cfg(windows)]
 fn adapter(d3d11: &D3d11, vendor: u32) -> Adapter {
     d3d11
         .adapters()
@@ -341,6 +372,7 @@ fn nvenc_config(codec: Codec, quality: Quality) -> nvenc::Config {
     }
 }
 
+#[cfg(windows)]
 fn nvenc_walk(codec: Codec, name: &str) {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = adapter(&d3d11, NVIDIA);
@@ -354,7 +386,65 @@ fn nvenc_walk(codec: Codec, name: &str) {
     // A device of the decoder's own, as a client's is.
     let decoding = d3d11.open(adapter.luid).expect("a second device");
     let walked = walk(&mut encoder, 3, name);
-    check(name, codec, &decoding, walked);
+    check_d3d11(name, codec, &decoding, walked);
+}
+
+/// On Linux the encoder takes the compute runtime's context, and NVIDIA's
+/// decoder reads the stream back in the same one.
+#[cfg(target_os = "linux")]
+fn nvenc_walk(codec: Codec, name: &str) {
+    let cuda = lowlat_drivers::cuda::Cuda::load().expect("compute runtime");
+    let device = cuda.any_device().expect("a device");
+    let context = cuda.retain_primary(&device).expect("context");
+    context.make_current().expect("current");
+    let api = nvenc::Api::load().expect("encoder runtime");
+    let session = api
+        .open_session(
+            cuda.retain_primary(&device)
+                .expect("a second context handle"),
+        )
+        .expect("session");
+    let mut encoder = session
+        .initialize(&cuda, nvenc_config(codec, WALK[0]))
+        .expect("initialize");
+    let walked = walk(&mut encoder, 3, name);
+    let cuvid = lowlat_drivers::cuvid::Cuvid::load().expect("decode interface");
+    let mut decoder = lowlat_decode::nvdec::Backend::new(&cuda, &cuvid, (4096, 4096), 1 << 20);
+    check(name, codec, &mut decoder, |d| d.drain(), walked);
+}
+
+/// The parameter sets the first picture of an encoder built at `quality`
+/// carries.
+#[cfg(windows)]
+fn first_sets(codec: Codec, quality: Quality) -> Vec<Vec<u8>> {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let adapter = adapter(&d3d11, NVIDIA);
+    let api = nvenc::Api::load().expect("encoder runtime");
+    let session = api
+        .open_session(Arc::new(d3d11.open(adapter.luid).expect("a device")))
+        .expect("session");
+    let mut encoder = session
+        .initialize(nvenc_config(codec, quality))
+        .expect("initialize");
+    let mut source = Synthetic::new(WIDTH, HEIGHT);
+    encoder.submit(&source.acquire(), true).expect("submit");
+    parameter_sets(&collect(&mut encoder).0, codec)
+}
+
+#[cfg(target_os = "linux")]
+fn first_sets(codec: Codec, quality: Quality) -> Vec<Vec<u8>> {
+    let cuda = lowlat_drivers::cuda::Cuda::load().expect("compute runtime");
+    let device = cuda.any_device().expect("a device");
+    let api = nvenc::Api::load().expect("encoder runtime");
+    let session = api
+        .open_session(cuda.retain_primary(&device).expect("context"))
+        .expect("session");
+    let mut encoder = session
+        .initialize(&cuda, nvenc_config(codec, quality))
+        .expect("initialize");
+    let mut source = Synthetic::new(WIDTH, HEIGHT);
+    encoder.submit(&source.acquire(), true).expect("submit");
+    parameter_sets(&collect(&mut encoder).0, codec)
 }
 
 #[test]
@@ -375,20 +465,10 @@ fn nvidia_hevc_moves_live() {
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn nvidia_writes_one_set_of_parameters_at_every_setting() {
-    let d3d11 = D3d11::load().expect("the system's libraries");
-    let adapter = adapter(&d3d11, NVIDIA);
-    let api = nvenc::Api::load().expect("encoder runtime");
-    let device = Arc::new(d3d11.open(adapter.luid).expect("a device"));
     for codec in [Codec::H264, Codec::H265] {
         let mut seen: Option<(Quality, Vec<Vec<u8>>)> = None;
         for quality in [Quality::LowestLatency, Quality::Balanced, Quality::Highest] {
-            let session = api.open_session(Arc::clone(&device)).expect("session");
-            let mut encoder = session
-                .initialize(nvenc_config(codec, quality))
-                .expect("initialize");
-            let mut source = Synthetic::new(WIDTH, HEIGHT);
-            encoder.submit(&source.acquire(), true).expect("submit");
-            let sets = parameter_sets(&collect(&mut encoder).0, codec);
+            let sets = first_sets(codec, quality);
             assert!(!sets.is_empty(), "{codec:?} {quality:?}: no parameter sets");
             match &seen {
                 None => seen = Some((quality, sets)),
@@ -401,6 +481,7 @@ fn nvidia_writes_one_set_of_parameters_at_every_setting() {
     }
 }
 
+#[cfg(windows)]
 fn amf_walk(codec: Codec, name: &str) {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = d3d11
@@ -434,21 +515,24 @@ fn amf_walk(codec: Codec, name: &str) {
     .expect("an encoder");
     let decoding = d3d11.open(adapter.luid).expect("a second device");
     let walked = walk(&mut encoder, 3, name);
-    check(name, codec, &decoding, walked);
+    check_d3d11(name, codec, &decoding, walked);
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn amd_h264_moves() {
     amf_walk(Codec::H264, "amf h264");
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn amd_hevc_moves() {
     amf_walk(Codec::H265, "amf hevc");
 }
 
+#[cfg(windows)]
 fn vpl_walk(codec: Codec, name: &str) {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = adapter(&d3d11, INTEL);
@@ -483,15 +567,17 @@ fn vpl_walk(codec: Codec, name: &str) {
     .expect("an encoder");
     let decoding = d3d11.open(adapter.luid).expect("a second device");
     let walked = walk(&mut encoder, 2, name);
-    check(name, codec, &decoding, walked);
+    check_d3d11(name, codec, &decoding, walked);
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn intel_h264_moves_live() {
     vpl_walk(Codec::H264, "vpl h264");
 }
 
+#[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn intel_hevc_moves() {
