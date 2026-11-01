@@ -2245,12 +2245,9 @@ fn run(
         let joining = receive_joins(shared, arrivals, &mut roster);
         own.prepare(shared, &config, joining);
 
-        // **Built at the quality asked for last**, which a running stream
-        // may have moved since the configuration was made.
-        config.quality = shared
-            .video
-            .lock()
-            .map_or_else(|held| held.into_inner().quality, |held| held.quality);
+        // **Built at what was asked for last**, which a running stream may
+        // have moved since the configuration was made.
+        adopt_live_video(shared, &mut config);
 
         // **What this run will produce, published before it produces it.** A
         // status read from the configuration says what was asked for; a guest
@@ -4690,6 +4687,27 @@ fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> boo
     true
 }
 
+/// Put what a running stream was moved to into the configuration the next
+/// build is made from: the quality, and the rate and its floor.
+///
+/// **Everything a build makes from the rate is made from these** -- the
+/// budget, every guest's controller, the encoder's opening rate and Intel's
+/// buffer -- and the loop starts having seen every change made before it, so
+/// nothing takes them again. Left at the configuration's, a rebuild for any
+/// other reason (another output, a guest's codec, a display's mode) ran at
+/// the rate the host started with while the stream reported the one asked
+/// for, until the next change. The frame rate is not here: a build settles
+/// it from what was asked ([`settle_pace`]).
+fn adopt_live_video(shared: &Shared, config: &mut Config) {
+    let live = shared
+        .video
+        .lock()
+        .map_or_else(|held| *held.into_inner(), |held| *held);
+    config.quality = live.quality;
+    config.configured_mbps = live.bitrate_mbps;
+    config.min_mbps = live.min_mbps;
+}
+
 /// Whether any guest has asked for the encoder to be reinitialized, clearing
 /// the requests.
 fn reconfigure_asked(shared: &Shared, active: &[Active]) -> bool {
@@ -4785,10 +4803,13 @@ fn admit_and_retire(
             reason = "a configured rate in megabits, only used to pick a ceiling step"
         )]
         guests.push(gate::Guest::joining(config.configured_mbps as f32));
+        // In the control path's unit, which the configuration's figures are
+        // not: the bounds are set again as the room is rebound, but the rate
+        // a controller opens at is this floor.
         controllers.push(Controller::new(
             config.cg_level,
-            config.min_mbps,
-            config.configured_mbps,
+            crate::rate::from_decimal_mbps(config.min_mbps),
+            crate::rate::from_decimal_mbps(config.configured_mbps),
         ));
         moved = true;
     }
@@ -5565,6 +5586,67 @@ mod tests {
             "the request was overwritten by a pace"
         );
         assert_eq!(settle_pace(&shared, shared.asked_fps(), 144), 144);
+    }
+
+    /// **A rebuild is made at what a running stream was moved to**, not at
+    /// what the host started with. The rate and the floor were left out: a
+    /// stream rebuilt for another output or a guest's codec ran at the
+    /// start-up rate, under the start-up floor, while the read-back said the
+    /// live ones.
+    #[test]
+    fn a_rebuild_is_made_at_the_rate_and_floor_asked_for_last() {
+        let (shared, stream, _arrivals) = parked();
+        let mut config = test_config(Codec::H264);
+        stream.set_video(LiveVideo {
+            bitrate_mbps: 4.0,
+            min_mbps: 2.0,
+            quality: lowlat_encode::Quality::Highest,
+            ..LiveVideo::default()
+        });
+        adopt_live_video(&shared, &mut config);
+        assert_eq!(
+            (config.configured_mbps, config.min_mbps, config.quality),
+            (4.0, 2.0, lowlat_encode::Quality::Highest),
+            "the build was configured from the start, not from the stream"
+        );
+        assert_eq!(
+            start_bps(&config),
+            4_000_000,
+            "the encoder opens at the start-up rate"
+        );
+    }
+
+    /// **A guest's controller opens at the floor in the control path's
+    /// unit.** The configuration speaks decimal megabits and the controller
+    /// mebibits; handed the decimal figures, it opened at the floor's number
+    /// read as mebibits, five percent above the floor, until its first climb
+    /// snapped it down.
+    #[test]
+    fn a_guest_s_controller_opens_at_the_floor_in_mebibits() {
+        let (shared, stream, arrivals) = parked();
+        let _seat = stream
+            .seats()
+            .take(wake_handle(), wake_handle(), Declared::default())
+            .expect("a free seat");
+        let mut roster = Roster::default();
+        receive_joins(&shared, &arrivals, &mut roster);
+        let config = test_config(Codec::H264);
+        let (mut active, mut guests, mut controllers) = (Vec::new(), Vec::new(), Vec::new());
+        assert!(admit_and_retire(
+            &shared,
+            &arrivals,
+            &config,
+            &mut active,
+            &mut guests,
+            &mut controllers,
+            &mut roster.pending,
+        ));
+        let floor = crate::rate::from_decimal_mbps(config.min_mbps);
+        let opening = controllers.first().expect("a controller").rate_mbps();
+        assert!(
+            (opening - floor).abs() < 1e-9,
+            "the controller opened at {opening} Mibit/s against a floor of {floor}"
+        );
     }
 
     /// **The order preferences come off, and that it bottoms out.**

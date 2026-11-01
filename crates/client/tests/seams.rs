@@ -19,8 +19,8 @@ use lowlat_client::{Client, Config, Event, Peer, Transport};
 use lowlat_core::conn::Kind;
 use lowlat_host::admission::{self, Admission, Event as HostEvent};
 
-fn host() -> Admission {
-    Admission::new(admission::Config {
+fn host_config() -> admission::Config {
+    admission::Config {
         microphone: None,
         pad_sink: None,
         exclusive_pointer: false,
@@ -32,7 +32,11 @@ fn host() -> Admission {
         max_guests: 1,
         servers: Vec::new(),
         stream: None,
-    })
+    }
+}
+
+fn host() -> Admission {
+    Admission::new(host_config())
 }
 
 /// Both seams, the exchange relayed by hand, until the host's application
@@ -241,6 +245,178 @@ fn a_session_under_the_current_cipher() {
 #[test]
 fn a_session_under_the_legacy_cipher() {
     session_under(true);
+}
+
+/// **A guest counts its stale fragments at the level its host was
+/// configured with.** The stream's controller judges that count by its
+/// level's ratio, and the count is the guest session's: a session built at
+/// the default gave every level the default's thresholds under its own
+/// ratio. Level 0 makes the difference plain -- its thresholds are zero, so
+/// once a round trip is measured every fragment outstanding is stale -- where
+/// the relaxed level, on loopback, finds almost none.
+#[test]
+#[ignore = "needs a hardware encoder"]
+fn a_guest_counts_staleness_at_its_hosts_level() {
+    let (stale, window, samples) = staleness_at(0);
+    assert!(
+        samples >= 20,
+        "level 0: only {samples} samples had anything outstanding"
+    );
+    assert!(
+        stale * 10 >= window * 9,
+        "level 0 counted {stale} of {window} outstanding fragments stale"
+    );
+    let (stale, window, samples) = staleness_at(2);
+    assert!(
+        samples >= 20,
+        "level 2: only {samples} samples had anything outstanding"
+    );
+    assert!(
+        stale * 10 <= window,
+        "level 2 counted {stale} of {window} outstanding fragments stale"
+    );
+}
+
+/// The generator, coded by the vendor's encoder, at `level`.
+fn generated(level: usize) -> lowlat_host::stream::Config {
+    lowlat_host::stream::Config {
+        audio: None,
+        accept_microphone: false,
+        audio_on: false,
+        audio_kbps: 128,
+        allow_raw_audio: false,
+        codec: lowlat_host::stream::Codec::H264,
+        ten_bit: false,
+        chroma_444: false,
+        backend: Some(lowlat_host::stream::Backend::Vendor),
+        prefer_vulkan: false,
+        width: 640,
+        height: 360,
+        fps: 60,
+        configured_mbps: 5.0,
+        min_mbps: 1.0,
+        // Detail over the whole picture, so each one is several fragments
+        // and a window is often open.
+        detail_rows: 360,
+        output: None,
+        convert: None,
+        display: false,
+        full_fps: true,
+        quality: lowlat_host::stream::Quality::default(),
+        cg_level: level,
+        virtual_fallback: false,
+        wake_display: false,
+        hold_memory_clock: false,
+        own_display: lowlat_host::stream::OwnDisplay::default(),
+    }
+}
+
+/// Stream to a client on loopback from a host at `level`, and add up what the
+/// guest publishes whenever something is outstanding: the stale fragments,
+/// the outstanding ones, and how many samples saw any.
+fn staleness_at(level: usize) -> (u64, u64, usize) {
+    let mut host = Admission::new(admission::Config {
+        cg_level: level,
+        stream: Some(generated(level)),
+        ..host_config()
+    });
+    let mut client = Client::new(
+        &lowlat_client::config::Decoding {
+            backend: lowlat_client::config::Backend::None,
+            ..Default::default()
+        },
+        lowlat_client::config::Port::Any,
+    )
+    .expect("a client without a decoder");
+    let ours = client
+        .new_attempt("a", Config::default(), Transport::Bud)
+        .expect("credentials");
+    host.new_attempt(
+        "a",
+        admission::Peer {
+            ufrag: ours.ufrag.clone(),
+            pwd: ours.pwd.clone(),
+            aes256: (!ours.aes256.is_empty()).then(|| ours.aes256.clone()),
+            transport: admission::Transport::Bud,
+            fingerprint: Some(ours.fingerprint.clone()),
+            permissions: lowlat_host::inject::Permissions::default(),
+            owner: false,
+        },
+    )
+    .expect("the host registered the offer");
+    let theirs = host.begin_p2p("a", 0).expect("the host answered");
+    client
+        .begin_p2p(
+            "a",
+            &Peer {
+                ufrag: theirs.ufrag.clone(),
+                pwd: theirs.pwd.clone(),
+                fingerprint: theirs.fingerprint.clone(),
+                aes256: (!theirs.aes256.is_empty()).then(|| theirs.aes256.clone()),
+            },
+        )
+        .expect("the client began");
+
+    // Nothing decodes here, so the units are let go as they arrive: a full
+    // ring would hold the acknowledgements back and age every fragment.
+    let units = client.units();
+    let (mut stale, mut window, mut samples) = (0u64, 0u64, 0usize);
+    let mut up_at: Option<Instant> = None;
+    let began = Instant::now();
+    // **Until enough samples saw a window open**: on loopback a fragment is
+    // acknowledged within a fraction of a millisecond, so most samples see
+    // nothing outstanding at all.
+    while began.elapsed() < Duration::from_secs(40)
+        && samples < 200
+        && up_at.is_none_or(|at| at.elapsed() < Duration::from_secs(10))
+    {
+        while let Some(received) = client.poll_event() {
+            match received.event {
+                Event::Candidate {
+                    addr,
+                    from_stun,
+                    lan,
+                } => {
+                    host.add_candidate("a", addr, false, Kind::marked(lan, from_stun));
+                }
+                Event::Ready => {
+                    host.add_candidate("a", "1.2.3.4:1234".parse().unwrap(), true, Kind::Direct);
+                }
+                Event::Ended { outcome } => panic!("the client ended: {outcome:?}"),
+                _ => {}
+            }
+        }
+        while let Some(received) = host.poll_event() {
+            match received.event {
+                HostEvent::Candidate {
+                    addr,
+                    from_stun,
+                    lan,
+                    ..
+                } => client.add_candidate("a", addr, false, Kind::marked(lan, from_stun)),
+                HostEvent::Ready { .. } => {
+                    client.add_candidate("a", "1.2.3.4:1234".parse().unwrap(), true, Kind::Direct);
+                }
+                HostEvent::Ended { outcome, .. } => panic!("the host ended: {outcome:?}"),
+                _ => {}
+            }
+        }
+        while units.take().is_some() {}
+        if let Some(guest) = host.guests().first() {
+            let metrics = guest.metrics;
+            if metrics.window > 0 && metrics.network_ms > 0.0 {
+                up_at.get_or_insert_with(Instant::now);
+                stale += u64::from(metrics.stale);
+                window += u64::from(metrics.window);
+                samples += 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    client.end_connection("a");
+    host.end_connection("a");
+    println!("level {level}: {stale} of {window} outstanding stale over {samples} samples");
+    (stale, window, samples)
 }
 
 /// A pad is one family until it is unplugged, and the rule is applied where

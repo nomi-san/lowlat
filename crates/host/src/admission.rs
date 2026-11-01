@@ -403,7 +403,9 @@ pub struct Config {
     /// [`Config::exclusive_pointer`] is set. Clamped into the bounds in
     /// [`crate::floor`].
     pub exclusive_hold_ms: f64,
-    /// Which congestion control level every guest's controller runs at.
+    /// Which congestion control level every guest's session counts its stale
+    /// fragments at. The stream's controller compares that count against the
+    /// same level's ratio, from the stream's own configuration.
     ///
     /// **Level 0 is the most aggressive, not "off".** Its threshold of zero
     /// declares congestion on any stale fragment once the window exceeds the
@@ -1182,6 +1184,7 @@ impl Admission {
         let rumble_probe = self.config.rumble_probe;
         let microphone = self.config.microphone.clone();
         let pad_sink = self.config.pad_sink.clone();
+        let cg_level = self.config.cg_level;
         #[cfg(windows)]
         let virtual_input = self.virtual_input;
         #[cfg(windows)]
@@ -1196,6 +1199,7 @@ impl Admission {
                     theirs,
                     keying,
                     seed,
+                    cg_level,
                     driven: Driven {
                         attempt_id,
                         emit,
@@ -1692,6 +1696,12 @@ struct Attached {
     theirs: (String, String),
     keying: Keying,
     seed: [u8; 16],
+    /// The level the session counts staleness at.
+    ///
+    /// **The configuration's, not a constant.** The controller's half of the
+    /// level is a ratio of the count this session makes; built at the
+    /// default, every level ran the default's thresholds under its own ratio.
+    cg_level: usize,
     driven: Driven,
 }
 
@@ -2391,6 +2401,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         theirs,
         keying,
         seed,
+        cg_level,
         driven,
     } = args;
     let mut conn = Conn::new(
@@ -2434,7 +2445,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             let Ok(envelope) = Envelope::lent(&record, &material, cipher) else {
                 return;
             };
-            let mut session = Session::new(envelope, 1, 0.0);
+            let mut session = Session::new(envelope, cg_level, 0.0);
             if !attach_recv(
                 &mut session,
                 CONTROL_CHANNEL,
@@ -2462,7 +2473,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             drive(driven, shell, running, true);
         }
         Keying::Web { expect } => {
-            let session = match WebSession::client(expect, 1, 0.0) {
+            let session = match WebSession::client(expect, cg_level, 0.0) {
                 Ok(session) => session,
                 Err(error) => {
                     lowlat_common::log_error!(

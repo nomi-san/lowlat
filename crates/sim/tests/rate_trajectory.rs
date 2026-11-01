@@ -70,8 +70,8 @@ impl Arena {
     }
 }
 
-fn endpoint(arena: &mut Arena) -> Session<'_> {
-    let mut session = Session::new(Envelope::from_key(&KEY).unwrap(), 1, 0.0);
+fn endpoint(arena: &mut Arena, level: usize) -> Session<'_> {
+    let mut session = Session::new(Envelope::from_key(&KEY).unwrap(), level, 0.0);
     session
         .attach_recv(
             CHANNEL,
@@ -320,11 +320,14 @@ struct Profile {
     /// and then something changes. Zero never switches.
     fps_after: f64,
     fps_at_ms: f64,
-    /// Which congestion level the controller is built with.
+    /// Which congestion level the sender's session counts staleness at and
+    /// its controller judges the count by.
     ///
     /// **Every trajectory in this file ran at level 1 until this existed.**
     /// Zero and two are reachable through the boundary and the daemon's
     /// `--cg-level`, and nothing had ever driven them through a session.
+    /// (*Corrected 2026-11-01*: the session was still built at level 1, so a
+    /// level here moved the controller's ratio and nothing else.)
     level: usize,
     /// The controller's ceiling. **The multi-guest shape**: one encode is
     /// divided by the seats sharing it, so each guest's ceiling is a fraction
@@ -375,8 +378,9 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
 
     let mut tx_arena = Arena::new();
     let mut rx_arena = Arena::new();
-    let mut tx = endpoint(&mut tx_arena);
-    let mut rx = endpoint(&mut rx_arena);
+    // The peer's level counts only its own sends, which nothing here reads.
+    let mut tx = endpoint(&mut tx_arena, profile.level);
+    let mut rx = endpoint(&mut rx_arena, congestion::DEFAULT_LEVEL);
 
     // The controller, as the host builds one: default level, 1 to 30 Mibit/s.
     let mut controller = Controller::new(profile.level, 1.0, profile.max_mbps);
