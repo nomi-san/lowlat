@@ -3,6 +3,16 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-01 - The congestion level, live, minor 37
+
+### Changed
+- **The congestion level moves while a host runs** ([06 §3](06-api.md)): it is
+  `lowlat_host_video_config.cg_level`, in the word after the quality, set with the rest of the
+  video configuration and read back with it. A move reaches every guest from the next pass -- the
+  thresholds its session counts by and the ratio its controller judges by -- with nothing rebuilt
+  and no keyframe, and a guest seated after it runs at it from the start. The configuration's own
+  `cg_level` is `reserved3`.
+
 ## 2026-11-01 - The congestion level in each guest, the rate across a rebuild
 
 ### Fixed
