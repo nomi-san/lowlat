@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-02 - A still picture refined until it settles
+
+### Changed
+- **A picture that stops changing is refined until the encoder has nothing left to spend on
+  it**, rather than for a fixed fifteen pictures: until every picture of the last 200 ms coded
+  small (under a quarter of a picture's share of the rate), counted once the change itself is
+  paid for, and for three seconds at most. On a cut path a changed page codes at
+  the quantiser's ceiling and the encoder repays it before it refines, so the fixed count left
+  text soft: on 1080p text at 2 Mbit/s it stopped at 22 dB, where refining until it settles
+  reaches 41 dB in 2.6 s (45 dB in 1.4 s at 4 Mbit/s, 50 in a second at 8). The frame rate is
+  not what to lower on such a path: at the same rate a scroll is no sharper at 30 or 20 a second,
+  a still page refines no sooner, and each picture takes two to four times as long on the wire.
+  The stream's periodic report counts the pictures sent to refine.
+
 ## 2026-11-01 - The congestion level, live, minor 37
 
 ### Changed
