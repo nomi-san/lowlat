@@ -311,10 +311,58 @@ fn generated(level: usize) -> lowlat_host::stream::Config {
     }
 }
 
+/// **A level moved while a guest streams is the one its session counts at
+/// from then on.** The stream's controllers and every guest's session follow
+/// one live setting; a session left at the old level hands the new ratio a
+/// count made by the old thresholds.
+#[test]
+#[ignore = "needs a hardware encoder"]
+fn a_guest_counts_staleness_at_a_level_moved_while_it_streams() {
+    let (mut host, mut client) = streaming(2);
+    let (stale, window, samples) = staleness(&mut host, &mut client);
+    println!("level 2: {stale} of {window} outstanding stale over {samples} samples");
+    assert!(
+        samples >= 20,
+        "level 2: only {samples} samples had anything outstanding"
+    );
+    assert!(
+        stale * 10 <= window,
+        "level 2 counted {stale} of {window} outstanding fragments stale"
+    );
+
+    let mut video = host.video().expect("a stream");
+    video.cg_level = 0;
+    host.set_video(video);
+    let (stale, window, samples) = staleness(&mut host, &mut client);
+    println!("moved to 0: {stale} of {window} outstanding stale over {samples} samples");
+    assert!(
+        samples >= 20,
+        "after the move: only {samples} samples had anything outstanding"
+    );
+    assert!(
+        stale * 10 >= window * 9,
+        "moved to level 0, the guest counted {stale} of {window} outstanding fragments stale"
+    );
+    client.end_connection("a");
+    host.end_connection("a");
+}
+
 /// Stream to a client on loopback from a host at `level`, and add up what the
 /// guest publishes whenever something is outstanding: the stale fragments,
 /// the outstanding ones, and how many samples saw any.
 fn staleness_at(level: usize) -> (u64, u64, usize) {
+    let (mut host, mut client) = streaming(level);
+    let counted = staleness(&mut host, &mut client);
+    client.end_connection("a");
+    host.end_connection("a");
+    let (stale, window, samples) = counted;
+    println!("level {level}: {stale} of {window} outstanding stale over {samples} samples");
+    counted
+}
+
+/// A host streaming the generator at `level`, and a client the exchange has
+/// begun with; [`staleness`] relays the rest.
+fn streaming(level: usize) -> (Admission, Client) {
     let mut host = Admission::new(admission::Config {
         cg_level: level,
         stream: Some(generated(level)),
@@ -356,7 +404,13 @@ fn staleness_at(level: usize) -> (u64, u64, usize) {
             },
         )
         .expect("the client began");
+    (host, client)
+}
 
+/// Relay the pair's events and add up what the guest publishes whenever
+/// something is outstanding: the stale fragments, the outstanding ones, and
+/// how many samples saw any.
+fn staleness(host: &mut Admission, client: &mut Client) -> (u64, u64, usize) {
     // Nothing decodes here, so the units are let go as they arrive: a full
     // ring would hold the acknowledgements back and age every fragment.
     let units = client.units();
@@ -413,9 +467,6 @@ fn staleness_at(level: usize) -> (u64, u64, usize) {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    client.end_connection("a");
-    host.end_connection("a");
-    println!("level {level}: {stale} of {window} outstanding stale over {samples} samples");
     (stale, window, samples)
 }
 

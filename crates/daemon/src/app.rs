@@ -1274,6 +1274,7 @@ mod tests {
             min_mbps: 1.0,
             full_fps: true,
             quality: lowlat_host::stream::Quality::LowestLatency,
+            cg_level: 1,
         };
         assert_ne!(started.fps, running.fps, "the test needs the two to differ");
         let described = describe(

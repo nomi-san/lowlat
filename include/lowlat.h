@@ -1051,12 +1051,20 @@ typedef struct lowlat_host_video_config {
     /// and ignores it on the other, so a host logs its request and does not
     /// claim more than that. **Default: lowest latency.**
     uint32_t quality;
-    /// Zero (minor 37). **What makes this structure eight bytes longer than
-    /// minor 36's on every platform**, so a caller built against that minor
-    /// is refused rather than misread: on Windows the quality alone fills the
-    /// padding minor 36's ended in, and such a caller's size would have been
-    /// taken with whatever its padding held read as the quality.
-    uint32_t reserved2;
+    /// One of `lowlat_cg_level` (minor 37; before it, on the configuration,
+    /// and settled when hosting started). **Moves every guest from the next
+    /// pass**: the thresholds each guest's session counts stale fragments by
+    /// and the ratio its controller judges the count by, one setting moving
+    /// both, with nothing rebuilt and no keyframe. **Zero is the most
+    /// aggressive, not "off"**, and a structure zeroed by its caller asks for
+    /// it. **Default: sensitive**, which is the tuning every other one is
+    /// judged against.
+    ///
+    /// With the quality, **what makes this structure eight bytes longer than
+    /// minor 36's on every platform**, so a caller built against that minor is
+    /// refused rather than misread: on Windows the quality alone fills the
+    /// padding minor 36's ended in.
+    uint32_t cg_level;
 } lowlat_host_video_config;
 
 /// How sound is configured.
@@ -1196,11 +1204,9 @@ typedef struct lowlat_host_config {
     uint32_t codec;
     /// One of `lowlat_encoder`. **Default: follow display.**
     uint32_t encoder;
-    /// One of `lowlat_cg_level`. **Default: sensitive**, which is the tuning
-    /// every other one is judged against. **Zero is not the default**, and a
-    /// structure zeroed by its caller asks for the most aggressive setting
-    /// rather than this one -- start from `lowlat_host_default_config`.
-    uint32_t cg_level;
+    /// The congestion level's place to minor 36, read by nothing since: it is
+    /// `video.cg_level`, which can move while the host runs.
+    uint32_t reserved3;
     /// The quality's place to minor 36, read by nothing since: it is
     /// `video.quality`, which can move while the host runs.
     uint32_t reserved2;
@@ -2812,6 +2818,10 @@ lowlat_status lowlat_host_get_metrics(lowlat_host *hl,
 /// setting costs one where the encoder takes a change of effort only with a
 /// new sequence, and an encoder that cannot move at all is rebuilt at the new
 /// setting, as an output change is.
+///
+/// **The congestion level moves every guest from the next pass** (minor 37):
+/// the thresholds each guest's session counts stale fragments by and the ratio
+/// its controller judges the count by, with nothing rebuilt and no keyframe.
 ///
 /// Refused with `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not running,
 /// because there is nothing yet for the values to apply to and accepting them

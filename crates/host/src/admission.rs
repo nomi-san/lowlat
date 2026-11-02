@@ -404,8 +404,9 @@ pub struct Config {
     /// [`crate::floor`].
     pub exclusive_hold_ms: f64,
     /// Which congestion control level every guest's session counts its stale
-    /// fragments at. The stream's controller compares that count against the
-    /// same level's ratio, from the stream's own configuration.
+    /// fragments at, until it reads the stream's: a guest on a stream follows
+    /// the level the stream was last asked for, whose ratio its controller
+    /// judges the count by ([`crate::stream::LiveVideo::cg_level`]).
     ///
     /// **Level 0 is the most aggressive, not "off".** Its threshold of zero
     /// declares congestion on any stale fragment once the window exceeds the
@@ -1696,7 +1697,8 @@ struct Attached {
     theirs: (String, String),
     keying: Keying,
     seed: [u8; 16],
-    /// The level the session counts staleness at.
+    /// The level the session counts staleness at until the stream's is read,
+    /// on the loop's first pass.
     ///
     /// **The configuration's, not a constant.** The controller's half of the
     /// level is a ratio of the count this session makes; built at the
@@ -2636,8 +2638,22 @@ fn drive<M: Media>(
     let mut probe_until: Option<f64> = None;
     let mut probe_armed = true;
     let mut pass: u32 = 0;
+    // The congestion level the session was last told to count at, so one
+    // that has not moved is not set again on every pass.
+    let mut counting_at: Option<usize> = None;
 
     while !running.stopping() {
+        // **The congestion level the stream was last asked for**, which an
+        // application may move while this runs. The stale count this session
+        // makes is the half of a level the stream's controller judges by its
+        // ratio, so the two follow one setting; with no stream there is no
+        // picture to count for, and the session keeps the one it was built at.
+        if let Some(level) = args.seats.as_ref().map(Seats::cg_level)
+            && counting_at != Some(level)
+        {
+            shell.endpoint().session().set_level(level);
+            counting_at = Some(level);
+        }
         // Candidates are injected where the application's work is pulled, after
         // the wake has been taken, so nothing enqueued from here on is lost.
         // **The size the stream settled on, checked every pass rather than

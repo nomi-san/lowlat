@@ -43,7 +43,6 @@ internal sealed class Host
                 // the device the display is on, and an encoder belonging to
                 // another cannot take it.
                 Encoder = (uint)Encoder.FollowDisplay,
-                CgLevel = (uint)CgLevel.Sensitive,
                 ExclusiveHoldMs = 500,
                 ExclusivePointer = false,
                 ServerCount = 1,
@@ -59,6 +58,7 @@ internal sealed class Host
                     // setting it would promise to spend the bitrate forever.
                     FullFps = false,
                     Quality = (uint)Quality.LowestLatency,
+                    CgLevel = (uint)CgLevel.Sensitive,
                 },
                 Audio = new HostAudioConfig
                 {
@@ -182,7 +182,7 @@ internal sealed class Host
     /// What the stream is running at, read back rather than remembered: a
     /// guest may have changed it, and a display may have moved by itself.
     public (uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output,
-        uint quality)
+        uint quality, uint cgLevel)
         VideoConfig()
     {
         unsafe
@@ -190,7 +190,7 @@ internal sealed class Host
             var cfg = new HostVideoConfig { Size = (uint)sizeof(HostVideoConfig) };
             if (Native.lowlat_host_get_video_config(handle, &cfg) != Status.Ok)
             {
-                return (0, 0, 0, true, "", (uint)Quality.LowestLatency);
+                return (0, 0, 0, true, "", (uint)Quality.LowestLatency, (uint)CgLevel.Sensitive);
             }
             return (
                 cfg.Fps,
@@ -198,13 +198,14 @@ internal sealed class Host
                 cfg.MinBitrateMbps,
                 cfg.FullFps,
                 Text.Take(((ReadOnlySpan<byte>)cfg.Output)[..Sizes.Output]),
-                cfg.Quality);
+                cfg.Quality,
+                cfg.CgLevel);
         }
     }
 
     public Status SetVideoConfig(
         uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output,
-        uint quality)
+        uint quality, uint cgLevel)
     {
         unsafe
         {
@@ -216,6 +217,7 @@ internal sealed class Host
                 MinBitrateMbps = minBitrateMbps,
                 FullFps = fullFps,
                 Quality = quality,
+                CgLevel = cgLevel,
             };
             Text.Put(((Span<byte>)cfg.Output)[..Sizes.Output], output);
             return Native.lowlat_host_set_video_config(handle, &cfg);

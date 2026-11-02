@@ -269,6 +269,15 @@ impl<'a> Session<'a> {
         })
     }
 
+    /// Count stale fragments at another congestion level from the next pass.
+    ///
+    /// **The count is the level's other half.** The controller judges it by
+    /// the same level's ratio, so a host moving one moves both: a session left
+    /// at the old level hands a new ratio a count made by the old thresholds.
+    pub fn set_level(&mut self, level: usize) {
+        self.level = level;
+    }
+
     /// One channel's send pressure.
     ///
     /// **The window is `send_next - send_base`**, which is what both the
@@ -723,6 +732,10 @@ impl crate::endpoint::Media for Session<'_> {
         Session::send_pressure(self, channel)
     }
 
+    fn set_level(&mut self, level: usize) {
+        Session::set_level(self, level);
+    }
+
     fn srtt_ms(&self) -> f64 {
         Session::srtt_ms(self)
     }
@@ -992,6 +1005,38 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = seen.iter().collect();
         assert_eq!(unique.len(), seen.len(), "a nonce counter repeated");
+    }
+
+    /// **A level moved under a running session counts at it from the next
+    /// pass.** The controller judges this count by the new level's ratio; a
+    /// count left at the old thresholds hands it a figure made by the wrong
+    /// tolerance.
+    #[test]
+    fn a_level_moved_while_it_runs_counts_at_the_next_pass() {
+        fn pass(session: &mut Session<'_>, now_ms: f64) -> Pressure {
+            let mut wire = [0u8; 512];
+            while let Some(result) = session.get_output(now_ms, &mut wire) {
+                result.unwrap();
+            }
+            session.send_pressure(VIDEO).unwrap()
+        }
+        let mut arena = Arena::new();
+        let mut session = endpoint(&mut arena, 0.0);
+
+        session.set_level(2);
+        session.send_message(VIDEO, &[], b"x").unwrap();
+        pass(&mut session, 0.0);
+        // A millisecond on: well inside the relaxed level's fifty.
+        let relaxed = pass(&mut session, 1.0);
+        assert!(relaxed.window > 0, "nothing was outstanding");
+        assert_eq!(relaxed.stale, 0, "relaxed counted a fresh fragment stale");
+
+        session.set_level(0);
+        let aggressive = pass(&mut session, 2.0);
+        assert_eq!(
+            aggressive.stale, aggressive.window,
+            "level 0 did not count everything outstanding"
+        );
     }
 
     /// An acknowledgement the cadence produced carries the keepalive flag and

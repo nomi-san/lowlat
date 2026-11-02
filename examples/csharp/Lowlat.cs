@@ -160,9 +160,12 @@ internal struct HostVideoConfig
     /// (minor 37): moved while the host runs, so it is sent again as it
     /// stands whenever anything else here changes.
     public uint Quality;
-    /// Zero: what makes this structure eight bytes longer than minor 36's on
-    /// every platform, so a caller built against that minor is refused.
-    public uint Reserved2;
+    /// Which congestion level every guest runs at, one of [`CgLevel`] (minor
+    /// 37): moved while the host runs, so it is sent again as it stands
+    /// whenever anything else here changes. **Zero is the most aggressive**,
+    /// not the default. With the quality, what makes this structure eight
+    /// bytes longer than minor 36's on every platform.
+    public uint CgLevel;
 }
 
 #if WINDOWS
@@ -260,7 +263,8 @@ internal struct HostConfig
     public uint MaxGuests;
     public uint Codec;
     public uint Encoder;
-    public uint CgLevel;
+    /// The congestion level's place to minor 36; it is `Video.CgLevel` since.
+    public uint Reserved3;
     /// The quality's place to minor 36; it is `Video.Quality` since.
     ///
     /// **Kept as a slot.** This field was once missing from this mirror for a

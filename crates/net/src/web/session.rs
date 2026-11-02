@@ -791,6 +791,10 @@ impl Media for WebSession {
         })
     }
 
+    fn set_level(&mut self, level: usize) {
+        self.level = congestion::level(level);
+    }
+
     fn srtt_ms(&self) -> f64 {
         self.srtt_ms
     }

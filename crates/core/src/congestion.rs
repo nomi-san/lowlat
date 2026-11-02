@@ -153,6 +153,16 @@ impl Controller {
         self.max_mbps
     }
 
+    /// Judge the window at another level from the next tick, as a host may
+    /// be moved while it runs.
+    ///
+    /// **Nothing else moves with it.** The rate, the peak and both tick
+    /// counters are what the path has done, not a tuning, so a cut taken or a
+    /// climb under way stands as it was.
+    pub fn set_level(&mut self, level: usize) {
+        self.level = level;
+    }
+
     /// Whether the host-local strategy is selected; see [`ADAPTIVE`].
     ///
     /// **The gate for deferred work.** It is false for every level that
@@ -414,6 +424,27 @@ mod tests {
         // 0.15 threshold: 15 of 200 is not above it, 31 is.
         assert!(!controller.is_congested(200, 30));
         assert!(controller.is_congested(200, 31));
+    }
+
+    /// **A level moved under a running controller judges from then on**, and
+    /// moves nothing the path did.
+    #[test]
+    fn a_level_moved_while_it_runs_judges_the_next_tick() {
+        let mut controller = Controller::new(2, 1.0, 100.0);
+        controller.peak_mbps = 10.0;
+        controller.current_mbps = 10.0;
+        // A fifth of the window stale: within the relaxed level's third.
+        controller.tick(200, 40, 0.0);
+        assert_eq!(controller.total_decreases(), 0, "relaxed cut at a fifth");
+
+        controller.set_level(DEFAULT_LEVEL);
+        assert!((controller.rate_mbps() - 10.0).abs() < 1e-9, "the move cut");
+        controller.tick(200, 40, 0.0);
+        assert_eq!(
+            controller.total_decreases(),
+            1,
+            "the default's ratio did not judge the next tick"
+        );
     }
 
     /// The pre-increment test means the very first congested tick acts.

@@ -134,6 +134,10 @@ pub trait Media: fmt::Debug {
     /// delivery gate and the diagnostics read it.
     fn send_pressure(&self, channel: u8) -> Option<Pressure>;
 
+    /// Count stale fragments at another congestion level from the next pass
+    /// ([`crate::congestion::level`]), as a host may be moved while it runs.
+    fn set_level(&mut self, level: usize);
+
     /// Smoothed round trip, in fractional milliseconds.
     fn srtt_ms(&self) -> f64;
 

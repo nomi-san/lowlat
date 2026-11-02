@@ -165,12 +165,20 @@ pub struct lowlat_host_video_config {
     /// and ignores it on the other, so a host logs its request and does not
     /// claim more than that. **Default: lowest latency.**
     pub quality: u32,
-    /// Zero (minor 37). **What makes this structure eight bytes longer than
-    /// minor 36's on every platform**, so a caller built against that minor
-    /// is refused rather than misread: on Windows the quality alone fills the
-    /// padding minor 36's ended in, and such a caller's size would have been
-    /// taken with whatever its padding held read as the quality.
-    pub reserved2: u32,
+    /// One of [`lowlat_cg_level`] (minor 37; before it, on the configuration,
+    /// and settled when hosting started). **Moves every guest from the next
+    /// pass**: the thresholds each guest's session counts stale fragments by
+    /// and the ratio its controller judges the count by, one setting moving
+    /// both, with nothing rebuilt and no keyframe. **Zero is the most
+    /// aggressive, not "off"**, and a structure zeroed by its caller asks for
+    /// it. **Default: sensitive**, which is the tuning every other one is
+    /// judged against.
+    ///
+    /// With the quality, **what makes this structure eight bytes longer than
+    /// minor 36's on every platform**, so a caller built against that minor is
+    /// refused rather than misread: on Windows the quality alone fills the
+    /// padding minor 36's ended in.
+    pub cg_level: u32,
 }
 
 /// How sound is configured.
@@ -331,11 +339,9 @@ pub struct lowlat_host_config {
     pub codec: u32,
     /// One of [`lowlat_encoder`]. **Default: follow display.**
     pub encoder: u32,
-    /// One of [`lowlat_cg_level`]. **Default: sensitive**, which is the tuning
-    /// every other one is judged against. **Zero is not the default**, and a
-    /// structure zeroed by its caller asks for the most aggressive setting
-    /// rather than this one -- start from [`lowlat_host_default_config`].
-    pub cg_level: u32,
+    /// The congestion level's place to minor 36, read by nothing since: it is
+    /// `video.cg_level`, which can move while the host runs.
+    pub reserved3: u32,
     /// The quality's place to minor 36, read by nothing since: it is
     /// `video.quality`, which can move while the host runs.
     pub reserved2: u32,
@@ -454,7 +460,7 @@ fn default_config() -> lowlat_host_config {
         max_guests: 4,
         codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
         encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
-        cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+        reserved3: 0,
         reserved2: 0,
         // The figure the pointer arbitration was tuned to. Held as a literal
         // because the field is whole milliseconds and `floor`'s is not; the
@@ -484,7 +490,7 @@ fn default_config() -> lowlat_host_config {
             #[cfg(windows)]
             virtual_hz: 0,
             quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
-            reserved2: 0,
+            cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
         },
         audio: lowlat_host_audio_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_audio_config>())
@@ -765,15 +771,6 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
         }
         _ => return None,
     };
-    let cg_level = match cfg.cg_level {
-        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32 => 0,
-        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32 => 1,
-        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32 => 2,
-        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32 => {
-            lowlat_core::congestion::ADAPTIVE
-        }
-        _ => return None,
-    };
     if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX {
         return None;
     }
@@ -814,6 +811,8 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
         return None;
     }
     let (video, own_display) = video_configured(&cfg.video)?;
+    // The level every guest starts at, and the stream's first live one.
+    let cg_level = video.cg_level;
     let output = output_named(&cfg.video.output)?;
     let (sound_on, allow_raw, audio_kbps, audio_live) = audio_configured(&cfg.audio)?;
     #[cfg(windows)]
@@ -986,6 +985,15 @@ fn video_configured(
         }
         _ => return None,
     };
+    let cg_level = match cfg.cg_level {
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32 => 0,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32 => 1,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32 => 2,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32 => {
+            lowlat_core::congestion::ADAPTIVE
+        }
+        _ => return None,
+    };
     Some((
         ::lowlat_host::stream::LiveVideo {
             fps: cfg.fps,
@@ -993,6 +1001,7 @@ fn video_configured(
             min_mbps: cfg.min_bitrate_mbps,
             full_fps: cfg.full_fps,
             quality,
+            cg_level,
         },
         own_display,
     ))
@@ -2172,6 +2181,10 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 /// new sequence, and an encoder that cannot move at all is rebuilt at the new
 /// setting, as an output change is.
 ///
+/// **The congestion level moves every guest from the next pass** (minor 37):
+/// the thresholds each guest's session counts stale fragments by and the ratio
+/// its controller judges the count by, with nothing rebuilt and no keyframe.
+///
 /// Refused with [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not running,
 /// because there is nothing yet for the values to apply to and accepting them
 /// silently would report settings that never took.
@@ -2471,7 +2484,14 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
                 lowlat_encode::Quality::Balanced => lowlat_quality::LOWLAT_QUALITY_BALANCED as u32,
                 lowlat_encode::Quality::Highest => lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32,
             };
-            slot.reserved2 = 0;
+            slot.cg_level = match video.cg_level {
+                0 => lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32,
+                2 => lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32,
+                level if level == lowlat_core::congestion::ADAPTIVE => {
+                    lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32
+                }
+                _ => lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+            };
             // **The request, as the sound device is**: the display's own size
             // is the picture's, on the status.
             #[cfg(windows)]
@@ -3194,7 +3214,7 @@ mod start_tests {
             #[cfg(windows)]
             virtual_hz: 0,
             quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
-            reserved2: 0,
+            cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
         }
     }
 
@@ -3208,7 +3228,7 @@ mod start_tests {
             max_guests: 4,
             codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
             encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
-            cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+            reserved3: 0,
             reserved2: 0,
             exclusive_hold_ms: 500,
             exclusive_pointer: false,
@@ -3358,6 +3378,61 @@ mod start_tests {
 
         assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
         cfg.video.quality = 3;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **The congestion level reads back as asked, at start and live**, and
+    /// one nobody here names is refused at either: refused live, the host
+    /// keeps the one it has. The configuration's old place for it is read by
+    /// nothing.
+    #[test]
+    fn the_level_asked_is_read_back_and_an_unknown_one_refused() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.video.cg_level = lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32;
+        cfg.reserved3 = 99;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let mut back = video();
+        assert_eq!(
+            unsafe { lowlat_host_get_video_config(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            back.cg_level,
+            lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32,
+            "the level asked at start was dropped"
+        );
+
+        let mut live = video();
+        live.cg_level = lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32;
+        assert_eq!(
+            unsafe { lowlat_host_set_video_config(handle, &raw const live) },
+            LOWLAT_OK
+        );
+        live.cg_level = 4;
+        assert_eq!(
+            unsafe { lowlat_host_set_video_config(handle, &raw const live) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lowlat_host_get_video_config(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            back.cg_level,
+            lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32,
+            "a live level was dropped, or a refused one taken"
+        );
+
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        cfg.video.cg_level = 4;
         assert_eq!(
             unsafe { lowlat_host_start(handle, &raw const cfg) },
             LOWLAT_ERR_INVALID_ARGUMENT
@@ -3728,11 +3803,11 @@ mod start_tests {
         // SAFETY: the call wrote the whole of it.
         let cfg = unsafe { cfg.assume_init() };
         assert_eq!(
-            cfg.cg_level,
+            cfg.video.cg_level,
             lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32
         );
         assert_ne!(
-            cfg.cg_level,
+            cfg.video.cg_level,
             lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32,
             "a zeroed structure already asks for the aggressive level; the defaults must not"
         );
@@ -3796,7 +3871,7 @@ mod start_tests {
         for spoil in [
             (|cfg: &mut lowlat_host_config| cfg.codec = 99) as fn(&mut lowlat_host_config),
             |cfg| cfg.encoder = 99,
-            |cfg| cfg.cg_level = 99,
+            |cfg| cfg.video.cg_level = 99,
             |cfg| cfg.max_guests = 0,
             |cfg| cfg.max_guests = LOWLAT_GUESTS_MAX + 1,
             |cfg| cfg.video.fps = 0,

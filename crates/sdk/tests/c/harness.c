@@ -220,13 +220,13 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
     cfg.max_guests = 4;
     cfg.codec = LOWLAT_CODEC_H264;
     cfg.encoder = LOWLAT_ENCODER_FOLLOW_DISPLAY;
-    cfg.cg_level = LOWLAT_CG_LEVEL_SENSITIVE;
     cfg.exclusive_hold_ms = 500;
     cfg.video.size = (uint32_t) sizeof cfg.video;
     cfg.video.fps = 60;
     cfg.video.bitrate_mbps = 10.0;
     cfg.video.min_bitrate_mbps = 1.0;
     cfg.video.full_fps = true;
+    cfg.video.cg_level = LOWLAT_CG_LEVEL_SENSITIVE;
     cfg.audio.size = (uint32_t) sizeof cfg.audio;
     cfg.audio.bitrate_kbps = 128;
     /* Off, because a harness that opened a sound device would be testing the

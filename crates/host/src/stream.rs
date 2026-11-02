@@ -517,6 +517,12 @@ pub(crate) struct Shared {
     /// not from what the last display allowed, and the host's own display
     /// takes its refresh from it.
     asked_fps: AtomicU32,
+    /// The congestion level last asked for ([`LiveVideo::cg_level`]), for the
+    /// guests' threads.
+    ///
+    /// **Beside the live figure rather than read out of it.** Every guest's
+    /// thread looks at it on every pass, and the lock is the loop's.
+    cg_level: AtomicU32,
     /// What the host's own display is asked to be, and a counter bumped when
     /// that changes: the same counter and lock as the live video above.
     own_asked: AtomicU32,
@@ -765,6 +771,13 @@ struct CursorCell {
 struct Held {
     state: PointerState,
     png: Vec<u8>,
+}
+
+/// A congestion level as the cell holds it. One past the range cannot be
+/// named, so it reads back as the out-of-range index it was, which
+/// [`lowlat_core::congestion::level`] serves at the default.
+fn level_word(level: usize) -> u32 {
+    u32::try_from(level).unwrap_or(u32::MAX)
 }
 
 impl Shared {
@@ -1269,6 +1282,9 @@ pub struct Config {
     /// and it is compatibility-only. This was pinned at 0 in the guest loop and
     /// nothing configured it, so every session ran the setting that declares
     /// congestion on any stale fragment.
+    ///
+    /// **The initial value of the live setting** ([`LiveVideo::cg_level`]),
+    /// as the quality is.
     pub cg_level: usize,
     /// Whether the host plugs its own display when nothing else is lit.
     ///
@@ -1362,7 +1378,8 @@ pub fn own_size(current: (u32, u32), own: OwnDisplay, joining: Option<Declared>)
 /// re-bases the budget and reaches the encoder through the reconfigure it
 /// already does every pass; the frame rate changes the pacing; the quality
 /// moves the running encoder, at a keyframe where its backend needs one, and
-/// rebuilds it only where the backend cannot move at all.
+/// rebuilds it only where the backend cannot move at all; the congestion level
+/// moves every guest from the next pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveVideo {
     /// **A ceiling, not a target.** Capture runs at the display's own rate.
@@ -1381,6 +1398,12 @@ pub struct LiveVideo {
     /// Where this host sits between delay and picture
     /// ([`lowlat_encode::Encoder::set_quality`]).
     pub quality: lowlat_encode::Quality,
+    /// Which congestion level every guest runs at ([`lowlat_core::congestion`]):
+    /// the thresholds its session counts stale fragments by and the ratio its
+    /// controller judges the count by, **one setting moving both halves**. A
+    /// change reaches every controller on the loop's next pass and every
+    /// guest's session on its own, with nothing rebuilt and no keyframe.
+    pub cg_level: usize,
 }
 
 impl Default for LiveVideo {
@@ -1391,6 +1414,7 @@ impl Default for LiveVideo {
             min_mbps: 1.0,
             full_fps: false,
             quality: lowlat_encode::Quality::default(),
+            cg_level: lowlat_core::congestion::DEFAULT_LEVEL,
         }
     }
 }
@@ -1464,8 +1488,10 @@ impl Stream {
                 min_mbps: config.min_mbps,
                 full_fps: config.full_fps,
                 quality: config.quality,
+                cg_level: config.cg_level,
             }),
             asked_fps: AtomicU32::new(config.fps),
+            cg_level: AtomicU32::new(level_word(config.cg_level)),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(config.own_display),
             epoch: AtomicU32::new(0),
@@ -1583,6 +1609,9 @@ impl Stream {
         *held = video;
         drop(held);
         self.shared.asked_fps.store(video.fps, Ordering::Relaxed);
+        self.shared
+            .cg_level
+            .store(level_word(video.cg_level), Ordering::Relaxed);
         self.shared.video_asked.fetch_add(1, Ordering::Release);
     }
 
@@ -1728,6 +1757,16 @@ pub struct Seats {
 }
 
 impl Seats {
+    /// The congestion level this guest's session counts its stale fragments
+    /// at: the one the stream was last asked for, which its controllers judge
+    /// the count by ([`LiveVideo::cg_level`]).
+    ///
+    /// **Read before a seat is taken as well as after**, so a guest arriving
+    /// after a change counts at it from its first pass.
+    pub fn cg_level(&self) -> usize {
+        self.shared.cg_level.load(Ordering::Relaxed) as usize
+    }
+
     /// Take a seat, or `None` when every one is occupied.
     ///
     /// Called by the guest's thread once it is streamable, never before: a
@@ -3614,7 +3653,7 @@ impl FromDevice for tests::Fake {
 fn encode_loop<E: Encoder + FromDevice>(
     shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
-    config: Config,
+    mut config: Config,
     roster: &mut Roster,
     encoder: &mut E,
     display: Option<&mut crate::display::Display>,
@@ -4199,13 +4238,26 @@ fn encode_loop<E: Encoder + FromDevice>(
                 );
                 lowlat_common::log_info!(
                     "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={} \
-                     quality={:?}",
+                     quality={:?} cg_level={}",
                     live.fps,
                     live.bitrate_mbps,
                     live.min_mbps,
                     u8::from(live.full_fps),
-                    live.quality
+                    live.quality,
+                    live.cg_level
                 );
+                // **Every controller judges by the new level from its next
+                // tick**, the guests' sessions counting at it from theirs.
+                if live.cg_level != config.cg_level {
+                    for controller in controllers.iter_mut() {
+                        controller.set_level(live.cg_level);
+                    }
+                }
+                // **What a guest admitted from here on is built at**, which
+                // is otherwise the configuration this run started from.
+                config.cg_level = live.cg_level;
+                config.configured_mbps = live.bitrate_mbps;
+                config.min_mbps = live.min_mbps;
                 // **Asked of the encoder only when it differs**: an
                 // application moving its bitrate sends the quality again as it
                 // was, and a move can cost a keyframe.
@@ -4688,7 +4740,8 @@ fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> boo
 }
 
 /// Put what a running stream was moved to into the configuration the next
-/// build is made from: the quality, and the rate and its floor.
+/// build is made from: the quality, the congestion level, and the rate and
+/// its floor.
 ///
 /// **Everything a build makes from the rate is made from these** -- the
 /// budget, every guest's controller, the encoder's opening rate and Intel's
@@ -4704,6 +4757,7 @@ fn adopt_live_video(shared: &Shared, config: &mut Config) {
         .lock()
         .map_or_else(|held| *held.into_inner(), |held| *held);
     config.quality = live.quality;
+    config.cg_level = live.cg_level;
     config.configured_mbps = live.bitrate_mbps;
     config.min_mbps = live.min_mbps;
 }
@@ -5189,6 +5243,7 @@ mod tests {
             min_mbps: 2.0,
             full_fps: false,
             quality: lowlat_encode::Quality::Highest,
+            cg_level: 2,
         };
         stream.set_video(wanted);
         assert!(
@@ -5389,6 +5444,7 @@ mod tests {
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
                 asked_fps: AtomicU32::new(0),
+                cg_level: AtomicU32::new(1),
                 own_asked: AtomicU32::new(0),
                 own_display: std::sync::Mutex::new(OwnDisplay::default()),
                 epoch: AtomicU32::new(0),
@@ -5482,6 +5538,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
             epoch: AtomicU32::new(0),
@@ -5592,21 +5649,28 @@ mod tests {
     /// what the host started with. The rate and the floor were left out: a
     /// stream rebuilt for another output or a guest's codec ran at the
     /// start-up rate, under the start-up floor, while the read-back said the
-    /// live ones.
+    /// live ones. The congestion level is the third figure every guest's
+    /// controller is built from.
     #[test]
-    fn a_rebuild_is_made_at_the_rate_and_floor_asked_for_last() {
+    fn a_rebuild_is_made_at_what_the_stream_was_moved_to() {
         let (shared, stream, _arrivals) = parked();
         let mut config = test_config(Codec::H264);
         stream.set_video(LiveVideo {
             bitrate_mbps: 4.0,
             min_mbps: 2.0,
             quality: lowlat_encode::Quality::Highest,
+            cg_level: 2,
             ..LiveVideo::default()
         });
         adopt_live_video(&shared, &mut config);
         assert_eq!(
-            (config.configured_mbps, config.min_mbps, config.quality),
-            (4.0, 2.0, lowlat_encode::Quality::Highest),
+            (
+                config.configured_mbps,
+                config.min_mbps,
+                config.quality,
+                config.cg_level
+            ),
+            (4.0, 2.0, lowlat_encode::Quality::Highest, 2),
             "the build was configured from the start, not from the stream"
         );
         assert_eq!(
@@ -6042,6 +6106,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
             epoch: AtomicU32::new(0),
@@ -6229,6 +6294,88 @@ mod tests {
         }
     }
 
+    /// **A level moved while a stream runs reaches every controller, and the
+    /// guest who sits down after it.** A controller left at the old level
+    /// judges the new count by the old ratio, and one built from the
+    /// configuration the run started from keeps the old level for as long as
+    /// its guest stays.
+    #[test]
+    fn a_level_moved_while_it_streams_reaches_every_controller() {
+        let (shared, stream, arrivals) = parked();
+        let first = stream
+            .seats()
+            .take(wake_handle(), wake_handle(), Declared::default())
+            .expect("a seat");
+        let mut encoder = fake_encoder();
+        let moves = Arc::clone(&encoder.moves);
+        let seats = stream.seats();
+        // Kept past the loop, so the second guest is still seated when the
+        // controllers are read.
+        let second: Arc<std::sync::Mutex<Option<SeatHold>>> = Arc::default();
+        let seated = Arc::clone(&second);
+        let (mut step, mut seen) = (0, 0);
+        let watchdog = watcher(&shared, move |shared| {
+            let submitted = moves.lock().expect("the record").submitted;
+            match step {
+                // The change made from outside, as the seam makes it.
+                0 if submitted >= 5 => {
+                    if let Ok(mut live) = shared.video.lock() {
+                        live.cg_level = 0;
+                    }
+                    shared.cg_level.store(0, Ordering::Relaxed);
+                    shared.video_asked.fetch_add(1, Ordering::Release);
+                    seen = submitted;
+                    step = 1;
+                }
+                1 if submitted >= seen + 5 => {
+                    *seated.lock().expect("the seat") =
+                        seats.take(wake_handle(), wake_handle(), Declared::default());
+                    seen = submitted;
+                    step = 2;
+                }
+                2 if submitted >= seen + 5 => return true,
+                _ => {}
+            }
+            false
+        });
+        let mut roster = Roster::default();
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H264),
+            &mut roster,
+            &mut encoder,
+            None,
+            None,
+        );
+        assert!(
+            watchdog.join().expect("watchdog"),
+            "the change never landed"
+        );
+        assert_eq!(exit, Exit::Stopped);
+        assert_eq!(
+            roster.controllers.len(),
+            2,
+            "the second guest was never admitted"
+        );
+        // Level 0 declares on one stale fragment past the window floor; the
+        // level the run started at does not.
+        let floor = lowlat_core::congestion::WINDOW_FLOOR;
+        for (at, controller) in roster.controllers.iter().enumerate() {
+            assert!(
+                controller.is_congested(floor + 1, 1),
+                "controller {at} judges at the level the run started at"
+            );
+        }
+        assert_eq!(
+            stream.seats().cg_level(),
+            0,
+            "the guests read another level"
+        );
+        drop(second);
+        drop(first);
+    }
+
     /// **A configuration set again rebuilds nothing.** An application changing
     /// its bitrate sets the rest as it was -- or as it read it back, which names
     /// the output being captured where it asked for none -- and only another
@@ -6266,6 +6413,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
             epoch: AtomicU32::new(0),

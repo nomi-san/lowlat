@@ -240,10 +240,11 @@ internal static class AppProtocol
             running.minBitrateMbps,
             fullFps,
             output,
-            // **Sent as it stands**: zero is the lowest latency, so a
-            // structure that left it out would move the quality on every
-            // change of rate.
-            running.quality);
+            // **Sent as they stand**: zero is the lowest latency and the most
+            // aggressive congestion level, so a structure that left either
+            // out would move it on every change of rate.
+            running.quality,
+            running.cgLevel);
         if (applied != Status.Ok)
         {
             Console.WriteLine($"app: that configuration was refused: {Text.Describe(applied)}");
