@@ -189,7 +189,8 @@ fn must_send(
     full_fps || changed || refresh || seats_moved || refining || since_forced_ms >= HEARTBEAT_MS
 }
 
-/// How many pictures are still submitted after one stops changing.
+/// How long a picture that stopped changing goes on being submitted: until
+/// every picture of the last `SETTLED_MS` coded small.
 ///
 /// **Suppression had no exit, and that is what made still text soft.** A
 /// settled picture keeps whatever quality the motion that drew it could
@@ -202,15 +203,105 @@ fn must_send(
 /// variable rate against an average far above what a still scene costs, so
 /// each unchanged frame is cheap, the budget goes unspent, and the quantiser
 /// walks down. That is why asking for every picture clears the blur, and this
-/// is the bounded form of the same thing: spend a fixed handful of frames on
-/// the settle, then stop, rather than a permanent stream or nothing at all.
+/// is the bounded form of the same thing: spend the settle refining, then
+/// stop, rather than a permanent stream or nothing at all.
 ///
-/// **A starting figure, to be replaced by a measurement.** A quarter of a
-/// second at sixty frames is enough for a quantiser to move several steps and
-/// small enough that a desk left alone costs nothing once the burst is out.
-/// What it should be is whatever approaches `full_fps`'s picture at a fraction
-/// of its frames, and the rig reproduces that comparison directly.
-const REFINE_FRAMES: u32 = 15;
+/// **It stops when the encoder has nothing left to spend, not after a count.**
+/// Refinement is bits over time. On a cut path a page of changed text codes at
+/// the quantiser's ceiling and past the buffer, the encoder starves the
+/// pictures after it until that is repaid, and only then refines. Measured on
+/// 1080p text, a fixed fifteen pictures left the page at 22 dB at 2 Mbit/s and
+/// 29 at 4, where refining until the encoder went quiet reached 41 dB in 2.6 s
+/// and 45 in 1.4 s, and at 8 Mbit/s 50 in a second. **The quiet is counted only
+/// once the change is paid for** (the bytes since it within what the rate
+/// allowed): a starving encoder codes small pictures too, and at 1 Mbit/s its
+/// starving outlasts the window.
+const SETTLED_MS: f64 = 200.0;
+
+/// The most a picture is refined for after it last changed.
+///
+/// **A bound, not a target**: a path slow enough to reach it is one where a
+/// page is still sharpening, 33 dB at 1 Mbit/s, and a desk left alone has to
+/// stop costing the path something.
+const REFINE_CAP_MS: f64 = 3000.0;
+
+/// The share of a picture's part of the rate under which a picture counts as
+/// small: the encoder spending under a quarter of what it may.
+///
+/// **A share, with no absolute size beside it.** Real text with sub-pixel
+/// colour goes on coding a kilobyte or two a picture at 10 Mbit/s long after
+/// it is sharp, refining toward the quantiser's floor, which a fixed kilobyte
+/// called refining until the bound; and on synthetic text up to 20 Mbit/s the
+/// share stopped at the same picture as the kilobyte, at the same quality.
+const SMALL_SHARE: f64 = 0.25;
+
+/// A picture being refined since it last changed ([`SETTLED_MS`]).
+#[derive(Debug, Clone, Copy)]
+struct Settle {
+    /// When it changed, on the loop's clock.
+    began_ms: f64,
+    /// What has been coded since, in bytes.
+    coded: f64,
+    /// When the encoder last coded a picture that was not small, or was still
+    /// paying for the change.
+    loud_ms: f64,
+}
+
+impl Settle {
+    fn new(now_ms: f64) -> Self {
+        Self {
+            began_ms: now_ms,
+            coded: 0.0,
+            loud_ms: now_ms,
+        }
+    }
+
+    /// Count what one pass collected, against the rate the encoder runs at,
+    /// in bits a second, and the pace it is given pictures at.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "bytes of a few seconds of pictures, exact in a double"
+    )]
+    fn took(&mut self, coded: usize, largest: usize, now_ms: f64, rate_bps: f64, fps: u32) {
+        self.coded += coded as f64;
+        let interval_ms = 1000.0 / f64::from(fps.max(1));
+        let small = rate_bps / 8.0 * interval_ms / 1000.0 * SMALL_SHARE;
+        let allowed = rate_bps / 8.0 * (now_ms - self.began_ms + interval_ms) / 1000.0;
+        if largest as f64 >= small || self.coded > allowed {
+            self.loud_ms = now_ms;
+        }
+    }
+
+    /// Refined as far as it will be, or for as long as it may.
+    fn settled(&self, now_ms: f64) -> bool {
+        now_ms - self.began_ms >= REFINE_CAP_MS || now_ms - self.loud_ms >= SETTLED_MS
+    }
+}
+
+/// Whether this pass submits an unchanged picture to refine it: a change
+/// starts a settle, and one that has settled ends, said once.
+///
+/// **Extracted so the decision can be tested without a display**, which is
+/// the only source that reports a picture unchanged.
+fn refining(settle: &mut Option<Settle>, changed: bool, now_ms: f64) -> bool {
+    if changed {
+        *settle = Some(Settle::new(now_ms));
+        return false;
+    }
+    let Some(running) = *settle else {
+        return false;
+    };
+    if !running.settled(now_ms) {
+        return true;
+    }
+    lowlat_common::log_debug!(
+        "stream: settled {:.0} ms after the change, {:.1} KB coded since",
+        now_ms - running.began_ms,
+        running.coded / 1000.0
+    );
+    *settle = None;
+    false
+}
 
 /// How long a picture may be suppressed before one is sent anyway.
 ///
@@ -3750,8 +3841,9 @@ fn encode_loop<E: Encoder + FromDevice>(
     // When a picture was last actually submitted, which is what the heartbeat
     // measures from. Starts long ago, so the first frame is never suppressed.
     let mut forced_ms = f64::MIN;
-    let mut refine_left = 0u32;
+    let mut settle: Option<Settle> = None;
     let mut suppressed = 0u32;
+    let mut refined = 0u32;
     let mut refreshes = Refreshes::default();
     let mut since_report = 0u32;
     let mut failures = 0u32;
@@ -4067,9 +4159,22 @@ fn encode_loop<E: Encoder + FromDevice>(
             Collected {
                 keyframe: false,
                 failed: false,
+                coded: 0,
+                largest: 0,
             }
         };
         force_keyframe |= collected.keyframe;
+        // **What the encoder spent on a settling picture**, which is what says
+        // when to stop refining it.
+        if let Some(settle) = settle.as_mut() {
+            settle.took(
+                collected.coded,
+                collected.largest,
+                now_ms,
+                budget.applied_mbps() * 1_048_576.0,
+                live.fps,
+            );
+        }
         // **What an encoder read in place goes back as soon as it is done**,
         // before the next composition: held across it, the system's copy of
         // the next picture waits a whole period of its clock.
@@ -4370,16 +4475,8 @@ fn encode_loop<E: Encoder + FromDevice>(
             // burst; one that did not spends a frame of it. So the frames land
             // where the blur is -- just after the motion that drew the picture
             // -- and a desk nobody is touching stops costing anything once the
-            // burst is out.
-            let refining = if changed {
-                refine_left = REFINE_FRAMES;
-                false
-            } else if refine_left > 0 {
-                refine_left -= 1;
-                true
-            } else {
-                false
-            };
+            // encoder has nothing left to spend on it ([`SETTLED_MS`]).
+            let refining = refining(&mut settle, changed, now_ms);
             let send = must_send(
                 live.full_fps,
                 changed,
@@ -4390,6 +4487,7 @@ fn encode_loop<E: Encoder + FromDevice>(
             );
             if send {
                 forced_ms = now_ms;
+                refined = refined.saturating_add(u32::from(refining));
             } else {
                 suppressed = suppressed.saturating_add(1);
                 shared.suppressed.fetch_add(1, Ordering::Relaxed);
@@ -4502,11 +4600,15 @@ fn encode_loop<E: Encoder + FromDevice>(
                     // A static desktop should suppress nearly every frame and a
                     // moving one nearly none, so a figure that never moves in
                     // either direction is the interesting failure.
+                    // **And what refining a still picture cost**, which on a
+                    // slow path runs for seconds after each change.
                     lowlat_common::log_info!(
-                        "stream: suppressed {suppressed} of {} frames since the last report",
+                        "stream: suppressed {suppressed} of {} frames since the last report, \
+                         {refined} sent to refine a still picture",
                         REPORT_FRAMES
                     );
                     suppressed = 0;
+                    refined = 0;
                     shared.refreshes.publish(&refreshes);
                     refreshes = Refreshes::default();
                 }
@@ -4983,6 +5085,11 @@ struct Collected {
     /// for reasons that clear on the next pass, so what says an encoder has
     /// stopped is a run of them, and the run is what the loop counts.
     failed: bool,
+    /// What the pictures taken cost, in bytes, and the largest of them: what
+    /// tells a settling picture that the encoder has stopped refining it
+    /// ([`Settle`]).
+    coded: usize,
+    largest: usize,
 }
 
 /// Take whatever the encoder has finished, and deliver each picture.
@@ -5009,6 +5116,7 @@ fn collect<E: Encoder>(
     refreshes: &mut Refreshes,
 ) -> Collected {
     let mut wanted = false;
+    let (mut coded, mut largest) = (0usize, 0usize);
     loop {
         match encoder.poll() {
             Err(_) => {
@@ -5016,12 +5124,16 @@ fn collect<E: Encoder>(
                 return Collected {
                     keyframe: wanted,
                     failed: true,
+                    coded,
+                    largest,
                 };
             }
             Ok(Poll::Pending) => {
                 return Collected {
                     keyframe: wanted,
                     failed: false,
+                    coded,
+                    largest,
                 };
             }
             Ok(Poll::Ready {
@@ -5029,6 +5141,8 @@ fn collect<E: Encoder>(
                 keyframe,
             }) => {
                 let len = bitstream.len();
+                coded += len;
+                largest = largest.max(len);
                 let collected_at = lowlat_common::clock::Time::now();
                 // The oldest picture in the encoder is the one that came back.
                 let (captured_at, submitted_at) = in_flight
@@ -5073,6 +5187,8 @@ fn collect<E: Encoder>(
                     return Collected {
                         keyframe: wanted,
                         failed: false,
+                        coded,
+                        largest,
                     };
                 };
                 if !writer.fill(bitstream) {
@@ -5092,6 +5208,8 @@ fn collect<E: Encoder>(
                     return Collected {
                         keyframe: wanted,
                         failed: false,
+                        coded,
+                        largest,
                     };
                 }
 
@@ -8102,6 +8220,105 @@ mod tests {
         assert!(
             !must_send(false, false, false, false, 0.0, false),
             "suppression stopped working for everyone else"
+        );
+    }
+
+    /// **A settling picture is refined until the encoder goes quiet, counted
+    /// once the change is paid for.** The figures are a page of text changing
+    /// on a 2 Mbit/s path at 60: the change codes 46 KB, eleven pictures of the
+    /// rate, and the encoder starves the pictures after it while it repays --
+    /// small pictures that say nothing about the page being sharp.
+    #[test]
+    fn a_settling_picture_is_refined_until_the_encoder_goes_quiet() {
+        let (rate, fps) = (2_000_000.0, 60);
+        let step = 1000.0 / 60.0;
+        let mut settle = None;
+        assert!(
+            !refining(&mut settle, true, 0.0),
+            "the change itself is no refinement"
+        );
+        let pass = |settle: &mut Option<Settle>, now: f64, coded: usize| {
+            if let Some(running) = settle.as_mut() {
+                running.took(coded, coded, now, rate, fps);
+            }
+            refining(settle, false, now)
+        };
+        let mut now = 0.0;
+        assert!(pass(&mut settle, now, 46_000), "the change was not refined");
+        // Repaid at about 170 ms; quiet only from then, so settled near 370.
+        while now < 350.0 {
+            now += step;
+            assert!(
+                pass(&mut settle, now, 100),
+                "settled at {now:.0} ms, while the encoder was repaying the change"
+            );
+        }
+        while now < 400.0 {
+            now += step;
+            pass(&mut settle, now, 100);
+        }
+        assert!(
+            settle.is_none(),
+            "still refining at {now:.0} ms with nothing to spend"
+        );
+
+        // **A picture that refines restarts the quiet.**
+        let mut settle = None;
+        refining(&mut settle, true, 0.0);
+        let mut now = 0.0;
+        while now < 150.0 {
+            now += step;
+            pass(&mut settle, now, 100);
+        }
+        assert!(pass(&mut settle, now, 3_000), "a refining picture ended it");
+        let refined_at = now;
+        // Eleven pictures: 183 ms of quiet, short of the window.
+        for _ in 0..11 {
+            now += step;
+            assert!(
+                pass(&mut settle, now, 100),
+                "settled {:.0} ms after a refining picture",
+                now - refined_at
+            );
+        }
+
+        // **And it ends at the bound** however much the encoder goes on
+        // spending.
+        let mut settle = None;
+        refining(&mut settle, true, 0.0);
+        let mut now = 0.0;
+        while now < REFINE_CAP_MS - step {
+            now += step;
+            assert!(
+                pass(&mut settle, now, 4_000),
+                "ended at {now:.0} ms while still refining"
+            );
+        }
+        assert!(
+            !pass(&mut settle, REFINE_CAP_MS, 4_000),
+            "went on past the bound"
+        );
+    }
+
+    /// **Small is a share of the rate.** At 1 Mbit/s and 120 a second a
+    /// picture's whole share is about a kilobyte, so a fixed kilobyte would
+    /// call every picture small; at 10 Mbit/s real text goes on coding a
+    /// kilobyte or two a picture long after it is sharp, which a fixed
+    /// kilobyte called refining until the bound.
+    #[test]
+    fn small_is_a_share_of_what_a_picture_may_cost() {
+        let mut slow = Settle::new(0.0);
+        slow.took(0, 0, 100.0, 1_000_000.0, 120);
+        slow.took(500, 500, 110.0, 1_000_000.0, 120);
+        assert!(
+            (slow.loud_ms - 110.0).abs() < 1e-9,
+            "half a kilobyte passed for small where a picture may cost one"
+        );
+        let mut fast = Settle::new(0.0);
+        fast.took(1_500, 1_500, 100.0, 10_000_000.0, 60);
+        assert!(
+            fast.loud_ms.abs() < 1e-9,
+            "a kilobyte and a half counted as refining at 10 Mbit/s"
         );
     }
 
