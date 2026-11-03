@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-03 - A frame rate changed while streaming is settled as a build settles it
+
+### Fixed
+- **A frame rate of zero asked of a running stream -- the display's own -- paced it at one
+  picture a second** ([06 §3](06-api.md) `fps`), and a rate past the display's refresh was not
+  bounded: a change made while the host streamed was taken as it came, where only a build
+  settled it against the display. Found at the desk choosing the display's own rate from the
+  tray on a 120 Hz panel: the guest's count of pictures rose by two every two seconds until
+  another rate was chosen. A change is now settled against the refresh the last build settled
+  at, and reads back as the pace it settled into; the host's own display, which follows the
+  rate through a rebuild, was never affected.
+- **A tray's quality or congestion level no longer pins the frame rate** to the pace it read
+  back: it starts from the rate asked, so the display's own rate, once chosen, stays chosen.
+
 ## 2026-11-03 - The tray sets the frame rate, the quality and the congestion level
 
 ### Added

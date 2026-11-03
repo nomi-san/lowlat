@@ -1412,6 +1412,12 @@ once, here.
   -- read by the loop that owns the guests and recorded as the desk's; the adaptive level is not
   offered, since it runs as the sensitive one today. Linux's tray offers the same, its channel
   carrying the desk's request ([07 §5.1](07-platforms.md)). Each new check broken once.
+  *Found at the desk the same day:* the display's own frame rate, chosen on the 120 Hz panel, ran
+  at one picture a second -- a change made while the stream ran was taken raw, where only a build
+  settled it -- and a quality or a level asked after it pinned the rate to the pace read back.
+  Both fixed: the stream settles a change as a build does ([06 §3](06-api.md) `fps`, corrected),
+  and the desk asks from the rate asked; the host's own display, which re-plugs for a rate, was
+  never affected.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2750,6 +2756,8 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9: a frame rate changed while streaming is settled as a build settles it, found
+  at the desk; 06 §3 corrected.
 - 2026-11-03: W2.9: the desk sets the frame rate, the quality and the congestion level from the
   tray, on both platforms; 30 Mbps among the rates; a shorter status line.
 - 2026-11-03: W2.9 built, the tray and the clipboard: one menu for both platforms, the icon added
