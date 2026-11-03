@@ -558,6 +558,14 @@ rather than assumed**: a helper says whether its session has one, and a session 
 answered honestly instead of waited on. One mechanism ships today, and a desktop with a
 different one needs its own behind the same capability rather than a change anywhere above.
 
+*Added 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **on Windows copied text
+is a value, not an ownership.** Text put with its bytes stays on the clipboard after the program
+that put it has gone, so the host, which runs in the session, puts a guest's text there itself
+and nothing has to stay alive for the paste. The cost is on the other side: reading text another
+program announced and renders only when asked is a wait on that program, as long as it takes --
+fifteen seconds for one that hung fifteen, measured, with no limit of the system's own -- so the
+reading has a thread of its own that nothing else waits on.
+
 **The policy, though, is not the helper's and not the boundary's.** Copied text travels as an
 opaque application message ([01 §11.1](01-protocol.md)), so the library never sees it and the
 service decides who may have it.
@@ -594,6 +602,13 @@ changes in bursts -- an editor rewrites it several times while one copy settles 
 that sent each one would put a burst of application messages on the wire to describe a single
 copy.
 
+*Added 2026-11-03 (W2.9), for Windows:* **the desktop's clipboard is not read at all until a
+connected guest may have its text** -- not the text and not its length. **And a copy its program
+marked for clipboard monitors to skip, as password managers mark theirs, reaches an owner and no
+other guest**, whatever `guest_clipboard` says: the system's own clipboard history and its sync
+to other devices skip such a copy, and a guest's machine is another device. An owner gets it, as
+an owner gets everything else here.
+
 Nothing new bounds the size: copied text is an application message and is already refused above
 the ceiling those carry.
 
@@ -611,6 +626,15 @@ happen, where a connection announces its role, so a criterion is a comparison ra
 plumbing. And the requirement is written here rather than left in somebody's memory: **being
 local is not a criterion**, and the two candidates are the user who owns the session being
 streamed and a group an administrator puts people in.
+
+*Added 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **on Windows there is no
+channel to connect to, and nothing is deferred.** The tray is the host's own icon on the console
+session's desktop, and who may act through it is whoever is at that desktop: the person there,
+or a guest whose input reaches it, as a guest's input drives the panel on Linux. Another session
+cannot reach its window. A program in the session below the host's integrity can open its menu
+and delete its icon -- the icon is added again whenever an update of it fails -- but a command or
+a key it sends the menu is refused, so it cannot choose from it. A click is recorded on the log
+as the desk's.
 
 **The helper needs none of this**, which is the difference this section opened with. A helper
 makes statements about its own session and is trusted with exactly that, so its credentials
@@ -966,7 +990,16 @@ After Gate B. The differences are contained:
   at a logoff, and at a shutdown, whose sessions end before any service hears of it -- and its
   guests wait for their own timeout. That is a known gap, deferred: the system tells a session's
   end to a window, and of a program in the session to services alone through the console, and
-  this host has no window.
+  this host has no window. (*Amended 2026-11-03:* the tray's window is W2.9's; telling a
+  session's end through it waits on that step's probe.)
+- The tray and the clipboard (*built 2026-11-03*, [impl-plan-windows.md](impl-plan-windows.md)
+  W2.9): threads of the host, each with a window on the session's default desktop, never a
+  program of their own. The host's own icon in the notification area -- the status, a kick for
+  each guest, the rate's ceiling, a notice as a guest arrives and leaves, all as the Linux tray
+  offers them but its quit -- is the system's own display icon, added again whenever it is gone
+  and taken away as the host ends. Copied text crosses both ways behind `guest_clipboard`
+  ([§5.1](#51-the-session-helper-and-the-channel-it-speaks-on)), the desktop's read only while a
+  connected guest may have it.
 
 None of this reaches the protocol core, the IO shell's logic, or the public API.
 
@@ -975,7 +1008,8 @@ chosen when the crate is built, under the same names on every platform, never a 
 dispatched at run time: the shell's system calls, the display and the encoder built on its
 device, the census of what those could code, the input devices a guest's input lands on, the
 decoders a client opens and their table, and (*since W2.0*) the daemon's side of the desktop
-session -- the helper and the tray on Linux, and neither on Windows, where the host itself
+session -- the helper and the tray on Linux, and on Windows the host's own tray and clipboard
+threads (*since W2.9*), since the host itself
 runs in the session. The code above each module -- the loops, the seam,
 the policy -- is written once, and a platform is ported by writing its modules
 ([impl-plan-windows.md](impl-plan-windows.md)).
@@ -1004,7 +1038,7 @@ statically, so neither asks the machine for a redistributable.
 | framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel; on Windows the host's own driver is planned (W3) |
 | audio capture surface | **closed**: the session's sound server, reached over its own socket, no helper (§7) |
-| local channel authorisation | **deferred**: any local user may act, credentials are recorded, and the criterion is one comparison when it is wanted (§5.1) |
+| local channel authorisation | **deferred** on Linux: any local user may act, credentials are recorded, and the criterion is one comparison when it is wanted (§5.1); Windows has no channel, its tray being the console desktop's own (W2.9) |
 
 Six of the ten were closed by one probe, run before Phase 0 rather than at Phase 9. A second
 run of the same probe on different hardware closed the seventh (§3.2), and the first run of the

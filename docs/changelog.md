@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-03 - W2.9: the tray and the clipboard on Windows
+
+### Added
+- **The Windows host's own icon in the notification area**
+  ([impl-plan-windows.md](impl-plan-windows.md) W2.9, [07 §10](07-platforms.md)): what the host
+  is doing, a kick for each guest and the rate's ceiling, and a notice at the desk as a guest
+  arrives and leaves. A thread of the host with a window on the session's desktop, no program of
+  its own; a click is acted on by the loop that owns the guests and recorded as the desk's. The
+  icon is the system's own display icon, added again whenever it is gone -- any program in the
+  session can delete it -- and taken away as the host ends.
+- **Copied text both ways on Windows**, behind `guest_clipboard` as on Linux
+  ([07 §5.1](07-platforms.md)): a guest's text put on the desktop's clipboard with its bytes, so
+  it outlives the host, and the desktop's text sent to the guests that may have it, read on a
+  thread of its own, no more often than every 50 ms, and **not at all until a connected guest may
+  have it**. The host's own write is not read back.
+- **A copy its program marked for clipboard monitors to skip reaches an owner and no other
+  guest**, whatever the setting: a password manager's copy stays on the machine, or with the
+  machine's owner.
+
+### Changed
+- The tray's menu, its description of the room and the desk's two actions are one for both
+  platforms; Linux's tray is unchanged.
+
 ## 2026-11-03 - W2.9 planned: the tray and the clipboard on Windows
 
 ### Decided

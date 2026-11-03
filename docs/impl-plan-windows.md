@@ -47,7 +47,8 @@ are next. *Amended 2026-10-27:* W1.10, the client's Windows zip, built and close
 next. *Amended 2026-10-28:* W1's gate passed on the development machine and W1 closed, its run on
 Linux left at the maintainer's word. *Amended 2026-10-28:* the run on Linux made the same day,
 both Sony pads through SDL's HID layer; W1's gate is passed in full. *Amended 2026-11-03:* W2.9,
-the tray and the clipboard, added and planned at its interview; a probe comes first.
+the tray and the clipboard, added and planned at its interview, probed, and its tray and clipboard
+built; its checks with guests seated and the session's end are next.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -1384,6 +1385,24 @@ once, here.
   host's own write is told by the clipboard's sequence number, and the mark password managers set
   is seen. Still to run: a write while the session is locked, and what the window is told at a
   logoff, a restart and a shutdown.
+  *Built 2026-11-03, the tray and the clipboard; the session's end waits on its probe.* The menu's
+  description and the desk's two actions -- a kick and a change through the reader a guest's own
+  request goes to -- are the platforms' one, Linux's tray drawing the same menu with its quit. The
+  icon is the system's own display icon, added again on the taskbar's word and whenever an update
+  of it fails, and taken away as the host ends; the notice names who arrived and who left over the
+  status line. The clipboard's thread reads on the system's notice of a change, once the
+  connected guests include one the setting gives the desktop's text to, and never otherwise. Each
+  rule has a test seen failing first, and the icon and the clipboard each a test at the desk, off
+  by default, run here against the shell and the clipboard themselves: the icon added, added
+  again after another program deleted it, and taken away; copied text both ways, the host's own
+  write not read back, the mark seen, nothing read while no guest may have it.
+  *Checked at the desk the same day*, the service's host on this build and an established client
+  connecting as the owner: a notice at each arrival and each departure, a kick's included; the
+  desk's rate reaching the client's panel, and the client's own change shown back in the menu; a
+  kick from the menu, recorded as the desk's; copied text both ways. Still to run: a guest who is
+  not the owner under `send` and `both`, a guest's text pasted after the host restarted, a hung
+  program's copy with a guest seated, the boot through the first sign-in and the shell restarted,
+  and S4.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2722,6 +2741,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9 built, the tray and the clipboard: one menu for both platforms, the icon added
+  again whenever it is gone, the clipboard read only for a guest who may have it; the checks with
+  guests seated and the session's end remain.
 - 2026-11-03: W2.9 probed: the shell's messages and the application's own reach a window of the
   system account with no exception, a command or a key to its menu never; any program can delete
   the icon, so it is added again; only the taskbar's broadcast needs its exception; a clipboard
