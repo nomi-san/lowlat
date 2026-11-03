@@ -24,6 +24,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Copied text is read only while a connected guest may have it**, and what a program marks for
   clipboard monitors to skip reaches an owner alone.
 
+### Probed
+- **A window of the system account takes the shell's messages and the application's own with no
+  exception**, from any program in the session: one can open the host's menu, never choose from
+  it -- a command or a key to the menu is refused. **Any program can delete the icon**, so it is
+  added again whenever an update of it fails. Only the taskbar's broadcast needs its exception.
+- **A clipboard read waits as long as another program takes to render what it announced**, with no
+  limit of the system's own: fifteen seconds for one that hung fifteen. The read has a thread of
+  its own.
+- A killed host's icon stays until the pointer passes over it, as any program's does; the notice
+  from the system account is shown and recorded as the same program's run by the user.
+
 ## 2026-11-02 - A still picture refined until it settles
 
 ### Changed

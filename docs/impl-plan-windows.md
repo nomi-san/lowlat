@@ -1334,7 +1334,9 @@ once, here.
   another session, whose input never reaches this one's windows; not another program in the
   session, which, below the system account's integrity, can send the icon's window only the two
   messages it lets through -- that the icon was clicked, and that the taskbar was made again -- and
-  cannot give a menu the input that chooses from it. So the Linux tray's deferred authorisation
+  cannot give a menu the input that chooses from it (*corrected 2026-11-03, probed below:* it can
+  send the click with no exception at all, and delete the icon; it still cannot choose from the
+  menu). So the Linux tray's deferred authorisation
   does not carry over: the desktop is the criterion. One menu for both platforms, drawn from one
   description of the room: the status line, a kick for each guest with the owner and those still
   connecting marked, and the rate's ceiling; no quit, there being no program to close but the
@@ -1366,6 +1368,22 @@ once, here.
   password manager's copy reaching an owner and not a guest; a logoff and a restart with a guest
   seated, the guest told; both CI jobs and the Linux bar, since the menu's description and the
   desk's actions move out of Linux's modules.
+  *Probed 2026-11-03, before any of it was built*, on the development machine, a program of the
+  system account in the console session against the same program run by the user. **The shell's
+  own messages reach its window with no exception**: the notice shown and timed out both arrive.
+  **So does the application's own message posted from below the system account's integrity**: a
+  program in the session can open the menu, though a command or a key sent to the menu is refused,
+  so a choice still takes input at the desk. **Such a program can also delete the icon**, so the
+  icon is added again whenever an update of it fails, at each change and before each notice. A
+  broadcast from below never arrives without its exception, so the taskbar's word that it was made
+  again is the one message let through. A killed host's icon stays in the notification area until
+  the pointer passes over it, as any program's does, and nothing the host could grant changes that.
+  The notice from the system account is shown, and recorded as the same program's run by the
+  user. A read of copied text another program renders only when asked waited fifteen seconds for
+  one that hung fifteen, with no limit of the system's own, the icon's thread unaffected; the
+  host's own write is told by the clipboard's sequence number, and the mark password managers set
+  is seen. Still to run: a write while the session is locked, and what the window is told at a
+  logoff, a restart and a shutdown.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2704,6 +2722,10 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9 probed: the shell's messages and the application's own reach a window of the
+  system account with no exception, a command or a key to its menu never; any program can delete
+  the icon, so it is added again; only the taskbar's broadcast needs its exception; a clipboard
+  read waits on a renderer that hangs.
 - 2026-11-03: W2.9 added and planned at its interview: the tray and the clipboard as threads of the
   host in the session; the notice the notification area's own; a session's end told through the
   tray's window; a probe first.
