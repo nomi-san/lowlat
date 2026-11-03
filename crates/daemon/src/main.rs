@@ -35,10 +35,16 @@ mod session_side;
 mod session_side;
 #[cfg(target_os = "linux")]
 mod sni;
+#[cfg(any(target_os = "linux", windows))]
+mod tray;
+#[cfg(windows)]
+mod windows_clipboard;
 #[cfg(windows)]
 mod windows_install;
 #[cfg(windows)]
 mod windows_service;
+#[cfg(windows)]
+mod windows_tray;
 
 #[cfg(any(target_os = "linux", windows))]
 fn main() {

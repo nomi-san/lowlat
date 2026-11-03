@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use lowlat_host::admission::Admission;
 
 use crate::service::{Introduced, occupancy};
-use crate::{app, channel, dbus, seat, sni};
+use crate::{app, channel, dbus, seat, sni, tray};
 
 /// The session agent: connect outward, say what this is, and hold the
 /// connection for as long as the session does.
@@ -175,7 +175,7 @@ pub(crate) fn tray() -> ! {
             std::process::exit(1);
         }
     };
-    let shown = std::sync::Arc::new(std::sync::Mutex::new(sni::Shown::default()));
+    let shown = std::sync::Arc::new(std::sync::Mutex::new(tray::Shown::default()));
     let writer: Writer = std::sync::Arc::new(std::sync::Mutex::new(None));
     // **The service on its own thread, the bus on this one.** Each is a
     // blocking read, and what one hears the other announces.
@@ -206,7 +206,7 @@ pub(crate) fn tray() -> ! {
 /// shown meanwhile is that there is nothing to show.
 fn follow_service(
     bus: &sni::Bus,
-    shown: &std::sync::Mutex<sni::Shown>,
+    shown: &std::sync::Mutex<tray::Shown>,
     writer: &std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
 ) {
     let mut wait = FIRST_RETRY_MS;
@@ -227,7 +227,7 @@ fn follow_service(
                 // **The first state after a connect is a baseline, not
                 // news.** What is there when the tray first looks is shown;
                 // what changes afterwards is what a person is told about.
-                let mut known: Option<Vec<sni::Guest>> = None;
+                let mut known: Option<Vec<tray::Guest>> = None;
                 let mut body = Vec::new();
                 while channel::read_frame(&mut stream, &mut body).is_ok() {
                     if let Some(state) = channel::is_state(&body)
@@ -236,7 +236,7 @@ fn follow_service(
                         shown.read(&state);
                         bus.changed(&shown);
                         if let Some(before) = known.as_deref() {
-                            for (who, arrived) in sni::arrivals(before, &shown.guests) {
+                            for (who, arrived) in tray::arrivals(before, &shown.guests) {
                                 let what = if arrived { "connected" } else { "disconnected" };
                                 bus.notify(&format!("{who} {what}"), "");
                             }
@@ -270,16 +270,14 @@ fn follow_service(
 /// **Not waited on.** The answer is the state the service pushes back: a
 /// guest gone from the list, a rate marked; a request that changed nothing
 /// is read off the service's own log, where it says who asked.
-fn act(click: sni::Click, writer: &std::sync::Mutex<Option<std::os::unix::net::UnixStream>>) {
+fn act(click: tray::Click, writer: &std::sync::Mutex<Option<std::os::unix::net::UnixStream>>) {
     let frame = match click {
-        sni::Click::Quit => {
+        tray::Click::Quit => {
             lowlat_common::log_info!("tray: quit");
             std::process::exit(0);
         }
-        sni::Click::Kick(guest) => channel::kick(guest),
-        sni::Click::Bitrate(mbps) => channel::config(&serde_json::json!({
-            "video": [{ "encoderMaxBitrate": mbps }],
-        })),
+        tray::Click::Kick(guest) => channel::kick(guest),
+        tray::Click::Bitrate(mbps) => channel::config(&tray::rate_change(mbps)),
     };
     let sent = writer
         .lock()
@@ -573,7 +571,7 @@ impl Side {
         // it (docs/07-platforms.md section 5.1).
         for (uid, said) in channel::take_said() {
             if let Some(text) = channel::is_clipboard(&said) {
-                app::clipboard_to_guests(seam, settings, text.as_bytes());
+                app::clipboard_to_guests(seam, settings, text.as_bytes(), false);
             }
             if let Some(outputs) = channel::is_layout(&said) {
                 // **Kept, and applied only if that session owns the display.**
@@ -677,9 +675,15 @@ impl Side {
     }
 }
 
+/// The session's side for as long as the host runs; nothing to undo here,
+/// where the session's programs are their own.
+#[derive(Debug)]
+pub(crate) struct Listening;
+
 /// Open the channel the session's programs connect to.
-pub(crate) fn listen() {
+pub(crate) fn listen() -> Listening {
     channel::listen();
+    Listening
 }
 
 /// Hand a guest's clipboard to the session in front of the display; false when

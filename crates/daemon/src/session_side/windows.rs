@@ -1,9 +1,11 @@
 //! The session's side of this host, on Windows: no program of its own. The
-//! host runs in the session itself, with no session helper and no tray
-//! (docs/impl-plan-windows.md, W2), and puts a guest's mode on a display
-//! itself (W3.10).
+//! host runs in the session itself, so its tray and the desktop's clipboard
+//! are threads of the host (docs/impl-plan-windows.md W2.9) where Linux has a
+//! helper and a tray the session starts, and it puts a guest's mode on a
+//! display itself (W3.10).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lowlat_host::admission::Admission;
@@ -13,28 +15,114 @@ use lowlat_vdd_ctl::{Controller, Error, Mode, Turn, put_size, put_turn};
 
 use crate::app;
 use crate::service::Introduced;
+use crate::tray::{self, Click};
+use crate::windows_clipboard::Clipboard;
+use crate::windows_tray::Tray;
 
-/// What the session's side keeps between the service's passes: nothing.
-pub(crate) struct Side;
+/// Who a click at the host's own icon is recorded as: whoever is at the
+/// console's desktop, which is the only place a choice in its menu is made.
+const DESK: &str = "the desk";
+
+/// The host's own icon and the desktop's clipboard, for as long as the host
+/// runs; a signaling connection's loop comes and goes beneath them.
+static TRAY: OnceLock<Tray> = OnceLock::new();
+static CLIPBOARD: OnceLock<Clipboard> = OnceLock::new();
+
+/// What the session's side keeps between the service's passes: what the
+/// icon was last shown, and the output's name behind it.
+pub(crate) struct Side {
+    shown: app::Shown,
+    told: Option<serde_json::Value>,
+}
 
 impl Side {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            shown: app::Shown::default(),
+            told: None,
+        }
     }
 
-    /// One pass of the service's loop, on the session's side: nothing to do.
+    /// One pass of the service's loop, on the session's side.
     pub(crate) fn pass(
         &mut self,
-        _seam: &mut Admission,
-        _settings: &app::Settings,
-        _peers: &HashMap<String, Introduced>,
-        _established: &HashSet<String>,
+        seam: &mut Admission,
+        settings: &app::Settings,
+        peers: &HashMap<String, Introduced>,
+        established: &HashSet<String>,
     ) {
+        if let Some(tray) = TRAY.get() {
+            // **Acted on here and attributed**: only this loop may touch the
+            // guests, so the desk's clicks wait in a queue for it.
+            for click in tray.clicks() {
+                match click {
+                    Click::Kick(guest) => app::kick_at_desk(seam, guest, DESK),
+                    Click::Bitrate(mbps) => app::change_at_desk(
+                        seam,
+                        settings,
+                        tray::rate_change(mbps).to_string().as_bytes(),
+                        DESK,
+                    ),
+                    // Not offered: the host's own icon has no program to close.
+                    Click::Quit => {}
+                }
+            }
+            // **Worked out every pass and handed over on change**: the room
+            // and the picture move without an event this loop sees.
+            let state = app::state(seam, &mut self.shown, peers, established);
+            if self.told.as_ref() != Some(&state) {
+                tray.show(state.clone());
+                self.told = Some(state);
+            }
+        }
+        if let Some(clipboard) = CLIPBOARD.get() {
+            clipboard.open(open_to(
+                seam.guests()
+                    .iter()
+                    .map(|guest| (guest.owner, established.contains(&guest.attempt))),
+                settings.guest_clipboard,
+            ));
+            for copied in clipboard.copied() {
+                app::clipboard_to_guests(seam, settings, copied.text.as_bytes(), copied.marked);
+            }
+        }
     }
 }
 
-/// No channel: no session program connects.
-pub(crate) fn listen() {}
+/// Whether a connected guest, owner or not, may have the desktop's text. Until
+/// one may, the desktop's clipboard is not read at all.
+fn open_to(guests: impl IntoIterator<Item = (bool, bool)>, setting: app::Clipboard) -> bool {
+    guests
+        .into_iter()
+        .any(|(owner, connected)| connected && setting.gives_to(owner))
+}
+
+/// The session's side for as long as the host runs: the icon is taken away
+/// as the host ends, since a host gone with its icon still added leaves the
+/// icon in the notification area until the pointer passes over it.
+#[derive(Debug)]
+pub(crate) struct Listening;
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        if let Some(tray) = TRAY.get() {
+            tray.leave();
+        }
+    }
+}
+
+/// Start the host's own icon and the desktop's clipboard: threads of the
+/// host, which runs in the session. Either that cannot start is said, and the
+/// host runs without it.
+pub(crate) fn listen() -> Listening {
+    if let Some(tray) = Tray::start() {
+        let _ = TRAY.set(tray);
+    }
+    if let Some(clipboard) = Clipboard::start() {
+        let _ = CLIPBOARD.set(clipboard);
+    }
+    Listening
+}
 
 pub(crate) fn session() -> ! {
     refuse("session")
@@ -49,9 +137,10 @@ fn refuse(role: &str) -> ! {
     std::process::exit(2);
 }
 
-/// No session program to take a guest's clipboard.
-pub(crate) fn clipboard(_body: &[u8]) -> bool {
-    false
+/// Put a guest's text on the desktop's clipboard; false where there is no
+/// clipboard to put it on.
+pub(crate) fn clipboard(body: &[u8]) -> bool {
+    CLIPBOARD.get().is_some_and(|clipboard| clipboard.put(body))
 }
 
 /// A request for a mode being put, one at a time.
@@ -245,6 +334,22 @@ mod tests {
             Road::Display,
             "an unshown monitor's empty name named something"
         );
+    }
+
+    /// **Nothing is read with nobody to send it to**: no guest, a guest not yet
+    /// connected, or one the setting gives nothing keeps the desktop's
+    /// clipboard unread; a connected owner opens it whatever the setting.
+    #[test]
+    fn the_desktops_clipboard_is_read_only_for_a_connected_guest_who_may_have_it() {
+        use app::Clipboard::{Both, Off, Send};
+        let (owner, guest, connected, seated) = (true, false, true, false);
+        assert!(!open_to([], Both));
+        assert!(!open_to([(guest, seated)], Both));
+        assert!(!open_to([(owner, seated)], Off));
+        assert!(!open_to([(guest, connected)], Off));
+        assert!(!open_to([(guest, connected)], Send));
+        assert!(open_to([(guest, connected)], Both));
+        assert!(open_to([(guest, seated), (owner, connected)], Off));
     }
 
     /// The wire's turns are the controller's, digit for digit.

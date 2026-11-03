@@ -44,18 +44,25 @@ lowlat-vdd-ctl.workspace = true
 lowlat-crypto.workspace = true
 # The service manager, the token and process calls, the job, the registry and
 # the file security: the system's own declarations, as the IO shell uses them.
+# The tray's window, menu and icon and the clipboard (W2.9): the same crate's
+# user-interface and data-exchange declarations, no new dependency.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
     "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [lints]

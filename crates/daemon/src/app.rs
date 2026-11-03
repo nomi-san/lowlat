@@ -98,11 +98,18 @@ impl Clipboard {
         owner || matches!(self, Self::Send | Self::Both)
     }
 
-    /// Whether the desktop's clipboard may reach this guest. Asked by the
-    /// session's side, which only Linux has so far.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    const fn gives_to(self, owner: bool) -> bool {
+    /// Whether the desktop's clipboard may reach this guest.
+    pub(crate) const fn gives_to(self, owner: bool) -> bool {
         owner || matches!(self, Self::Both)
+    }
+
+    /// Whether one copy of the desktop's reaches this guest: as `gives_to`
+    /// says, and **a copy the program that made it marked for clipboard
+    /// monitors to skip -- a password manager's -- an owner's alone**. The
+    /// mark is the system's own word for that, honoured where the system has
+    /// one (docs/07-platforms.md section 5.1).
+    const fn reaches(self, owner: bool, marked: bool) -> bool {
+        self.gives_to(owner) && (owner || !marked)
     }
 }
 
@@ -411,7 +418,6 @@ pub(crate) fn on_message(
 /// **Non-zero, and one the peer already has words for.** A peer carries on
 /// through a zero, and a value outside its own enumeration shows as a blank
 /// reason rather than as one.
-#[cfg(target_os = "linux")]
 const KICKED: i32 = 5;
 
 /// Act on what a tray asked for, saying who asked.
@@ -429,37 +435,48 @@ pub(crate) fn on_action(
 ) {
     let by = format!("tray pid={} uid={}", who.pid, who.uid);
     if let Some(guest) = crate::channel::is_kick(body) {
-        if seam.kick_guest(guest, KICKED) {
-            lowlat_common::log_info!("lowlatd: guest {guest} kicked, asked by {by}");
-        } else {
-            lowlat_common::log_info!("lowlatd: {by} asked to kick guest {guest}, who is not here");
-        }
+        kick_at_desk(seam, guest, &by);
     }
-    // **The same reader a guest's request goes to**, so what a tray may change
-    // and what a guest may change are one rule rather than two that drift.
     if let Some(config) = crate::channel::is_config(body) {
-        let listed = Display::outputs();
-        let described = describe(
-            seam.picture(),
-            &listed,
-            Display::preferred().as_deref(),
-            seam.captured(),
-            seam.rotation(),
-            settings,
-            seam.video(),
-        );
-        // **The tray is the desk**, whose person changes the machine's display
-        // where they sit: everything a guest's owner may change.
-        apply(
-            seam,
-            &config,
-            &described,
-            &listed,
-            &by,
-            true,
-            crate::session_side::ask_mode,
-        );
+        change_at_desk(seam, settings, &config, &by);
     }
+}
+
+/// End a guest's session because the desk asked, saying who did.
+pub(crate) fn kick_at_desk(seam: &mut Admission, guest: u32, by: &str) {
+    if seam.kick_guest(guest, KICKED) {
+        lowlat_common::log_info!("lowlatd: guest {guest} kicked, asked by {by}");
+    } else {
+        lowlat_common::log_info!("lowlatd: {by} asked to kick guest {guest}, who is not here");
+    }
+}
+
+/// Change the stream because the desk asked, saying who did.
+///
+/// **The same reader a guest's request goes to**, so what a tray may change
+/// and what a guest may change are one rule rather than two that drift.
+pub(crate) fn change_at_desk(seam: &mut Admission, settings: &Settings, config: &[u8], by: &str) {
+    let listed = Display::outputs();
+    let described = describe(
+        seam.picture(),
+        &listed,
+        Display::preferred().as_deref(),
+        seam.captured(),
+        seam.rotation(),
+        settings,
+        seam.video(),
+    );
+    // **The tray is the desk**, whose person changes the machine's display
+    // where they sit: everything a guest's owner may change.
+    apply(
+        seam,
+        config,
+        &described,
+        &listed,
+        by,
+        true,
+        crate::session_side::ask_mode,
+    );
 }
 
 /// What a tray is shown, and the one part of it that costs something to
@@ -469,7 +486,6 @@ pub(crate) fn on_action(
 /// else a tray shows is a field the seam already holds; the name needs the
 /// display devices enumerated, which is not something to do twenty times a
 /// second for an icon.
-#[cfg(target_os = "linux")]
 #[derive(Debug, Default)]
 pub(crate) struct Shown {
     captured: u32,
@@ -478,9 +494,8 @@ pub(crate) struct Shown {
 
 /// The host as a tray would show it: the picture, its rate, and who is here.
 ///
-/// **Whether anybody needs to hear it is the channel's decision**, which
+/// **Whether anybody needs to hear it is the caller's decision**, which
 /// compares against what it last sent; this only says what is true now.
-#[cfg(target_os = "linux")]
 pub(crate) fn state(
     seam: &Admission,
     shown: &mut Shown,
@@ -533,16 +548,21 @@ pub(crate) fn state(
     })
 }
 
-/// Pass the desktop's own clipboard to the guests that may have it.
+/// Pass the desktop's own clipboard to the guests that may have it; `marked`
+/// is a copy its program asked clipboard monitors to skip.
 ///
 /// **Sent rather than offered, because that is the shape the message has.**
 /// Copied text travels as an application message with no request behind it, so
 /// a host that waited to be asked would never send one.
-#[cfg(target_os = "linux")]
-pub(crate) fn clipboard_to_guests(seam: &mut Admission, settings: &Settings, text: &[u8]) {
+pub(crate) fn clipboard_to_guests(
+    seam: &mut Admission,
+    settings: &Settings,
+    text: &[u8],
+    marked: bool,
+) {
     let mut reached = 0u32;
     for guest in seam.guests() {
-        if !settings.guest_clipboard.gives_to(guest.owner) {
+        if !settings.guest_clipboard.reaches(guest.owner, marked) {
             continue;
         }
         if seam.send_user_data(guest.number, id::CLIPBOARD, text) {
@@ -1618,6 +1638,23 @@ mod tests {
         for setting in [Clipboard::Off, Clipboard::Send, Clipboard::Both] {
             assert!(setting.takes_from(owner), "{setting:?}");
             assert!(setting.gives_to(owner), "{setting:?}");
+        }
+    }
+
+    /// **A copy its program marked for clipboard monitors to skip -- a
+    /// password manager's -- reaches an owner and no guest**, whatever the
+    /// setting; an unmarked copy reaches whom the setting says.
+    #[test]
+    fn a_marked_copy_reaches_an_owner_alone() {
+        let (guest, owner, marked) = (false, true, true);
+        for setting in [Clipboard::Off, Clipboard::Send, Clipboard::Both] {
+            assert!(setting.reaches(owner, marked), "{setting:?}");
+            assert!(!setting.reaches(guest, marked), "{setting:?}");
+            assert_eq!(
+                setting.reaches(guest, !marked),
+                setting.gives_to(guest),
+                "{setting:?}"
+            );
         }
     }
 

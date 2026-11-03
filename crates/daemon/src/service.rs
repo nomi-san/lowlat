@@ -611,8 +611,7 @@ pub(crate) struct Introduced {
     /// The address an answer or a candidate goes to.
     pub(crate) from: String,
     /// The account's name, or empty for a peer the service did not name.
-    /// Read by the tray, which only Linux's session side has.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Read by the tray.
     pub(crate) name: String,
 }
 
@@ -914,7 +913,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // program connects when its session starts, which is not when somebody
     // decides to stream, and nothing on the channel is load bearing either way
     // (docs/07-platforms.md section 5.1).
-    session_side::listen();
+    let _listening = session_side::listen();
     let mut seam = Admission::new(Config {
         microphone: Some(hear),
         pad_sink: None,
