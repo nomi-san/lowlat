@@ -46,7 +46,8 @@ menu, the maintainer's decision, its decoder created on the GPU it draws on; W1.
 are next. *Amended 2026-10-27:* W1.10, the client's Windows zip, built and closed; W1's gate is
 next. *Amended 2026-10-28:* W1's gate passed on the development machine and W1 closed, its run on
 Linux left at the maintainer's word. *Amended 2026-10-28:* the run on Linux made the same day,
-both Sony pads through SDL's HID layer; W1's gate is passed in full.
+both Sony pads through SDL's HID layer; W1's gate is passed in full. *Amended 2026-11-03:* W2.9,
+the tray and the clipboard, added and planned at its interview; a probe comes first.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -787,7 +788,8 @@ once, here.
   of its own ([05 §9.5](05-host.md)).
 - **The service.** Two roles of the daemon: the service, under the service manager as the
   system account in session 0, which only starts and watches the host; and the host above. No
-  session role, since the host is in the session, and no tray in W2. The service starts the
+  session role, since the host is in the session, and no tray in W2 (*amended 2026-11-03:* W2.9's
+  tray and clipboard are threads of the host itself, still no role). The service starts the
   host from its own token moved to the console session, in a job that ends the host with the
   service; starts it again two seconds after a failed exit; and on a change of the console's
   session asks the old host to end, then terminates it after a timeout. Its configuration is an
@@ -1090,7 +1092,8 @@ once, here.
   for their own timeout, where the established host, a windowed program, hears its session
   ending through its window and tells them the host shut down. The system's console notices of
   either reach services alone (measured: none arrived at a logoff), and this host has no
-  window; the decision waits for a window of the host's own or the Windows tray.
+  window; the decision waits for a window of the host's own or the Windows tray. *Planned
+  2026-11-03:* W2.9 tells them through the tray's window, wherever the system tells that window.
 - [ ] **W2.6 a program left out of the sound** (*added 2026-10-15, at W2.4's review; not in the
   gate*): the system's capture of everything but one program's process tree, for a voice
   program whose sound would otherwise reach the guests it is talking to. Its setting through
@@ -1306,6 +1309,63 @@ once, here.
   desk. Both CI jobs green on the branch as pushed before the gate's fix, which passed the same
   checks on the development machine and in a Linux environment.
   *Closed 2026-10-25.*
+- [ ] **W2.9 the tray and the clipboard** (*added and planned 2026-11-03, at its interview; not in
+  the gate below, it has its own*): what the session's side does on Linux
+  ([07 §5.1](07-platforms.md)), done by the host itself, which runs in the session: an icon in the
+  notification area that shows what the host is doing and kicks a seated guest or sets the rate's
+  ceiling, a notice at the desk as a guest arrives and leaves, and copied text in both directions
+  behind `guest_clipboard`. **No program of its own, no channel and no helper**: two threads of the
+  host, each with a window on the session's default desktop, started once with the host and never
+  moved to the input desktop. Until it is built a guest's arrival shows nothing at the desk on
+  Windows, and a guest's copied text is dropped.
+  *Decided at the interview:* **the notice is the notification area's own** -- a balloon on the
+  host's icon, which the system draws as a notification and keeps in its list -- put up by the host
+  itself, nothing running in the user's context; held back while the system's do-not-disturb rules
+  are on, and listed then. Whether the system shows a notice from a process of the system account,
+  and how it titles one, is the probe's to answer, and a no goes back to the maintainer before
+  anything is built on it. **A session's end is told through the same window**, W2.5's known gap:
+  where the system tells the window its session is ending -- at the end itself, never at the
+  question before it, which another program can still refuse -- every seated guest is told the host
+  shut down at a shutdown, and that the host system is changing at a logoff, and the host waits for
+  each within the time the system allows; a case in which the probe finds the window told nothing
+  stays the known gap, now measured.
+  *Planned with it:* **who may act through the icon is the console's desktop** -- the person at it,
+  and a guest whose input reaches it, as on Linux, where a guest's input drives the panel. Not
+  another session, whose input never reaches this one's windows; not another program in the
+  session, which, below the system account's integrity, can send the icon's window only the two
+  messages it lets through -- that the icon was clicked, and that the taskbar was made again -- and
+  cannot give a menu the input that chooses from it. So the Linux tray's deferred authorisation
+  does not carry over: the desktop is the criterion. One menu for both platforms, drawn from one
+  description of the room: the status line, a kick for each guest with the owner and those still
+  connecting marked, and the rate's ceiling; no quit, there being no program to close but the
+  host; an action acted on by the loop that owns the guests, through the reader a guest's own
+  request goes to, and recorded on the log as the desk's. The system's own display icon, the
+  status line its tooltip; the icon added again whenever the taskbar is made, so it appears at the
+  first sign-in after a boot to the logon screen and after the shell restarts. **Copied text on
+  Windows is a value, not an ownership**: put with its bytes, it stays pasteable after the host is
+  gone. Text alone, its line ends as they came; read on the system's notice of a change, no more
+  often than every 50 ms, and **never while no connected guest may have it**; the host's own write
+  not read back to the guest that sent it; read on a thread of its own, since text another program
+  renders only when asked is a wait on that program; and **what a program marks for clipboard
+  monitors to skip, as password managers do, reaches an owner and no other guest**. The library
+  and its header are untouched ([06](06-api.md)).
+  **A probe comes first**: the icon, its menu and both messages through to a process of the system
+  account, each refused without its exception; the taskbar made again and the first sign-in; a
+  click and a choice forged by a program in the session; whether an icon outlives a host that was
+  killed; the notice from the system account -- shown, titled, under do-not-disturb, listed; copied
+  text both ways between the host and an ordinary program, the host's own write, a program that
+  renders only when asked and then hangs, a write while the session is locked; and what the host's
+  window is told at a logoff, a restart and a shutdown, and how long it has.
+  Checked by: on the development machine, the service's host with established clients on Windows
+  and macOS: the icon from a boot at the logon screen through the first sign-in, after the shell
+  restarts, and after the host is killed and started again; with a guest seated, the status, a
+  kick and a rate from the desk, each on the log as the desk's, and the notice as a guest arrives
+  and leaves; copied text both ways under `off`, `send` and `both`, as a guest and as an owner --
+  nothing either way under `off`, nothing read with no guest connected, a guest's text pasted
+  after the host restarted, a hung program's copy leaving the stream and the icon untouched, a
+  password manager's copy reaching an owner and not a guest; a logoff and a restart with a guest
+  seated, the guest told; both CI jobs and the Linux bar, since the menu's description and the
+  desk's actions move out of Linux's modules.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2644,6 +2704,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9 added and planned at its interview: the tray and the clipboard as threads of the
+  host in the session; the notice the notification area's own; a session's end told through the
+  tray's window; a probe first.
 - 2026-10-28: W1's gate run on Linux made: ten minutes at the desk, both Sony pads through SDL's
   HID layer; the gate passed in full.
 - 2026-10-28: W1's gate passed, its run on Linux left (the maintainer's decision); W1 closed.

@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-03 - W2.9 planned: the tray and the clipboard on Windows
+
+### Decided
+- **The Windows host does what Linux's session side does, itself**
+  ([impl-plan-windows.md](impl-plan-windows.md) W2.9): an icon in the notification area with the
+  room's status, a kick for each guest and the rate's ceiling; a notice at the desk as a guest
+  arrives and leaves; copied text in both directions behind `guest_clipboard`. Two threads of the
+  host, each with a window on the session's desktop: no program of its own, no channel and no
+  helper. A probe comes first.
+- **The notice is the notification area's own**, a balloon on the host's icon, put up by the host
+  as the system account; whether the system shows and titles one from that account is the probe's
+  first question.
+- **A session's end is told through the tray's window**: the host shutting down at a shutdown, the
+  host system changing at a logoff, wherever the system tells that window; a case it does not stays
+  the known gap, measured.
+- **Who may act through the icon is the console's desktop**: the person at it and a guest whose
+  input reaches it; no other session, and no program in the session below the host's integrity.
+  The Linux tray's deferred authorisation does not carry over.
+- **Copied text is read only while a connected guest may have it**, and what a program marks for
+  clipboard monitors to skip reaches an owner alone.
+
 ## 2026-11-02 - A still picture refined until it settles
 
 ### Changed
