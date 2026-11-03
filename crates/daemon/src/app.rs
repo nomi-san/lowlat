@@ -546,11 +546,11 @@ pub(crate) fn state(
     serde_json::json!({
         "output": shown.output,
         "width": width,
-        // The ceiling asked for, zero the display's own; the rate it runs at
-        // under it; and the refresh bounding it, none where the display
-        // follows the ceiling.
-        "fps": live.fps,
-        "pace": lowlat_host::stream::paced(live.fps, shown.refresh),
+        // The ceiling asked for, zero the display's own; the rate the stream
+        // settled into under it, as it reads back; and the refresh bounding
+        // it, none where the display follows the ceiling.
+        "fps": seam.asked_fps().unwrap_or(live.fps),
+        "pace": live.fps,
         "refresh": if shown.own { 0 } else { shown.refresh },
         "bitrate": bitrate_mbps,
         "quality": quality_word(live.quality),
@@ -593,9 +593,16 @@ fn quality_named(word: &str) -> Option<lowlat_host::stream::Quality> {
 fn asked_at_desk(
     ask: &serde_json::Value,
     running: lowlat_host::stream::LiveVideo,
+    asked_fps: u32,
     ceiling: u32,
 ) -> Option<lowlat_host::stream::LiveVideo> {
-    let mut wanted = running;
+    // **From the frame rate asked, not the pace read back**: a quality or a
+    // level asked from the pace would ask that pace as the ceiling, and the
+    // display's own rate, once chosen, would be gone at the next click.
+    let mut wanted = lowlat_host::stream::LiveVideo {
+        fps: asked_fps,
+        ..running
+    };
     if let Some(fps) = ask.get("fps").and_then(serde_json::Value::as_u64) {
         let fps = u32::try_from(fps).ok()?;
         wanted.fps = if fps == 0 {
@@ -631,7 +638,7 @@ pub(crate) fn set_at_desk(
     ask: &serde_json::Value,
     by: &str,
 ) {
-    let Some(running) = seam.video() else {
+    let (Some(running), Some(asked_fps)) = (seam.video(), seam.asked_fps()) else {
         return;
     };
     let listed = Display::outputs();
@@ -644,11 +651,17 @@ pub(crate) fn set_at_desk(
         settings,
         seam.video(),
     );
-    let Some(wanted) = asked_at_desk(ask, running, ceiling(&described, &listed)) else {
+    let ceiling = ceiling(&described, &listed);
+    let Some(wanted) = asked_at_desk(ask, running, asked_fps, ceiling) else {
         lowlat_common::log_info!("lowlatd: {by} asked for something this host does not set: {ask}");
         return;
     };
-    if wanted == running {
+    if wanted
+        == (lowlat_host::stream::LiveVideo {
+            fps: asked_fps,
+            ..running
+        })
+    {
         return;
     }
     lowlat_common::log_info!(
@@ -1770,7 +1783,7 @@ mod tests {
             fps: 60,
             ..LiveVideo::default()
         };
-        let asked = |ask: serde_json::Value, ceiling| asked_at_desk(&ask, running, ceiling);
+        let asked = |ask: serde_json::Value, ceiling| asked_at_desk(&ask, running, 60, ceiling);
         let fps = |ask, ceiling| asked(ask, ceiling).map(|live| live.fps);
         assert_eq!(fps(serde_json::json!({ "fps": 240 }), 120), Some(120));
         assert_eq!(fps(serde_json::json!({ "fps": 30 }), 120), Some(30));
@@ -1800,6 +1813,22 @@ mod tests {
             serde_json::json!({}),
         ] {
             assert_eq!(asked(refused.clone(), 60), None, "{refused}");
+        }
+        // **The display's own rate outlives a quality or a level** asked after
+        // it: the stream reads back its pace, 120, and the request stays zero.
+        let following = LiveVideo {
+            fps: 120,
+            ..LiveVideo::default()
+        };
+        for ask in [
+            serde_json::json!({ "quality": "balanced" }),
+            serde_json::json!({ "cgLevel": 2 }),
+        ] {
+            assert_eq!(
+                asked_at_desk(&ask, following, 0, 120).map(|live| live.fps),
+                Some(0),
+                "{ask} pinned the pace"
+            );
         }
         // The words the state is told in are the words the desk asks in,
         // every quality one of the menu's, and the menu's every word one.

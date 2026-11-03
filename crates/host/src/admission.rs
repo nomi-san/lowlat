@@ -1662,6 +1662,12 @@ impl Admission {
         self.stream.as_ref().map(crate::stream::Stream::video)
     }
 
+    /// The frame rate last asked of the stream, zero for the display's own,
+    /// where [`Self::video`] answers the pace it settled into.
+    pub fn asked_fps(&self) -> Option<u32> {
+        self.stream.as_ref().map(crate::stream::Stream::asked_fps)
+    }
+
     /// Take the queue, so a caller can poll it without holding this.
     ///
     /// **Once, and then this stops answering.** Two consumers would each see

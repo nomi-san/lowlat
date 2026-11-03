@@ -608,6 +608,10 @@ pub(crate) struct Shared {
     /// not from what the last display allowed, and the host's own display
     /// takes its refresh from it.
     asked_fps: AtomicU32,
+    /// The refresh the last build settled the pace against, zero where it had
+    /// none, so a request made while the stream runs is settled against it as
+    /// a build settles one ([`take_live_video`]).
+    settled_refresh: AtomicU32,
     /// The congestion level last asked for ([`LiveVideo::cg_level`]), for the
     /// guests' threads.
     ///
@@ -1582,6 +1586,7 @@ impl Stream {
                 cg_level: config.cg_level,
             }),
             asked_fps: AtomicU32::new(config.fps),
+            settled_refresh: AtomicU32::new(0),
             cg_level: AtomicU32::new(level_word(config.cg_level)),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(config.own_display),
@@ -1751,6 +1756,12 @@ impl Stream {
         }
         self.select_output(output.clone());
         *configured = output;
+    }
+
+    /// The frame rate last asked for, zero for the display's own, where
+    /// [`Self::video`] answers the pace it settled into.
+    pub fn asked_fps(&self) -> u32 {
+        self.shared.asked_fps()
     }
 
     /// What the stream is running at now.
@@ -3246,6 +3257,7 @@ fn requested(asked: &mpsc::Receiver<Option<String>>) -> Option<Option<String>> {
 /// another rate has to move the pacing, not only what the encoder was built
 /// for.
 fn settle_pace(shared: &Shared, asked: u32, refresh_hz: u32) -> u32 {
+    shared.settled_refresh.store(refresh_hz, Ordering::Relaxed);
     let settled = paced(asked, refresh_hz);
     if let Ok(mut live) = shared.video.lock() {
         if live.fps == settled {
@@ -4834,10 +4846,19 @@ fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> boo
         return false;
     }
     *seen = asked;
-    *live = shared
-        .video
-        .lock()
-        .map_or_else(|held| *held.into_inner(), |held| *held);
+    // **Settled as a build settles it** (06 section 3): zero is the display's
+    // own rate and any request is bounded by the refresh the last build
+    // settled at, the pace written back under the same lock, so what reads
+    // back is what the loop runs at. Taken raw, a zero paced the loop at one
+    // picture a second and a request past the display was not bounded.
+    let refresh_hz = shared.settled_refresh.load(Ordering::Relaxed);
+    *live = match shared.video.lock() {
+        Ok(mut held) => {
+            held.fps = paced(held.fps, refresh_hz);
+            *held
+        }
+        Err(poisoned) => *poisoned.into_inner(),
+    };
     true
 }
 
@@ -5562,6 +5583,7 @@ mod tests {
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
                 asked_fps: AtomicU32::new(0),
+                settled_refresh: AtomicU32::new(0),
                 cg_level: AtomicU32::new(1),
                 own_asked: AtomicU32::new(0),
                 own_display: std::sync::Mutex::new(OwnDisplay::default()),
@@ -5656,6 +5678,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            settled_refresh: AtomicU32::new(0),
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
@@ -5761,6 +5784,32 @@ mod tests {
             "the request was overwritten by a pace"
         );
         assert_eq!(settle_pace(&shared, shared.asked_fps(), 144), 144);
+    }
+
+    /// **A request made while the stream runs is settled as a build settles
+    /// one**: zero, the display's own rate, is the refresh the last build
+    /// settled at, never a picture a second; a request past it is bounded;
+    /// one under it stands; and the request itself is kept apart.
+    #[test]
+    fn a_rate_asked_while_running_is_settled_as_a_build_settles_it() {
+        let (shared, stream, _arrivals) = parked();
+        assert_eq!(settle_pace(&shared, shared.asked_fps(), 120), 120);
+        let mut seen = shared.video_asked.load(Ordering::Acquire);
+        let mut live = stream.video();
+        for (asked, paced) in [(0, 120), (240, 120), (30, 30), (0, 120)] {
+            stream.set_video(LiveVideo {
+                fps: asked,
+                ..stream.video()
+            });
+            assert!(take_live_video(&shared, &mut seen, &mut live));
+            assert_eq!(live.fps, paced, "asked {asked}");
+            assert_eq!(stream.video().fps, paced, "the read-back for {asked}");
+            assert_eq!(stream.asked_fps(), asked, "the request kept for {asked}");
+        }
+        assert!(
+            !take_live_video(&shared, &mut seen, &mut live),
+            "taken twice"
+        );
     }
 
     /// **A rebuild is made at what a running stream was moved to**, not at
@@ -6224,6 +6273,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            settled_refresh: AtomicU32::new(0),
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
@@ -6531,6 +6581,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             asked_fps: AtomicU32::new(0),
+            settled_refresh: AtomicU32::new(0),
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
