@@ -1403,6 +1403,15 @@ once, here.
   not the owner under `send` and `both`, a guest's text pasted after the host restarted, a hung
   program's copy with a guest seated, the boot through the first sign-in and the shell restarted,
   and S4.
+  *Added the same day, at the maintainer's ask after that run:* **the desk also sets the frame
+  rate, the quality and the congestion level**, a submenu each, and the rate offers 30 Mbps; the
+  status line is the state and how many guests are seated alone, the rest being the marked
+  entries. No guest's message carries the quality or the level, which are the hosting
+  application's settings, so the three travel as the desk's own request -- the frame rate clamped
+  as a guest's is, the display's own rate among its choices, those past a panel's refresh greyed
+  -- read by the loop that owns the guests and recorded as the desk's; the adaptive level is not
+  offered, since it runs as the sensitive one today. Linux's tray offers the same, its channel
+  carrying the desk's request ([07 §5.1](07-platforms.md)). Each new check broken once.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2741,6 +2750,8 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9: the desk sets the frame rate, the quality and the congestion level from the
+  tray, on both platforms; 30 Mbps among the rates; a shorter status line.
 - 2026-11-03: W2.9 built, the tray and the clipboard: one menu for both platforms, the icon added
   again whenever it is gone, the clipboard read only for a guest who may have it; the checks with
   guests seated and the session's end remain.

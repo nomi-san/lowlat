@@ -28,7 +28,8 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
 - **Input** through the kernel: keyboard, pointer, and an emulated controller.
 - **The session side**: the desktop's layout and orientation followed live, a guest's request
   for a display size or a turn, the screen kept awake while somebody is watching, the
-  clipboard in either direction behind a setting, a tray with a kick per guest and the rate,
+  clipboard in either direction behind a setting, a tray with a kick per guest, the rate, the
+  frame rate, the quality and the congestion level,
   and a desktop notification when a guest arrives or leaves.
 - **Browsers** as guests over a second pipe on the same signaling, including a page of our own
   ([examples/web-client](examples/web-client)).

@@ -678,6 +678,16 @@ A guest arriving or leaving is also a desktop notification, put up by the tray t
 session's notification service; it announces a media path coming up or going down, never a
 seat taken or an attempt abandoned, and never what was already there when the tray first looked.
 
+*Amended 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **a tray also sets the
+frame-rate ceiling, the quality and the congestion level**, on both platforms. No guest's
+message carries the last two -- they are the hosting application's settings -- so these three
+travel as the desk's own frame, read by the loop that owns the guests and recorded as an
+action is; the frame rate is clamped to the captured display's refresh as a guest's is, and the
+display's own rate, which a guest's message cannot ask for, is one of its choices. The menu
+marks the setting in force in each, greys a frame rate past what the display presents, and
+offers no adaptive level, which runs as the sensitive one until something of the host's own is
+behind it. The line a tray shows is the state and how many guests are seated, and nothing more.
+
 #### The rules that matter more than the encoding
 
 1. **The stream never depends on the helper.** No frame waits on it, no encode consults it,
@@ -995,8 +1005,9 @@ After Gate B. The differences are contained:
 - The tray and the clipboard (*built 2026-11-03*, [impl-plan-windows.md](impl-plan-windows.md)
   W2.9): threads of the host, each with a window on the session's default desktop, never a
   program of their own. The host's own icon in the notification area -- the status, a kick for
-  each guest, the rate's ceiling, a notice as a guest arrives and leaves, all as the Linux tray
-  offers them but its quit -- is the system's own display icon, added again whenever it is gone
+  each guest, the rate's ceiling, the frame rate, the quality and the congestion level (*added
+  the same day*, §5.1), a notice as a guest arrives and leaves, all as the Linux tray offers them
+  but its quit -- is the system's own display icon, added again whenever it is gone
   and taken away as the host ends. Copied text crosses both ways behind `guest_clipboard`
   ([§5.1](#51-the-session-helper-and-the-channel-it-speaks-on)), the desktop's read only while a
   connected guest may have it.

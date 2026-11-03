@@ -3,6 +3,22 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-03 - The tray sets the frame rate, the quality and the congestion level
+
+### Added
+- **Three submenus in the tray, on both platforms** ([07 §5.1](07-platforms.md)): the
+  frame-rate ceiling (the display's own rate, or 30 to 240, those past the captured display's
+  refresh greyed and none where the display follows the ceiling), the quality (lowest latency,
+  balanced, highest) and the congestion level (aggressive, sensitive, relaxed), each marking the
+  setting in force. A change reaches the running stream as a guest's does and is recorded as the
+  desk's; one made with nobody connected is kept for the next stream.
+- **30 Mbps among the tray's rates.**
+
+### Changed
+- **The tray's status line is the state and how many guests are seated** -- "Streaming to 1
+  guest" -- in its tooltip, its menu and its notices; the display, the size, the rates and the
+  codec it carried before are each the marked entry of a submenu, or on the guest's own screen.
+
 ## 2026-11-03 - W2.9: the tray and the clipboard on Windows
 
 ### Added
