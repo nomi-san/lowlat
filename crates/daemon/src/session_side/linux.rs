@@ -278,6 +278,12 @@ fn act(click: tray::Click, writer: &std::sync::Mutex<Option<std::os::unix::net::
         }
         tray::Click::Kick(guest) => channel::kick(guest),
         tray::Click::Bitrate(mbps) => channel::config(&tray::rate_change(mbps)),
+        tray::Click::Fps(_) | tray::Click::Quality(_) | tray::Click::CgLevel(_) => {
+            let Some(ask) = tray::desk_ask(click) else {
+                return;
+            };
+            channel::desk(&ask)
+        }
     };
     let sent = writer
         .lock()

@@ -440,6 +440,9 @@ pub(crate) fn on_action(
     if let Some(config) = crate::channel::is_config(body) {
         change_at_desk(seam, settings, &config, &by);
     }
+    if let Some(ask) = crate::channel::is_desk(body) {
+        set_at_desk(seam, settings, &ask, &by);
+    }
 }
 
 /// End a guest's session because the desk asked, saying who did.
@@ -482,17 +485,21 @@ pub(crate) fn change_at_desk(seam: &mut Admission, settings: &Settings, config: 
 /// What a tray is shown, and the one part of it that costs something to
 /// find out.
 ///
-/// **The output's name is re-read only when the capture moves.** Everything
-/// else a tray shows is a field the seam already holds; the name needs the
-/// display devices enumerated, which is not something to do twenty times a
+/// **The output's name and refresh are re-read only when the capture moves.**
+/// Everything else a tray shows is a field the seam already holds; these need
+/// the display devices enumerated, which is not something to do twenty times a
 /// second for an icon.
 #[derive(Debug, Default)]
 pub(crate) struct Shown {
     captured: u32,
     output: String,
+    refresh: u32,
+    /// The host's own display, which follows the frame-rate ceiling.
+    own: bool,
 }
 
-/// The host as a tray would show it: the picture, its rate, and who is here.
+/// The host as a tray would show it: the picture, what the desk may set, and
+/// who is here.
 ///
 /// **Whether anybody needs to hear it is the caller's decision**, which
 /// compares against what it last sent; this only says what is true now.
@@ -505,23 +512,22 @@ pub(crate) fn state(
     let captured = seam.captured();
     if captured != shown.captured {
         shown.captured = captured;
-        shown.output = lowlat_host::display::captured(&Display::outputs(), captured)
+        let listed = Display::outputs();
+        let found = lowlat_host::display::captured(&listed, captured);
+        shown.output = found
             .map(|output| output.connector.clone())
             .unwrap_or_default();
+        shown.refresh = found.map_or(0, |output| output.refresh_hz);
+        shown.own = found.is_some_and(|output| output.id == lowlat_host::display::VIRTUAL);
     }
-    let (width, height) = seam.picture().unwrap_or((0, 0));
+    let (width, _) = seam.picture().unwrap_or((0, 0));
+    let live = seam.video().unwrap_or_default();
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "a live bitrate in megabits, rounded and floored at zero"
     )]
-    let (fps, bitrate_mbps) = seam.video().map_or((0, 0), |live| {
-        (live.fps, live.bitrate_mbps.round().max(0.0) as u32)
-    });
-    let codec = seam.colour().map_or("", |(codec, _, _)| match codec {
-        lowlat_host::stream::Codec::H264 => "h264",
-        lowlat_host::stream::Codec::H265 => "h265",
-    });
+    let bitrate_mbps = live.bitrate_mbps.round().max(0.0) as u32;
     // **Seated is not connected.** A guest has a number from the answer
     // onward, before its media path exists, and a tray telling somebody that
     // a guest arrived should mean the guest is there.
@@ -540,12 +546,128 @@ pub(crate) fn state(
     serde_json::json!({
         "output": shown.output,
         "width": width,
-        "height": height,
-        "fps": fps,
+        // The ceiling asked for, zero the display's own; the rate it runs at
+        // under it; and the refresh bounding it, none where the display
+        // follows the ceiling.
+        "fps": live.fps,
+        "pace": lowlat_host::stream::paced(live.fps, shown.refresh),
+        "refresh": if shown.own { 0 } else { shown.refresh },
         "bitrate": bitrate_mbps,
-        "codec": codec,
+        "quality": quality_word(live.quality),
+        "cgLevel": live.cg_level,
         "guests": guests,
     })
+}
+
+/// The qualities in the order [`crate::tray::QUALITIES`] names them, so the
+/// words are written once, there.
+const QUALITY_ORDER: [lowlat_host::stream::Quality; 3] = [
+    lowlat_host::stream::Quality::LowestLatency,
+    lowlat_host::stream::Quality::Balanced,
+    lowlat_host::stream::Quality::Highest,
+];
+
+/// A quality as the desk's words name it.
+fn quality_word(quality: lowlat_host::stream::Quality) -> &'static str {
+    QUALITY_ORDER
+        .iter()
+        .position(|listed| *listed == quality)
+        .and_then(|at| crate::tray::QUALITIES.get(at))
+        .map_or("", |(_, word)| word)
+}
+
+/// The quality a desk's word names, if it names one.
+fn quality_named(word: &str) -> Option<lowlat_host::stream::Quality> {
+    crate::tray::QUALITIES
+        .iter()
+        .position(|(_, named)| *named == word)
+        .and_then(|at| QUALITY_ORDER.get(at).copied())
+}
+
+/// What the desk asks of the running stream, applied to it: the frame rate,
+/// the quality or the congestion level, or nothing for words it does not know.
+///
+/// **The frame rate is clamped as a guest's is** (`ceiling`, the same rule);
+/// zero, which a guest's message cannot ask since there it means "no change",
+/// is the display's own rate.
+fn asked_at_desk(
+    ask: &serde_json::Value,
+    running: lowlat_host::stream::LiveVideo,
+    ceiling: u32,
+) -> Option<lowlat_host::stream::LiveVideo> {
+    let mut wanted = running;
+    if let Some(fps) = ask.get("fps").and_then(serde_json::Value::as_u64) {
+        let fps = u32::try_from(fps).ok()?;
+        wanted.fps = if fps == 0 {
+            0
+        } else {
+            lowlat_host::stream::paced(fps, ceiling)
+        };
+        return Some(wanted);
+    }
+    if let Some(word) = ask.get("quality").and_then(serde_json::Value::as_str) {
+        wanted.quality = quality_named(word)?;
+        return Some(wanted);
+    }
+    let level = ask.get("cgLevel").and_then(serde_json::Value::as_u64)?;
+    wanted.cg_level = usize::try_from(level)
+        .ok()
+        .filter(|level| *level <= HIGHEST_LEVEL)?;
+    Some(wanted)
+}
+
+/// The highest congestion level a stream takes: adaptive, past the three
+/// tunings.
+const HIGHEST_LEVEL: usize = 3;
+
+/// Set what only the desk sets -- the frame rate, the quality, the congestion
+/// level -- saying who asked. **A guest's message carries none of the last
+/// two**, which are the hosting application's settings, so the desk has this
+/// path of its own; an owner's guest still sets the frame rate through its
+/// own client, by the rule a guest's request goes through.
+pub(crate) fn set_at_desk(
+    seam: &mut Admission,
+    settings: &Settings,
+    ask: &serde_json::Value,
+    by: &str,
+) {
+    let Some(running) = seam.video() else {
+        return;
+    };
+    let listed = Display::outputs();
+    let described = describe(
+        seam.picture(),
+        &listed,
+        Display::preferred().as_deref(),
+        seam.captured(),
+        seam.rotation(),
+        settings,
+        seam.video(),
+    );
+    let Some(wanted) = asked_at_desk(ask, running, ceiling(&described, &listed)) else {
+        lowlat_common::log_info!("lowlatd: {by} asked for something this host does not set: {ask}");
+        return;
+    };
+    if wanted == running {
+        return;
+    }
+    lowlat_common::log_info!(
+        "lowlatd: {by} set the stream, fps={} quality={} cg_level={}",
+        wanted.fps,
+        quality_word(wanted.quality),
+        wanted.cg_level
+    );
+    seam.set_video(wanted);
+}
+
+/// The ceiling a frame rate asked for is clamped to: the captured display's
+/// refresh, or none where the display is the host's own, which follows it.
+fn ceiling(video: &Video, listed: &[Selectable]) -> u32 {
+    if video.output == lowlat_host::display::VIRTUAL {
+        0
+    } else {
+        refresh_of(listed, &video.output)
+    }
 }
 
 /// Pass the desktop's own clipboard to the guests that may have it; `marked`
@@ -1060,12 +1182,7 @@ fn apply(
     // **The host's own display follows the rate rather than bounding it**: its
     // refresh is put at what is asked, and the stream settles its pace once
     // the display has followed.
-    let ceiling = if video.output == lowlat_host::display::VIRTUAL {
-        0
-    } else {
-        refresh_of(listed, &video.output)
-    };
-    wanted.fps = asked_fps(first, running.fps, ceiling);
+    wanted.fps = asked_fps(first, running.fps, ceiling(video, listed));
     if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
         wanted.full_fps = asked;
     }
@@ -1638,6 +1755,59 @@ mod tests {
         for setting in [Clipboard::Off, Clipboard::Send, Clipboard::Both] {
             assert!(setting.takes_from(owner), "{setting:?}");
             assert!(setting.gives_to(owner), "{setting:?}");
+        }
+    }
+
+    /// **The desk sets what it names and nothing else**: the frame rate
+    /// clamped as a guest's is, zero the display's own and never clamped, a
+    /// display that follows the rate bounding nothing; a quality by its word;
+    /// a level up to adaptive. A word it does not know, a level past the last
+    /// and an ask naming nothing change nothing.
+    #[test]
+    fn the_desk_sets_what_it_names_and_nothing_else() {
+        use lowlat_host::stream::{LiveVideo, Quality};
+        let running = LiveVideo {
+            fps: 60,
+            ..LiveVideo::default()
+        };
+        let asked = |ask: serde_json::Value, ceiling| asked_at_desk(&ask, running, ceiling);
+        let fps = |ask, ceiling| asked(ask, ceiling).map(|live| live.fps);
+        assert_eq!(fps(serde_json::json!({ "fps": 240 }), 120), Some(120));
+        assert_eq!(fps(serde_json::json!({ "fps": 30 }), 120), Some(30));
+        assert_eq!(fps(serde_json::json!({ "fps": 240 }), 0), Some(240));
+        assert_eq!(fps(serde_json::json!({ "fps": 0 }), 120), Some(0));
+        assert_eq!(
+            asked(serde_json::json!({ "quality": "balanced" }), 60).map(|live| live.quality),
+            Some(Quality::Balanced)
+        );
+        assert_eq!(
+            asked(serde_json::json!({ "quality": "latency" }), 60).map(|live| live.quality),
+            Some(Quality::LowestLatency)
+        );
+        assert_eq!(
+            asked(serde_json::json!({ "cgLevel": 3 }), 60).map(|live| live.cg_level),
+            Some(3)
+        );
+        assert_eq!(
+            asked(serde_json::json!({ "cgLevel": 0 }), 60).map(|live| (live.cg_level, live.fps)),
+            Some((0, 60)),
+            "a level moved the frame rate"
+        );
+        for refused in [
+            serde_json::json!({ "quality": "best" }),
+            serde_json::json!({ "cgLevel": 4 }),
+            serde_json::json!({ "encoderMaxBitrate": 20 }),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(asked(refused.clone(), 60), None, "{refused}");
+        }
+        // The words the state is told in are the words the desk asks in,
+        // every quality one of the menu's, and the menu's every word one.
+        for quality in QUALITY_ORDER {
+            assert_eq!(quality_named(quality_word(quality)), Some(quality));
+        }
+        for (_, word) in crate::tray::QUALITIES {
+            assert_eq!(quality_named(word).map(quality_word), Some(word));
         }
     }
 

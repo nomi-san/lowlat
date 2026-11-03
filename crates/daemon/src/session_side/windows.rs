@@ -63,6 +63,11 @@ impl Side {
                         tray::rate_change(mbps).to_string().as_bytes(),
                         DESK,
                     ),
+                    Click::Fps(_) | Click::Quality(_) | Click::CgLevel(_) => {
+                        if let Some(ask) = tray::desk_ask(click) {
+                            app::set_at_desk(seam, settings, &ask, DESK);
+                        }
+                    }
                     // Not offered: the host's own icon has no program to close.
                     Click::Quit => {}
                 }

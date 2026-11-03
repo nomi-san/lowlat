@@ -807,7 +807,8 @@ impl Bus {
 mod tests {
     use super::*;
     use crate::tray::{
-        Guest, KICK_AT, NOBODY, QUIT, RATE_AT, RATES, SEPARATOR_AT, STATUS, arrivals,
+        FRAMES, Guest, KICK_AT, LEVELS, NOBODY, QUALITY, QUIT, RATE_AT, RATES, SEPARATOR_AT,
+        STATUS, arrivals,
     };
 
     /// A reader for what the writer makes, so a layout can be walked back.
@@ -854,10 +855,12 @@ mod tests {
             connected: true,
             output: "DP-4".to_string(),
             width: 2560,
-            height: 1440,
             fps: 120,
+            pace: 120,
+            refresh: 144,
             bitrate_mbps: 20,
-            codec: "h265".to_string(),
+            quality: "latency".to_string(),
+            cg_level: 1,
             guests: vec![
                 Guest {
                     number: 1,
@@ -875,8 +878,8 @@ mod tests {
     }
 
     /// **The menu says what the host is doing and offers what a tray may
-    /// ask for**: a kick per guest, the rate, and quitting; and the rate in
-    /// force is the one marked.
+    /// ask for**: a kick per guest, the rate, the frame rate, the quality, the
+    /// congestion level, and quitting; and the rate in force is the one marked.
     #[test]
     fn the_menu_lists_each_guest_and_marks_the_rate_in_force() {
         let shown = shown();
@@ -903,6 +906,9 @@ mod tests {
                 KICK_AT + 3,
                 SEPARATOR_AT + 1,
                 RATES,
+                FRAMES,
+                QUALITY,
+                LEVELS,
                 SEPARATOR_AT + 2,
                 QUIT
             ]
@@ -910,7 +916,7 @@ mod tests {
         let tree = menu(&shown, true);
         assert_eq!(
             tree.find(STATUS).expect("status").label,
-            "Streaming DP-4 2560x1440 at 120 fps, 20 Mbps h265, 2 guests"
+            "Streaming to 2 guests"
         );
         assert!(!tree.find(STATUS).expect("status").enabled);
         assert_eq!(
@@ -930,6 +936,7 @@ mod tests {
                 (RATE_AT + 5, Some(false)),
                 (RATE_AT + 10, Some(false)),
                 (RATE_AT + 20, Some(true)),
+                (RATE_AT + 30, Some(false)),
                 (RATE_AT + 50, Some(false)),
             ]
         );
@@ -957,7 +964,9 @@ mod tests {
         assert_eq!(shown.line(), "lowlatd is not running");
         let tree = menu(&shown, true);
         assert!(!tree.find(NOBODY).expect("no guests").enabled);
-        assert!(!tree.find(RATES).expect("rates").enabled);
+        for parent in [RATES, FRAMES, QUALITY, LEVELS] {
+            assert!(!tree.find(parent).expect("a submenu").enabled, "{parent}");
+        }
         assert!(
             tree.find(QUIT).expect("quit").enabled,
             "quitting always works"
@@ -969,8 +978,8 @@ mod tests {
     #[test]
     fn what_the_service_says_is_what_is_shown() {
         let state = serde_json::json!({
-            "output": "DP-4", "width": 2560, "height": 1440, "fps": 120,
-            "bitrate": 20, "codec": "h265",
+            "output": "DP-4", "width": 2560, "fps": 120, "pace": 120, "refresh": 144,
+            "bitrate": 20, "quality": "latency", "cgLevel": 1,
             "guests": [
                 { "id": 1, "owner": true, "name": "someone@example.org", "connected": true },
                 { "id": 3, "owner": false, "connected": true },

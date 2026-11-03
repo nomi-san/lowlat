@@ -446,6 +446,20 @@ pub(crate) fn is_config(body: &[u8]) -> Option<Vec<u8>> {
     Some(config.to_string().into_bytes())
 }
 
+/// A tray's request for what only the desk sets -- the frame rate, the
+/// quality, the congestion level -- in the words its state is told in.
+pub(crate) fn desk(ask: &serde_json::Value) -> Vec<u8> {
+    serde_json::json!({ "desk": ask }).to_string().into_bytes()
+}
+
+/// The desk's request a frame carries.
+pub(crate) fn is_desk(body: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("desk")
+        .cloned()
+}
+
 /// The state a frame carries, as the service described it.
 pub(crate) fn is_state(body: &[u8]) -> Option<serde_json::Value> {
     serde_json::from_slice::<serde_json::Value>(body)
@@ -1587,11 +1601,13 @@ mod tests {
         write_frame(&mut far, &kick(3)).expect("a kick");
         let wanted = serde_json::json!({ "video": [{ "encoderMaxBitrate": 20 }] });
         write_frame(&mut far, &config(&wanted)).expect("a change");
+        let asked = serde_json::json!({ "quality": "balanced" });
+        write_frame(&mut far, &desk(&asked)).expect("a desk's setting");
         drop(far);
         served.join().expect("served");
 
         let acted = take_acted();
-        assert_eq!(acted.len(), 2, "both actions queued: {acted:?}");
+        assert_eq!(acted.len(), 3, "every action queued: {acted:?}");
         let (who, body) = &acted[0];
         assert_eq!(who.pid, std::process::id().cast_signed());
         assert_eq!(is_kick(body), Some(3));
@@ -1601,6 +1617,10 @@ mod tests {
         let carried: serde_json::Value =
             serde_json::from_slice(&is_config(body).expect("a config")).expect("json");
         assert_eq!(carried, wanted);
+        assert_eq!(is_desk(body), None);
+        let (_, body) = &acted[2];
+        assert_eq!(is_desk(body), Some(asked));
+        assert_eq!((is_kick(body), is_config(body)), (None, None));
         // Nothing a tray says is taken as a session's statement.
         assert!(take_said().is_empty(), "a tray spoke for a session");
 
