@@ -492,7 +492,9 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   the GPU that drives the window's monitor. A per-user GPU preference reorders the high-performance query
   too, so it cannot stand in for a laptop whose two orders differ. Recorded rather than passed:
   by handle on one GPU presenting to another's monitor, 0.5 KB a draw and the processor time
-  climbing, to a full core in ten minutes at 120 draws a second -- open, below the toolkit. Not
+  climbing, to a full core in ten minutes at 120 draws a second -- open, below the toolkit
+  (*closed 2026-11-04*: a thread-safe device grew with the render target's view made at every
+  draw; the toolkit's is single-threaded now, and ten minutes are flat). Not
   run, left to W1's gate: wireless Sony pads on Windows and the Linux pads through SDL.
 - [x] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the

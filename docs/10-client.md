@@ -476,7 +476,9 @@ time than planes, 13 to 15 % of a core against 4 to 6, not yet explained. (*Expl
 2026-09-30, W1.6, and fixed 2026-10-27*: the example client's toolkit opened every plane's
 texture again at every draw, and drawing on one GPU while presenting to another's monitor grew
 the process with every draw, its processor time climbing with it -- the figure was the climb's
-average. It opens a picture's textures once now.)
+average. It opens a picture's textures once now, and its device is single-threaded
+(*2026-11-04*): a thread-safe one presenting across GPUs grew with every view made and let go,
+the render target's at each draw, 0.5 KB a draw with the climb.)
 
 ### §4.3 On macOS (*planned 2026-10-29*, M1; *built 2026-10-30*, the planes at M1.2 and the handle at M1.3)
 

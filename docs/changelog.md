@@ -3,6 +3,51 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-04 - By handle across GPUs the demo stays flat
+
+### Fixed
+- **By handle on one GPU presenting to another's monitor the demo grew 0.5 KB a draw and its
+  processor time climbed**, to most of a core in ten minutes at 120 draws a second
+  ([10 §4.2](10-client.md)): the toolkit's Direct3D 11 device was thread-safe, and a thread-safe
+  device presenting across GPUs grows with every view made and let go, which the toolkit's context
+  does for its render target at every draw. The device is single-threaded now, a context being
+  drawn from one thread ([PROVENANCE](../third_party/matoya/PROVENANCE.md)). Recorded on 2026-10-27
+  as below the toolkit: the growth is, what feeds it was not.
+
+### Measured
+- **What grows**, without the library or a host, the AMD GPU drawing textures another device there
+  writes to the RTX 5060's monitor at 120 draws a second. On a thread-safe device: the render
+  target's view made at every draw 0.50 KB a draw, kept 0.00; with the planes opened at every draw
+  as well, the toolkit before 2026-10-27, 14.29, and 13.85 with the view kept. On a single-threaded
+  device: 0.00 with both made at every draw.
+- **The climb is inside the present call**: PresentMon's time in it went from 0.48 to 2.32 ms in
+  four and a half minutes at 120 draws a second, which is the climb in processor time, and stayed
+  at 0.14 ms through the same minutes on the single-threaded device.
+
+### Checked
+- **Ten minutes side by side** in that arrangement: the toolkit as rebuilt held 98 MB and 5 to 6 %
+  of a core at 120 draws a second throughout; as it was, it went from 99 to 130 MB and from 22 %
+  of a core at two minutes to 83 % at ten, down to 95 draws a second at the end.
+- **What the flag could have broken**: the context made again on another GPU 86 times across the
+  three, as pictures that move make it, and the window resized 146 times on the AMD and the NVIDIA,
+  a picture on the screen after each and the memory within what the toolkit before it did.
+- The toolkit built from its makefile.
+
+### Known
+- **A Windows checkout that already has the toolkit's archive needs `nmake` in
+  `third_party/matoya` to take this**: the demo's CMake keeps an archive it finds.
+
+### Open
+- **The Arc presenting to another GPU's monitor still grows**: 127 MB in five minutes by handle, a
+  thread-safe device with a view per draw and a single-threaded one with its view kept alike, in
+  jumps of about 27 MB with 0.6 to 0.8 KB a draw between them, and by planes too; its processor
+  time flat. About 0.3 KB of that is the second device's clear alone, which a decoder may not
+  share. Whether it levels off is not known.
+
+### Not run
+- Against an established host: the pictures here are a second device's clears, the arrangement of
+  2026-10-27, whose figures this reproduces.
+
 ## 2026-11-04 - A change of frame rate moves the running encoder
 
 ### Changed
