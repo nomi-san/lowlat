@@ -3,6 +3,22 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-04 - The demo leaves the pointer alone from behind
+
+### Fixed
+- **A host leaving relative mode moved the pointer with the demo behind other windows**: the demo
+  put it back where the host said whether its window was in front or not, taking it from whatever
+  the user was doing. It does so only in front now, by `MTY_AppIsActive`. The toolkit's
+  `MTY_AppCanWarpCursor`, asked as well, says whether a platform can warp at all: true on every
+  desktop, with the window anywhere.
+
+### Checked
+- Behind another window the toolkit answers 1 and 0 to those two. The demo's input compiles at
+  its warnings with both Windows compilers.
+
+### Not run
+- A host's pointer leaving relative mode with the demo in front and behind, which takes a host.
+
 ## 2026-11-04 - By handle across GPUs the demo stays flat
 
 ### Fixed
