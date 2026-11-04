@@ -129,9 +129,11 @@ static bool d3d11_ctx_init(struct d3d11_ctx *ctx)
 	sd.Flags = ctx->flags;
 
 	// A named adapter takes the unknown driver type; the default adapter the hardware one.
+	// Single-threaded, as a context is drawn from one thread: a thread-safe device presenting to
+	// another GPU's monitor grows with every view made and let go, its processor time with it
 	IDXGIAdapter *named = d3d11_ctx_adapter();
 	HRESULT e = D3D11CreateDevice(named, named ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-		NULL, 0, NULL, 0, D3D11_SDK_VERSION, &ctx->device, NULL, &ctx->context);
+		NULL, D3D11_CREATE_DEVICE_SINGLETHREADED, NULL, 0, D3D11_SDK_VERSION, &ctx->device, NULL, &ctx->context);
 
 	if (named)
 		IDXGIAdapter_Release(named);

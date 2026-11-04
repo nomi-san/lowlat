@@ -117,6 +117,17 @@ never hands a window the release of a key let go while Command is held, so that 
 |---|---|
 | `src/unix/apple/macosx/app.m` | an RGBA cursor given no size (`MTY_AppSetCursorSize`) is sized at its pixels over the backing scale of the first window's screen, its hotspot divided alike; the content view lays the app's cursor over its bounds as a cursor rect, invalidated at every change of cursor, so AppKit sets that one wherever it would set its own; the event pump hands a key release that carries the Command flag to its window as well, before AppKit's dispatch drops it |
 
+The Direct3D 11 device is single-threaded, a context being drawn from one thread. Upstream's is
+thread-safe, and a thread-safe device presenting to another GPU's monitor grows with every view
+made and let go: the render target's view upstream's context makes at every draw grew the process
+by some 0.5 KB a draw across GPUs, its processor time climbing to most of a core in ten minutes at
+120 draws a second. A single-threaded device grows by neither that nor the 14 KB a draw of opening
+the planes at every draw.
+
+| file | change |
+|---|---|
+| `src/windows/gfx/d3d11-ctx.c` | the context's device is made with `D3D11_CREATE_DEVICE_SINGLETHREADED`, so a window's context is made, drawn from and freed on one thread |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 
