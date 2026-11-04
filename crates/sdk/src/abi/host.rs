@@ -98,8 +98,9 @@ pub enum lowlat_quality {
 /// **Split out because the split is real.** Everything here is applied without
 /// rebuilding anything the session rests on: a bitrate re-bases the budget and
 /// reaches the encoder through the reconfigure the rate loop already performs,
-/// a frame rate changes the pacing from the next frame, and the quality moves
-/// the running encoder. What is not here -- the codec, the encoder, the guest
+/// a frame rate that moves the pace rebuilds the encoder around it for one
+/// coded refresh, every guest keeping its seat, and the quality moves the
+/// running encoder. What is not here -- the codec, the encoder, the guest
 /// limit, the ports -- is settled when hosting starts, because changing it
 /// means building the pipeline again.
 ///
@@ -2168,11 +2169,12 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 /// **Everything in this structure is applied without rebuilding the session.**
 /// The bitrate re-bases the budget and reaches the encoder through the
 /// reconfigure the rate loop already does, so it costs no keyframe and no
-/// interruption; the frame rate changes the pacing from the next frame. The
-/// output is the exception in cost rather than in kind: a different picture
-/// cannot be absorbed into a stream built for another one, so it rebuilds
-/// around the new source and costs one coded refresh, keeping every guest on
-/// its seat and its channel.
+/// interruption. The output and a frame rate that moves the pace are the
+/// exceptions in cost rather than in kind: a different picture cannot be
+/// absorbed into a stream built for another one, and an encoder shares its
+/// rate out per picture at the rate it was built at, so each rebuilds around
+/// the change and costs one coded refresh, keeping every guest on its seat and
+/// its channel.
 ///
 /// **The quality moves the running encoder** (minor 37), asked of it only when
 /// it differs from what the stream runs at, so sending it again as it stands

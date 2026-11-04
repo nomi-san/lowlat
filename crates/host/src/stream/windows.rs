@@ -13,8 +13,8 @@ use lowlat_common::clock::{self, Time};
 use lowlat_core::control::status;
 
 use super::{
-    Backend, Codec, Config, DISPLAY_WAIT, Declared, Exit, FromDevice, Join, Roster, Shared,
-    encode_loop, own_refresh, own_size, settle_pace, start_bps,
+    Backend, Codec, Config, DISPLAY_WAIT, Declared, Exit, FromDevice, Join, OwnDisplay, Roster,
+    Shared, encode_loop, own_refresh, own_size, settle_pace, start_bps,
 };
 use crate::display::own::FIRST_SIZE;
 use crate::display::{Capturable, Display, Register, Registration, VIRTUAL};
@@ -107,11 +107,30 @@ impl Own {
         }
         let current = self.display.wanted().unwrap_or(FIRST_SIZE);
         // **Only for the display the stream is about to capture**: a guest
-        // arriving to watch another output says nothing about this one.
-        let joining = joining.filter(|_| Display::captures_own(config.output.as_deref()));
+        // arriving to watch another output says nothing about this one, nor
+        // does the frame rate that output is watched at ([`held_refresh`]).
+        let captured = Display::captures_own(config.output.as_deref());
+        let joining = joining.filter(|_| captured);
         let (width, height) = own_size(current, asked, joining);
-        self.display.hold(width, height, refresh);
+        self.display.hold(
+            width,
+            height,
+            held_refresh(captured, shared.asked_fps(), asked),
+        );
     }
+}
+
+/// The refresh the host's own display is held at: one asked of it, and the
+/// stream's frame-rate ceiling ([`own_refresh`]) only while the stream
+/// captures it.
+///
+/// **A stream of another output leaves it alone.** Followed regardless, each
+/// change of the rate put a display nobody watched at a new mode -- plugged
+/// again for a refresh it did not list yet, which moved windows onto it -- and
+/// stalled the stream of the display being watched: 400 to 760 ms a change,
+/// measured, against 115 for the rebuild alone.
+fn held_refresh(captured: bool, asked_fps: u32, own: OwnDisplay) -> Option<u32> {
+    own_refresh(if captured { asked_fps } else { 0 }, own)
 }
 
 /// **Whether a running stream asks the hold again now**: a mode the system
@@ -1043,6 +1062,27 @@ mod tests {
             "asked with nothing pending"
         );
         assert!(!asks_again(false, None), "asked with nothing pending");
+    }
+
+    /// **The host's own display follows the frame rate only while it is
+    /// captured**; a refresh asked of it is held either way, and with neither
+    /// its own refresh stands.
+    #[test]
+    fn the_own_display_follows_the_frame_rate_only_while_captured() {
+        let none = OwnDisplay::default();
+        let asked = OwnDisplay {
+            refresh_hz: 90,
+            ..OwnDisplay::default()
+        };
+        assert_eq!(held_refresh(true, 30, none), Some(30), "not followed");
+        assert_eq!(
+            held_refresh(false, 30, none),
+            None,
+            "followed while another output is captured"
+        );
+        assert_eq!(held_refresh(false, 30, asked), Some(90));
+        assert_eq!(held_refresh(true, 30, asked), Some(90));
+        assert_eq!(held_refresh(true, 0, none), None);
     }
 
     /// **The floor is the lowest clock at or above half the top**: on the

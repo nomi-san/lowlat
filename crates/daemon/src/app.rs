@@ -1166,45 +1166,19 @@ fn apply(
 
     // **The rest is live and is applied.** The frame rate, the rate ceiling
     // and the permission to send a repeated picture all reach the running
-    // loop without rebuilding anything, so an owner asking for one gets it
-    // rather than a log line saying it was heard.
+    // loop, a frame rate that moves the pace by a rebuild, so an owner asking
+    // for one gets it rather than a log line saying it was heard.
     let Some(running) = seam.video() else {
         lowlat_common::log_info!("lowlatd: nothing is streaming, so there is nothing to change");
         return;
     };
-    let mut wanted = running;
-    // **Not bounded by what this host was started with.** The figure the
-    // daemon was launched with is where the stream begins, not a limit on it:
-    // the boundary itself takes any positive rate from an application, and a
-    // guest's panel is the same request arriving by another road. Clamping to
-    // the startup value silently defeats the one thing a guest most wants to
-    // do with it, and does so invisibly -- asking for more than it started
-    // with produced no change and no message.
-    if let Some(asked) = first
-        .get("encoderMaxBitrate")
-        .and_then(serde_json::Value::as_u64)
-        && asked != 0
-    {
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a bitrate in megabits, exact far past any real one"
-        )]
-        let asked_mbps = asked as f64;
-        wanted.bitrate_mbps = asked_mbps;
-    }
     // **The host's own display follows the rate rather than bounding it**: its
     // refresh is put at what is asked, and the stream settles its pace once
     // the display has followed.
-    wanted.fps = asked_fps(first, running.fps, ceiling(video, listed));
-    if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
-        wanted.full_fps = asked;
-    }
-
-    // **The floor follows the ceiling down.** A rate lowered under the floor
-    // the controller was given leaves it unable to reach what it was told.
-    wanted.min_mbps = running.min_mbps.min(wanted.bitrate_mbps);
+    let standing = seam.asked_fps().unwrap_or(running.fps);
+    let wanted = asked_in_message(first, running, standing, ceiling(video, listed));
     if (wanted.bitrate_mbps - running.bitrate_mbps).abs() < f64::EPSILON
-        && wanted.fps == running.fps
+        && wanted.fps == standing
         && wanted.full_fps == running.full_fps
     {
         return;
@@ -1226,6 +1200,50 @@ fn apply(
         u8::from(wanted.full_fps)
     );
     seam.set_video(wanted);
+}
+
+/// What a configuration message asks of the running stream: the rate ceiling,
+/// the frame rate and the permission to send a repeated picture.
+///
+/// **From the frame rate asked, `standing`, not the pace read back**, as the
+/// desk's is ([`asked_at_desk`]): a message leaving the rate alone asked the
+/// pace as the ceiling, and the display's own rate, once chosen, was gone at
+/// the next change of bitrate.
+fn asked_in_message(
+    first: &serde_json::Value,
+    running: lowlat_host::stream::LiveVideo,
+    standing: u32,
+    ceiling: u32,
+) -> lowlat_host::stream::LiveVideo {
+    let mut wanted = running;
+    // **Not bounded by what this host was started with.** The figure the
+    // daemon was launched with is where the stream begins, not a limit on it:
+    // the boundary itself takes any positive rate from an application, and a
+    // guest's panel is the same request arriving by another road. Clamping to
+    // the startup value silently defeats the one thing a guest most wants to
+    // do with it, and does so invisibly -- asking for more than it started
+    // with produced no change and no message.
+    if let Some(asked) = first
+        .get("encoderMaxBitrate")
+        .and_then(serde_json::Value::as_u64)
+        && asked != 0
+    {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a bitrate in megabits, exact far past any real one"
+        )]
+        let asked_mbps = asked as f64;
+        wanted.bitrate_mbps = asked_mbps;
+    }
+    wanted.fps = asked_fps(first, standing, ceiling);
+    if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
+        wanted.full_fps = asked;
+    }
+
+    // **The floor follows the ceiling down.** A rate lowered under the floor
+    // the controller was given leaves it unable to reach what it was told.
+    wanted.min_mbps = running.min_mbps.min(wanted.bitrate_mbps);
+    wanted
 }
 
 #[cfg(test)]
@@ -2027,5 +2045,27 @@ mod tests {
                 assert_eq!(after, before, "a guest changed the stream");
             }
         }
+    }
+
+    /// **A message leaving the frame rate alone leaves the one asked**, the
+    /// display's own among them, where the pace read back is another figure;
+    /// a rate it names is still clamped to the display.
+    #[test]
+    fn a_message_leaving_the_rate_alone_leaves_the_rate_asked() {
+        let running = lowlat_host::stream::LiveVideo {
+            fps: 120,
+            ..lowlat_host::stream::LiveVideo::default()
+        };
+        // The desk's own change of bitrate, on a 120 Hz display at its rate.
+        let body = crate::tray::rate_change(30);
+        let wanted = asked_in_message(&body["video"][0], running, 0, 120);
+        assert_eq!(wanted.fps, 0, "the display's own was asked away");
+        assert!(
+            (wanted.bitrate_mbps - 30.0).abs() < f64::EPSILON,
+            "the rate was not taken"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(r#"{"encoderFPS":144}"#).expect("json");
+        assert_eq!(asked_in_message(&parsed, running, 0, 120).fps, 120);
     }
 }

@@ -1471,8 +1471,8 @@ pub fn own_size(current: (u32, u32), own: OwnDisplay, joining: Option<Declared>)
 ///
 /// **Everything here is applied without rebuilding the session.** The bitrate
 /// re-bases the budget and reaches the encoder through the reconfigure it
-/// already does every pass; the frame rate changes the pacing; the quality
-/// moves the running encoder, at a keyframe where its backend needs one, and
+/// already does every pass; a frame rate that moves the pace rebuilds the
+/// encoder, for one coded refresh; the quality moves the running encoder, at a keyframe where its backend needs one, and
 /// rebuilds it only where the backend cannot move at all; the congestion level
 /// moves every guest from the next pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -3834,11 +3834,17 @@ fn encode_loop<E: Encoder + FromDevice>(
     )> = std::collections::VecDeque::with_capacity(ENCODE_DEPTH + 1);
 
     let started = lowlat_common::clock::Time::now();
-    let mut live = shared
-        .video
-        .lock()
-        .map_or_else(|held| *held.into_inner(), |held| *held);
+    // **The count before the cell**, as a change is taken below, so one landing
+    // between the two is taken again rather than counted as seen and lost; and
+    // **settled as a change is**, so one asked while this run was being built
+    // reads as the rate it would run at.
     let mut video_seen = shared.video_asked.load(Ordering::Acquire);
+    let mut live = live_video(shared);
+    // **A rate asked while this run was being built** is the rebuild a change
+    // of pace is below, made before the first picture rather than never.
+    if live.fps != config.fps {
+        return Exit::Rediscover("the frame rate moved");
+    }
     // What the encoder was built with, which a live change moves.
     let mut quality = config.quality;
     // What the host's own display was asked when this run began: a change is
@@ -4341,11 +4347,10 @@ fn encode_loop<E: Encoder + FromDevice>(
                 return Exit::Rediscover("a different output was asked for");
             }
             // **Applied without rebuilding, which is what separates these from
-            // an output change.** The bitrate re-bases the budget and reaches
-            // the encoder through the reconfigure the rate loop already does;
-            // the frame rate changes the pacing from the next frame on. Read
-            // only when the counter moved, so an unchanged stream pays one
-            // load a pass.
+            // an output change**, all but a frame rate that moves the pace.
+            // The bitrate re-bases the budget and reaches the encoder through
+            // the reconfigure the rate loop already does. Read only when the
+            // counter moved, so an unchanged stream pays one load a pass.
             if take_live_video(shared, &mut video_seen, &mut live) {
                 interval_ms = 1000.0 / f64::from(live.fps.max(1));
                 budget.reconfigure(
@@ -4363,6 +4368,16 @@ fn encode_loop<E: Encoder + FromDevice>(
                     live.quality,
                     live.cg_level
                 );
+                // **A pace the encoder was not built for is a rebuild**, which
+                // takes the rest of the change with it. Its rate control and
+                // its buffer share the rate out per picture at the rate it was
+                // built at, so pictures paced slower each get the share of a
+                // faster rate: under an encoder built for 120, a stream paced
+                // at 30 spends a quarter of the rate asked, and the motion that
+                // needs it most smears.
+                if live.fps != config.fps {
+                    return Exit::Rediscover("the frame rate moved");
+                }
                 // **Every controller judges by the new level from its next
                 // tick**, the guests' sessions counting at it from theirs.
                 if live.cg_level != config.cg_level {
@@ -4846,20 +4861,26 @@ fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> boo
         return false;
     }
     *seen = asked;
-    // **Settled as a build settles it** (06 section 3): zero is the display's
-    // own rate and any request is bounded by the refresh the last build
-    // settled at, the pace written back under the same lock, so what reads
-    // back is what the loop runs at. Taken raw, a zero paced the loop at one
-    // picture a second and a request past the display was not bounded.
+    *live = live_video(shared);
+    true
+}
+
+/// The live video as asked, its frame rate settled.
+///
+/// **Settled as a build settles it** (06 section 3): zero is the display's own
+/// rate and any request is bounded by the refresh the last build settled at,
+/// the pace written back under the same lock, so what reads back is what the
+/// loop runs at. Taken raw, a zero paced the loop at one picture a second and a
+/// request past the display was not bounded.
+fn live_video(shared: &Shared) -> LiveVideo {
     let refresh_hz = shared.settled_refresh.load(Ordering::Relaxed);
-    *live = match shared.video.lock() {
+    match shared.video.lock() {
         Ok(mut held) => {
             held.fps = paced(held.fps, refresh_hz);
             *held
         }
         Err(poisoned) => *poisoned.into_inner(),
-    };
-    true
+    }
 }
 
 /// Put what a running stream was moved to into the configuration the next
@@ -5542,7 +5563,8 @@ mod tests {
                 own_display: OwnDisplay::default(),
                 width: 320,
                 height: 240,
-                fps: 240,
+                // The rate the cell holds, as a build leaves the two.
+                fps: 60,
                 codec: Codec::H264,
                 quality: lowlat_encode::Quality::default(),
                 backend: Some(Backend::Open),
@@ -5944,7 +5966,10 @@ mod tests {
             own_display: OwnDisplay::default(),
             width: 320,
             height: 240,
-            fps: 240,
+            // **The rate a parked stream's cell holds**, as a build leaves the
+            // two: a loop whose live rate is not the one it was built at
+            // rebuilds before its first picture.
+            fps: 60,
             codec,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -6458,6 +6483,91 @@ mod tests {
                     assert_eq!(record.after, None, "a picture went in after it");
                 }
             }
+            drop(held);
+        }
+    }
+
+    /// **A frame rate that moves the pace rebuilds the encoder, and one that
+    /// leaves the pace where it was does not**, asked while the run goes or
+    /// while it was being built. The encoder shares the rate out per picture at
+    /// the rate it was built at, so a pace moved under it spends another rate's
+    /// share on every picture. On a 60 Hz display built at 60, the same rate
+    /// again, one past the display and the display's own all settle at the
+    /// pace built; 30 does not.
+    #[test]
+    fn a_frame_rate_that_moves_the_pace_rebuilds_the_encoder() {
+        // What is asked, whether before the run, and whether it rebuilds.
+        for (asked, early, rebuilt) in [
+            (60, false, false),
+            (240, false, false),
+            (0, false, false),
+            (30, false, true),
+            (0, true, false),
+            (30, true, true),
+        ] {
+            let (shared, stream, arrivals) = parked();
+            // The display the run was built on, as its build leaves it.
+            shared.settled_refresh.store(60, Ordering::Relaxed);
+            let held = stream
+                .seats()
+                .take(wake_handle(), wake_handle(), Declared::default())
+                .expect("a seat");
+            let mut encoder = fake_encoder();
+            let moves = Arc::clone(&encoder.moves);
+            // As the seam asks it.
+            let ask = move |stream: &Stream| {
+                stream.set_video(LiveVideo {
+                    fps: asked,
+                    ..stream.video()
+                });
+            };
+            if early {
+                ask(&stream);
+            }
+            let done = Arc::new(AtomicU32::new(0));
+            let returned = Arc::clone(&done);
+            let (mut step, mut seen) = (0, 0);
+            let watchdog = watcher(&shared, move |_| {
+                let submitted = moves.lock().expect("the record").submitted;
+                match step {
+                    0 if early || submitted >= 5 => {
+                        if !early {
+                            ask(&stream);
+                        }
+                        seen = submitted;
+                        step = 1;
+                    }
+                    // Ended, or long enough after for it to have.
+                    1 if returned.load(Ordering::Acquire) != 0 || submitted >= seen + 5 => {
+                        return true;
+                    }
+                    _ => {}
+                }
+                false
+            });
+            let exit = encode_loop(
+                &shared,
+                &arrivals,
+                test_config(Codec::H264),
+                &mut Roster::default(),
+                &mut encoder,
+                None,
+                None,
+            );
+            done.store(1, Ordering::Release);
+            assert!(
+                watchdog.join().expect("watchdog"),
+                "{asked} (early {early}): the change never landed"
+            );
+            assert_eq!(
+                exit,
+                if rebuilt {
+                    Exit::Rediscover("the frame rate moved")
+                } else {
+                    Exit::Stopped
+                },
+                "{asked} (early {early})"
+            );
             drop(held);
         }
     }
@@ -7710,6 +7820,8 @@ mod tests {
             output: outputs.first().cloned(),
             backend: None,
             full_fps: true,
+            // Past any display, so each output runs at its own refresh.
+            fps: 240,
             ..test_config(codec)
         });
         let wake = lowlat_net::Wake::new().expect("wake");
