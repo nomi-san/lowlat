@@ -987,11 +987,11 @@ typedef void (*lowlat_log_fn)(lowlat_log_level level, const char *message, void 
 /// **Split out because the split is real.** Everything here is applied without
 /// rebuilding anything the session rests on: a bitrate re-bases the budget and
 /// reaches the encoder through the reconfigure the rate loop already performs,
-/// a frame rate that moves the pace rebuilds the encoder around it for one
-/// coded refresh, every guest keeping its seat, and the quality moves the
-/// running encoder. What is not here -- the codec, the encoder, the guest
-/// limit, the ports -- is settled when hosting starts, because changing it
-/// means building the pipeline again.
+/// a frame rate that moves the pace moves the running encoder, or rebuilds it
+/// for one coded refresh where it cannot move, every guest keeping its seat,
+/// and the quality moves the running encoder. What is not here -- the codec,
+/// the encoder, the guest limit, the ports -- is settled when hosting starts,
+/// because changing it means building the pipeline again.
 ///
 /// **There is no resolution and no rotation.** The display decides its own size
 /// and orientation and this host follows; asking it to be something else is a
@@ -2807,12 +2807,13 @@ lowlat_status lowlat_host_get_metrics(lowlat_host *hl,
 /// **Everything in this structure is applied without rebuilding the session.**
 /// The bitrate re-bases the budget and reaches the encoder through the
 /// reconfigure the rate loop already does, so it costs no keyframe and no
-/// interruption. The output and a frame rate that moves the pace are the
-/// exceptions in cost rather than in kind: a different picture cannot be
-/// absorbed into a stream built for another one, and an encoder shares its
-/// rate out per picture at the rate it was built at, so each rebuilds around
-/// the change and costs one coded refresh, keeping every guest on its seat and
-/// its channel.
+/// interruption. The output is the exception in cost rather than in kind: a
+/// different picture cannot be absorbed into a stream built for another one,
+/// so it rebuilds around the new source and costs one coded refresh, keeping
+/// every guest on its seat and its channel. **A frame rate that moves the pace
+/// moves the running encoder**, whose rate control shares the rate out per
+/// picture at the rate it runs at: as it runs, at a keyframe, or -- where an
+/// encoder cannot move -- by the output's rebuild.
 ///
 /// **The quality moves the running encoder** (minor 37), asked of it only when
 /// it differs from what the stream runs at, so sending it again as it stands

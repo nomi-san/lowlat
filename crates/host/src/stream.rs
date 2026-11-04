@@ -1471,8 +1471,9 @@ pub fn own_size(current: (u32, u32), own: OwnDisplay, joining: Option<Declared>)
 ///
 /// **Everything here is applied without rebuilding the session.** The bitrate
 /// re-bases the budget and reaches the encoder through the reconfigure it
-/// already does every pass; a frame rate that moves the pace rebuilds the
-/// encoder, for one coded refresh; the quality moves the running encoder, at a keyframe where its backend needs one, and
+/// already does every pass; a frame rate that moves the pace moves the
+/// encoder, rebuilding it only where it cannot move; the quality moves the
+/// running encoder, at a keyframe where its backend needs one, and
 /// rebuilds it only where the backend cannot move at all; the congestion level
 /// moves every guest from the next pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -3840,11 +3841,6 @@ fn encode_loop<E: Encoder + FromDevice>(
     // reads as the rate it would run at.
     let mut video_seen = shared.video_asked.load(Ordering::Acquire);
     let mut live = live_video(shared);
-    // **A rate asked while this run was being built** is the rebuild a change
-    // of pace is below, made before the first picture rather than never.
-    if live.fps != config.fps {
-        return Exit::Rediscover("the frame rate moved");
-    }
     // What the encoder was built with, which a live change moves.
     let mut quality = config.quality;
     // What the host's own display was asked when this run began: a change is
@@ -3855,7 +3851,12 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut interval_ms = 1000.0 / f64::from(live.fps.max(1));
     let mut next_frame_ms = 0.0f64;
     let mut previous_submit: Option<lowlat_common::clock::Time> = None;
-    let mut force_keyframe = false;
+    // **A rate asked while this run was being built** is moved as a change of
+    // pace is below, before the first picture rather than never.
+    let mut force_keyframe = match move_pace(encoder, &mut config, live.fps) {
+        Ok(keyframe) => keyframe,
+        Err(exit) => return exit,
+    };
     // When a picture was last actually submitted, which is what the heartbeat
     // measures from. Starts long ago, so the first frame is never suppressed.
     let mut forced_ms = f64::MIN;
@@ -4368,15 +4369,15 @@ fn encode_loop<E: Encoder + FromDevice>(
                     live.quality,
                     live.cg_level
                 );
-                // **A pace the encoder was not built for is a rebuild**, which
-                // takes the rest of the change with it. Its rate control and
-                // its buffer share the rate out per picture at the rate it was
-                // built at, so pictures paced slower each get the share of a
-                // faster rate: under an encoder built for 120, a stream paced
-                // at 30 spends a quarter of the rate asked, and the motion that
-                // needs it most smears.
-                if live.fps != config.fps {
-                    return Exit::Rediscover("the frame rate moved");
+                // **A pace the encoder does not run at is moved on it.** Its
+                // rate control and its buffer share the rate out per picture
+                // at the rate it runs at, so pictures paced slower each get the
+                // share of a faster rate: under an encoder at 120, a stream
+                // paced at 30 spends a quarter of the rate asked, and the
+                // motion that needs it most smears.
+                match move_pace(encoder, &mut config, live.fps) {
+                    Ok(keyframe) => force_keyframe |= keyframe,
+                    Err(exit) => return exit,
                 }
                 // **Every controller judges by the new level from its next
                 // tick**, the guests' sessions counting at it from theirs.
@@ -4863,6 +4864,37 @@ fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> boo
     *seen = asked;
     *live = live_video(shared);
     true
+}
+
+/// Move the encoder to `fps`, the pace the loop runs at, where the encoder
+/// runs at another: whether the next picture has to be a keyframe for it, or
+/// the exit that builds the stream again at it.
+///
+/// **On the running encoder where it moves**, a call of a tenth of a
+/// millisecond on NVIDIA's, measured; a rebuild, where it cannot, takes the
+/// capture down with the encoder -- a tenth of a second without pictures.
+fn move_pace<E: Encoder>(encoder: &mut E, config: &mut Config, fps: u32) -> Result<bool, Exit> {
+    if fps == config.fps {
+        return Ok(false);
+    }
+    let keyframe = match encoder.set_fps(fps) {
+        Ok(Moved::Live) => false,
+        Ok(Moved::Refresh) => true,
+        Ok(Moved::Rebuild) => return Err(Exit::Rediscover("the frame rate moved")),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "stream: the encoder refused {fps} fps ({error}), rebuilding at it"
+            );
+            return Err(Exit::Rediscover("the frame rate moved"));
+        }
+    };
+    lowlat_common::log_info!(
+        "stream: frame rate {} -> {fps}, {}",
+        config.fps,
+        if keyframe { "at a keyframe" } else { "live" }
+    );
+    config.fps = fps;
+    Ok(keyframe)
 }
 
 /// The live video as asked, its frame rate settled.
@@ -5445,11 +5477,13 @@ mod tests {
         moves: Arc<std::sync::Mutex<Moves>>,
     }
 
-    /// The quality moves a [`Fake`] was asked for, and what came after.
+    /// The quality and frame-rate moves a [`Fake`] was asked for, what it
+    /// answered both, and what came after.
     #[derive(Debug)]
     pub(super) struct Moves {
         pub(super) answer: Moved,
         pub(super) asked: Vec<lowlat_encode::Quality>,
+        pub(super) rates: Vec<u32>,
         pub(super) submitted: u32,
         /// Whether the first picture after a move was asked to be a keyframe.
         pub(super) after: Option<bool>,
@@ -5461,6 +5495,7 @@ mod tests {
             Self {
                 answer: Moved::Live,
                 asked: Vec::new(),
+                rates: Vec::new(),
                 submitted: 0,
                 after: None,
                 pending: false,
@@ -5524,6 +5559,13 @@ mod tests {
         fn set_quality(&mut self, quality: lowlat_encode::Quality) -> Result<Moved, Never> {
             let mut moves = self.moves.lock().expect("the record");
             moves.asked.push(quality);
+            moves.pending = true;
+            Ok(moves.answer)
+        }
+
+        fn set_fps(&mut self, fps: u32) -> Result<Moved, Never> {
+            let mut moves = self.moves.lock().expect("the record");
+            moves.rates.push(fps);
             moves.pending = true;
             Ok(moves.answer)
         }
@@ -6487,23 +6529,27 @@ mod tests {
         }
     }
 
-    /// **A frame rate that moves the pace rebuilds the encoder, and one that
-    /// leaves the pace where it was does not**, asked while the run goes or
-    /// while it was being built. The encoder shares the rate out per picture at
-    /// the rate it was built at, so a pace moved under it spends another rate's
-    /// share on every picture. On a 60 Hz display built at 60, the same rate
-    /// again, one past the display and the display's own all settle at the
-    /// pace built; 30 does not.
+    /// **A frame rate that moves the pace is moved on the encoder, and one
+    /// that leaves the pace where it was asks nothing of it**, asked while the
+    /// run goes or while it was being built; an encoder that cannot move is
+    /// built again at it. The encoder shares the rate out per picture at the
+    /// rate it runs at, so a pace moved under it spends another rate's share
+    /// on every picture. On a 60 Hz display built at 60, the same rate again,
+    /// one past the display and the display's own all settle at the pace
+    /// built; 30 does not.
     #[test]
-    fn a_frame_rate_that_moves_the_pace_rebuilds_the_encoder() {
-        // What is asked, whether before the run, and whether it rebuilds.
-        for (asked, early, rebuilt) in [
-            (60, false, false),
-            (240, false, false),
-            (0, false, false),
-            (30, false, true),
-            (0, true, false),
-            (30, true, true),
+    fn a_frame_rate_that_moves_the_pace_is_moved_on_the_encoder() {
+        // What is asked, whether before the run, and what the encoder answers.
+        for (asked, early, answer) in [
+            (60, false, Moved::Live),
+            (240, false, Moved::Live),
+            (0, false, Moved::Live),
+            (30, false, Moved::Live),
+            (30, false, Moved::Refresh),
+            (30, false, Moved::Rebuild),
+            (0, true, Moved::Live),
+            (30, true, Moved::Live),
+            (30, true, Moved::Rebuild),
         ] {
             let (shared, stream, arrivals) = parked();
             // The display the run was built on, as its build leaves it.
@@ -6514,6 +6560,8 @@ mod tests {
                 .expect("a seat");
             let mut encoder = fake_encoder();
             let moves = Arc::clone(&encoder.moves);
+            moves.lock().expect("the record").answer = answer;
+            let watched = Arc::clone(&moves);
             // As the seam asks it.
             let ask = move |stream: &Stream| {
                 stream.set_video(LiveVideo {
@@ -6528,8 +6576,10 @@ mod tests {
             let returned = Arc::clone(&done);
             let (mut step, mut seen) = (0, 0);
             let watchdog = watcher(&shared, move |_| {
-                let submitted = moves.lock().expect("the record").submitted;
+                let submitted = watched.lock().expect("the record").submitted;
                 match step {
+                    // Past the seat's own keyframe, so the one after the move
+                    // is the move's.
                     0 if early || submitted >= 5 => {
                         if !early {
                             ask(&stream);
@@ -6555,19 +6605,33 @@ mod tests {
                 None,
             );
             done.store(1, Ordering::Release);
+            let case = format!("{asked} (early {early}, {answer:?})");
             assert!(
                 watchdog.join().expect("watchdog"),
-                "{asked} (early {early}): the change never landed"
+                "{case}: the change never landed"
             );
+            let moved = paced(asked, 60) != 60;
+            let record = moves.lock().expect("the record");
+            let rates: &[u32] = if moved { &[30] } else { &[] };
+            assert_eq!(record.rates, rates, "{case}: asked of the encoder");
             assert_eq!(
                 exit,
-                if rebuilt {
+                if moved && answer == Moved::Rebuild {
                     Exit::Rediscover("the frame rate moved")
                 } else {
                     Exit::Stopped
                 },
-                "{asked} (early {early})"
+                "{case}"
             );
+            // **A keyframe where the move costs one, and only there.**
+            if moved && !early && answer != Moved::Rebuild {
+                assert_eq!(
+                    record.after,
+                    Some(answer == Moved::Refresh),
+                    "{case}: the picture after the move"
+                );
+            }
+            drop(record);
             drop(held);
         }
     }

@@ -1502,6 +1502,52 @@ impl Encoder<'_> {
         self.init_params = init_params;
         Ok(crate::Moved::Live)
     }
+
+    /// Move the running encoder to `fps`: the rate in the block it was
+    /// initialised with and the buffer sized for it, one reconfigure with
+    /// neither the reset nor the keyframe.
+    pub fn set_fps(&mut self, fps: u32) -> Result<crate::Moved, Error> {
+        use crate::ffi::nvenc as f;
+
+        if fps == self.config.fps {
+            return Ok(crate::Moved::Live);
+        }
+        let mut init_params = self.init_params;
+        init_params.frameRateNum = fps;
+        init_params.frameRateDen = 1;
+        let rc = &mut self.encode_config.rcParams;
+        let before = (rc.vbvBufferSize, rc.vbvInitialDelay);
+        let vbv = vbv_bits(self.config.bitrate_bps, fps);
+        rc.vbvBufferSize = vbv;
+        rc.vbvInitialDelay = vbv;
+
+        let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_RECONFIGURE_PARAMS>() };
+        params.version = crate::ffi::versions::NV_ENC_RECONFIGURE_PARAMS_VER;
+        params.reInitEncodeParams = init_params;
+        params.reInitEncodeParams.encodeConfig = &raw mut self.encode_config;
+        params.set_resetEncoder(0);
+        params.set_forceIDR(0);
+        let reconfigure = self
+            .session
+            .api
+            .functions
+            .nvEncReconfigureEncoder
+            .ok_or(Error::MissingSymbol)?;
+        // SAFETY: the encoder is live and the block is stamped and live for
+        // the call.
+        let status = unsafe { reconfigure(self.session.encoder, &raw mut params) };
+        if status != NV_ENC_SUCCESS {
+            // **A refused move leaves the encoder as it was**, or the rate
+            // loop's next reconfigure would send the buffer of a rate the
+            // encoder never took.
+            let rc = &mut self.encode_config.rcParams;
+            (rc.vbvBufferSize, rc.vbvInitialDelay) = before;
+            return Err(Error::Status(status));
+        }
+        self.config.fps = fps;
+        self.init_params = init_params;
+        Ok(crate::Moved::Live)
+    }
 }
 
 /// How many pictures may be in flight at once.
@@ -1814,6 +1860,10 @@ impl EncoderTrait for Encoder<'_> {
 
     fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
         Encoder::set_quality(self, quality)
+    }
+
+    fn set_fps(&mut self, fps: u32) -> Result<crate::Moved, Error> {
+        Encoder::set_fps(self, fps)
     }
 
     // Linux's marker cannot be slept on with a bound, so it keeps the default

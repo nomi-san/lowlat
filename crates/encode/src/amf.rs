@@ -618,6 +618,31 @@ impl<'c> Encoder<'c> {
         Ok(())
     }
 
+    /// Move the encoder to `fps`: the frame rate written as it runs, and the
+    /// buffer and the largest picture sized for it.
+    ///
+    /// **At a keyframe** ([`Moved::Refresh`](crate::Moved::Refresh)): the
+    /// runtime takes the rate into its rate control and starts a new sequence
+    /// on the next picture itself, measured on both codecs -- so the move
+    /// costs that keyframe and the write, under a tenth of a millisecond.
+    pub fn set_fps(&mut self, fps: u32) -> Result<crate::Moved, Error> {
+        if fps == self.config.fps {
+            return Ok(crate::Moved::Live);
+        }
+        let names = self.names;
+        self.component
+            .set_rate(names.frame_rate, fps.max(1), 1)
+            .map_err(|error| Error::Setting(names.frame_rate, error))?;
+        let vbv = i64::from(crate::nvenc::vbv_bits(self.config.bitrate_bps, fps));
+        for name in [names.vbv_buffer_size, names.max_au_size] {
+            self.component
+                .set_int(name, vbv)
+                .map_err(|error| Error::Setting(name, error))?;
+        }
+        self.config.fps = fps;
+        Ok(crate::Moved::Refresh)
+    }
+
     /// Sleep until the collecting thread hands a unit over or `limit`
     /// passes; true when there was a picture to sleep on.
     pub fn wait_finished(&mut self, limit: Duration) -> bool {
@@ -679,6 +704,10 @@ impl EncoderTrait for Encoder<'_> {
 
     fn set_quality(&mut self, quality: crate::Quality) -> Result<crate::Moved, Error> {
         Encoder::set_quality(self, quality)
+    }
+
+    fn set_fps(&mut self, fps: u32) -> Result<crate::Moved, Error> {
+        Encoder::set_fps(self, fps)
     }
 
     fn wait_finished(&mut self, limit: Duration) -> bool {

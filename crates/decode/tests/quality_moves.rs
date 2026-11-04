@@ -3,8 +3,9 @@
 //! access unit decoded by one of the library's own decoders -- D3D11's on
 //! Windows, NVIDIA's on Linux -- against the picture it was made from. A
 //! keyframe comes exactly where the move said it costs one, and nowhere else.
-//! Needs each vendor's GPU and driver, so off by default: `cargo test -p
-//! lowlat-decode --test quality_moves -- --ignored --nocapture`.
+//! The frame rate moved the same way, and what a picture costs after each
+//! move. Needs each vendor's GPU and driver, so off by default: `cargo test
+//! -p lowlat-decode --test quality_moves -- --ignored --nocapture`.
 
 // NVIDIA's encoder on both; AMD's and Intel's on a D3D11 device, on Windows.
 #![cfg(any(windows, target_os = "linux"))]
@@ -43,6 +44,15 @@ const WALK: [Quality; 7] = [
     Quality::Balanced,
     Quality::LowestLatency,
 ];
+/// Frame rates a host moves its encoder through, from the one it is built
+/// at: a 120 Hz panel's own, a quarter of it, and past it both ways.
+const RATES: [u32; 7] = [120, 30, 60, 144, 30, 240, 120];
+/// Rows of unpredictable detail a spend runs over: dear enough at the
+/// slowest of [`RATES`] to take its whole share, cheap enough at the fastest
+/// to keep to its own.
+const DETAIL_ROWS: u32 = 120;
+/// The one rate a spend runs at.
+const SPEND_BPS: u32 = 8_000_000;
 #[cfg(windows)]
 const NVIDIA: u32 = 0x10de;
 #[cfg(windows)]
@@ -180,27 +190,52 @@ fn collect<E: Encoder>(encoder: &mut E) -> (Vec<u8>, bool) {
     }
 }
 
-/// Walk `encoder` through [`WALK`], `depth` pictures in flight where it holds
-/// them, the rate moved in the middle of every stretch: every unit, and which
-/// pictures the moves said open with a keyframe.
+/// Every unit of a walk, which pictures its moves said open with a keyframe,
+/// and how many pictures went in.
+type Walked = (Vec<(Vec<u8>, bool)>, Vec<usize>, usize);
+
+/// [`walk`] through [`WALK`]'s qualities.
+fn quality_walk<E: Encoder>(encoder: &mut E, depth: usize, name: &str) -> Walked {
+    walk(encoder, depth, name, WALK.len(), |encoder, segment| {
+        let to = WALK[segment];
+        let moved = encoder.set_quality(to).expect("set_quality");
+        println!("{name}: {:?} -> {to:?}", WALK[segment - 1]);
+        moved
+    })
+}
+
+/// [`walk`] through [`RATES`]' frame rates.
+fn rate_walk<E: Encoder>(encoder: &mut E, depth: usize, name: &str) -> Walked {
+    walk(encoder, depth, name, RATES.len(), |encoder, segment| {
+        let to = RATES[segment];
+        let moved = encoder.set_fps(to).expect("set_fps");
+        println!("{name}: {} -> {to} fps", RATES[segment - 1]);
+        moved
+    })
+}
+
+/// Walk `encoder` through `segments` stretches, `depth` pictures in flight
+/// where it holds them, moved by `move_to` at the start of each stretch after
+/// the first and the rate moved in the middle of every one: every unit, and
+/// which pictures the moves said open with a keyframe.
 fn walk<E: Encoder>(
     encoder: &mut E,
     depth: usize,
     name: &str,
-) -> (Vec<(Vec<u8>, bool)>, Vec<usize>) {
+    segments: usize,
+    mut move_to: impl FnMut(&mut E, usize) -> Moved,
+) -> Walked {
     let mut source = Synthetic::new(WIDTH, HEIGHT);
-    let total = WALK.len() * SEGMENT;
+    let total = segments * SEGMENT;
     let mut units = Vec::with_capacity(total);
     let mut refreshes = vec![0];
     let mut in_flight = 0usize;
     for index in 0..total {
         if index > 0 && index % SEGMENT == 0 {
-            let to = WALK[index / SEGMENT];
             let started = Instant::now();
-            let moved = encoder.set_quality(to).expect("set_quality");
+            let moved = move_to(encoder, index / SEGMENT);
             println!(
-                "{name}: picture {index} {:?} -> {to:?}: {moved:?} in {:.3} ms",
-                WALK[index / SEGMENT - 1],
+                "{name}: picture {index}: {moved:?} in {:.3} ms",
                 started.elapsed().as_secs_f64() * 1000.0
             );
             match moved {
@@ -238,7 +273,62 @@ fn walk<E: Encoder>(
         units.push(collect(encoder));
         in_flight -= 1;
     }
-    (units, refreshes)
+    (units, refreshes, total)
+}
+
+/// What a picture costs in each stretch of [`RATES`] on the detail source at
+/// [`SPEND_BPS`], as a share of what one picture at that stretch's rate has:
+/// the mean of each stretch's second half, once the rate control has settled.
+/// **One for an encoder that took the move**; one that kept its old rate
+/// spends the old rate's share, a quarter at 30 after 120.
+fn spends<E: Encoder>(encoder: &mut E, depth: usize, name: &str) -> Vec<f64> {
+    let mut source = Synthetic::with_detail(WIDTH, HEIGHT, DETAIL_ROWS);
+    let total = RATES.len() * SEGMENT;
+    let mut sizes = Vec::with_capacity(total);
+    let mut in_flight = 0usize;
+    for index in 0..total {
+        if index > 0 && index % SEGMENT == 0 {
+            let moved = encoder.set_fps(RATES[index / SEGMENT]).expect("set_fps");
+            assert_ne!(
+                moved,
+                Moved::Rebuild,
+                "{name}: a backend that moves answered rebuild"
+            );
+        }
+        let frame = source.acquire();
+        while encoder.submit(&frame, index == 0).is_err() {
+            assert!(
+                in_flight > 0,
+                "{name}: picture {index} refused with nothing in flight"
+            );
+            sizes.push(collect(encoder).0.len());
+            in_flight -= 1;
+        }
+        in_flight += 1;
+        while in_flight >= depth {
+            sizes.push(collect(encoder).0.len());
+            in_flight -= 1;
+        }
+    }
+    while in_flight > 0 {
+        sizes.push(collect(encoder).0.len());
+        in_flight -= 1;
+    }
+    assert_eq!(sizes.len(), total, "{name}: units went missing");
+    RATES
+        .iter()
+        .enumerate()
+        .map(|(segment, &fps)| {
+            let settled = &sizes[segment * SEGMENT + SEGMENT / 2..(segment + 1) * SEGMENT];
+            let bits = settled.iter().sum::<usize>() as f64 * 8.0 / settled.len() as f64;
+            let share = f64::from(SPEND_BPS) / f64::from(fps);
+            println!(
+                "{name}: {fps} fps: {bits:.0} bits a picture, {:.2} of its share",
+                bits / share
+            );
+            bits / share
+        })
+        .collect()
 }
 
 /// Every picture decoded in order by `decoder`, `drain` its own end of
@@ -293,10 +383,9 @@ fn check<D: Decoder>(
     codec: Codec,
     decoder: &mut D,
     drain: impl Fn(&mut D),
-    walked: (Vec<(Vec<u8>, bool)>, Vec<usize>),
+    walked: Walked,
 ) {
-    let (units, refreshes) = walked;
-    let total = WALK.len() * SEGMENT;
+    let (units, refreshes, total) = walked;
     assert_eq!(units.len(), total, "{name}: units went missing");
     for (index, (unit, flagged)) in units.iter().enumerate() {
         let types = unit_types(unit, codec);
@@ -334,12 +423,7 @@ fn check<D: Decoder>(
 /// [`check`], decoded by D3D11's decoder on a device of its own, as a
 /// client's is.
 #[cfg(windows)]
-fn check_d3d11(
-    name: &str,
-    codec: Codec,
-    decoding: &Device,
-    walked: (Vec<(Vec<u8>, bool)>, Vec<usize>),
-) {
+fn check_d3d11(name: &str, codec: Codec, decoding: &Device, walked: Walked) {
     let mut decoder = lowlat_decode::d3d11::Backend::new(decoding, (4096, 4096));
     check(name, codec, &mut decoder, |d| d.drain(), walked);
 }
@@ -372,8 +456,71 @@ fn nvenc_config(codec: Codec, quality: Quality) -> nvenc::Config {
     }
 }
 
+/// What a run of one encoder checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Run {
+    /// [`WALK`]'s quality moves, every picture decoded.
+    Qualities,
+    /// [`RATES`]' frame-rate moves, every picture decoded.
+    Rates,
+    /// [`RATES`]' moves on the detail source: what a picture costs after
+    /// each ([`spends`]).
+    Spend,
+}
+
+/// The frame rate and the rate an encoder starts `run` at: a run of rates at
+/// the first of [`RATES`], a spend at [`SPEND_BPS`] too.
+fn start_of(run: Run) -> (u32, u32) {
+    match run {
+        Run::Qualities => (60, 20_000_000),
+        Run::Rates => (RATES[0], 20_000_000),
+        Run::Spend => (RATES[0], SPEND_BPS),
+    }
+}
+
+/// The configuration NVIDIA's encoder starts `run` at.
+fn nvenc_run_config(codec: Codec, run: Run) -> nvenc::Config {
+    let (fps, bitrate_bps) = start_of(run);
+    nvenc::Config {
+        fps,
+        bitrate_bps,
+        ..nvenc_config(codec, WALK[0])
+    }
+}
+
+/// `run` on an encoder whose pictures D3D11's decoder reads back.
 #[cfg(windows)]
-fn nvenc_walk(codec: Codec, name: &str) {
+fn run_d3d11<E: Encoder>(
+    encoder: &mut E,
+    depth: usize,
+    name: &str,
+    codec: Codec,
+    decoding: &Device,
+    run: Run,
+) {
+    match run {
+        Run::Qualities => check_d3d11(name, codec, decoding, quality_walk(encoder, depth, name)),
+        Run::Rates => check_d3d11(name, codec, decoding, rate_walk(encoder, depth, name)),
+        Run::Spend => held_to_share(name, &spends(encoder, depth, name)),
+    }
+}
+
+/// What a spend must show: every stretch held to its own rate's share as the
+/// first is, at the rate the encoder was built at -- **against that one, not
+/// against the share itself**, since a rate control keeps under its target by
+/// a margin of its own: 0.60 to 0.80 of it, measured on NVIDIA's.
+fn held_to_share(name: &str, spent: &[f64]) {
+    let built = spent[0];
+    for (&fps, &share) in RATES.iter().zip(spent) {
+        assert!(
+            (0.75..1.33).contains(&(share / built)),
+            "{name}: {fps} fps spends {share:.2} of its share, {built:.2} at the rate built at"
+        );
+    }
+}
+
+#[cfg(windows)]
+fn nvenc_walk(codec: Codec, name: &str, run: Run) {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = adapter(&d3d11, NVIDIA);
     let api = nvenc::Api::load().expect("encoder runtime");
@@ -381,18 +528,17 @@ fn nvenc_walk(codec: Codec, name: &str) {
         .open_session(Arc::new(d3d11.open(adapter.luid).expect("a device")))
         .expect("session");
     let mut encoder = session
-        .initialize(nvenc_config(codec, WALK[0]))
+        .initialize(nvenc_run_config(codec, run))
         .expect("initialize");
     // A device of the decoder's own, as a client's is.
     let decoding = d3d11.open(adapter.luid).expect("a second device");
-    let walked = walk(&mut encoder, 3, name);
-    check_d3d11(name, codec, &decoding, walked);
+    run_d3d11(&mut encoder, 3, name, codec, &decoding, run);
 }
 
 /// On Linux the encoder takes the compute runtime's context, and NVIDIA's
 /// decoder reads the stream back in the same one.
 #[cfg(target_os = "linux")]
-fn nvenc_walk(codec: Codec, name: &str) {
+fn nvenc_walk(codec: Codec, name: &str, run: Run) {
     let cuda = lowlat_drivers::cuda::Cuda::load().expect("compute runtime");
     let device = cuda.any_device().expect("a device");
     let context = cuda.retain_primary(&device).expect("context");
@@ -405,9 +551,13 @@ fn nvenc_walk(codec: Codec, name: &str) {
         )
         .expect("session");
     let mut encoder = session
-        .initialize(&cuda, nvenc_config(codec, WALK[0]))
+        .initialize(&cuda, nvenc_run_config(codec, run))
         .expect("initialize");
-    let walked = walk(&mut encoder, 3, name);
+    let walked = match run {
+        Run::Qualities => quality_walk(&mut encoder, 3, name),
+        Run::Rates => rate_walk(&mut encoder, 3, name),
+        Run::Spend => return held_to_share(name, &spends(&mut encoder, 3, name)),
+    };
     let cuvid = lowlat_drivers::cuvid::Cuvid::load().expect("decode interface");
     let mut decoder = lowlat_decode::nvdec::Backend::new(&cuda, &cuvid, (4096, 4096), 1 << 20);
     check(name, codec, &mut decoder, |d| d.drain(), walked);
@@ -450,13 +600,35 @@ fn first_sets(codec: Codec, quality: Quality) -> Vec<Vec<u8>> {
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn nvidia_h264_moves_live() {
-    nvenc_walk(Codec::H264, "nvenc h264");
+    nvenc_walk(Codec::H264, "nvenc h264", Run::Qualities);
 }
 
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn nvidia_hevc_moves_live() {
-    nvenc_walk(Codec::H265, "nvenc hevc");
+    nvenc_walk(Codec::H265, "nvenc hevc", Run::Qualities);
+}
+
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn nvidia_h264_moves_its_frame_rate_live() {
+    nvenc_walk(Codec::H264, "nvenc h264", Run::Rates);
+}
+
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn nvidia_hevc_moves_its_frame_rate_live() {
+    nvenc_walk(Codec::H265, "nvenc hevc", Run::Rates);
+}
+
+/// **A picture after a move costs the share of the rate it was moved to**,
+/// which is what the move is for: an encoder that kept the rate it was
+/// built at spends that rate's share, a quarter of it at 30 after 120.
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn nvidia_spends_the_share_of_the_rate_it_was_moved_to() {
+    nvenc_walk(Codec::H264, "nvenc h264", Run::Spend);
+    nvenc_walk(Codec::H265, "nvenc hevc", Run::Spend);
 }
 
 /// **What makes a move live: the parameter sets do not move.** A change that
@@ -482,7 +654,8 @@ fn nvidia_writes_one_set_of_parameters_at_every_setting() {
 }
 
 #[cfg(windows)]
-fn amf_walk(codec: Codec, name: &str) {
+fn amf_walk(codec: Codec, name: &str, run: Run) {
+    let (fps, bitrate_bps) = start_of(run);
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = d3d11
         .adapters()
@@ -504,8 +677,8 @@ fn amf_walk(codec: Codec, name: &str) {
             },
             width: WIDTH,
             height: HEIGHT,
-            fps: 60,
-            bitrate_bps: 20_000_000,
+            fps,
+            bitrate_bps,
             min_qp: WALK[0].min_qp(),
             thorough: WALK[0].thorough(),
             depth: amf::Depth::Eight,
@@ -514,26 +687,48 @@ fn amf_walk(codec: Codec, name: &str) {
     )
     .expect("an encoder");
     let decoding = d3d11.open(adapter.luid).expect("a second device");
-    let walked = walk(&mut encoder, 3, name);
-    check_d3d11(name, codec, &decoding, walked);
+    run_d3d11(&mut encoder, 3, name, codec, &decoding, run);
 }
 
 #[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn amd_h264_moves() {
-    amf_walk(Codec::H264, "amf h264");
+    amf_walk(Codec::H264, "amf h264", Run::Qualities);
 }
 
 #[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn amd_hevc_moves() {
-    amf_walk(Codec::H265, "amf hevc");
+    amf_walk(Codec::H265, "amf hevc", Run::Qualities);
 }
 
 #[cfg(windows)]
-fn vpl_walk(codec: Codec, name: &str) {
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn amd_h264_moves_its_frame_rate() {
+    amf_walk(Codec::H264, "amf h264", Run::Rates);
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn amd_hevc_moves_its_frame_rate() {
+    amf_walk(Codec::H265, "amf hevc", Run::Rates);
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires the vendor's GPU and driver"]
+fn amd_spends_the_share_of_the_rate_it_was_moved_to() {
+    amf_walk(Codec::H264, "amf h264", Run::Spend);
+    amf_walk(Codec::H265, "amf hevc", Run::Spend);
+}
+
+#[cfg(windows)]
+fn vpl_walk(codec: Codec, name: &str, run: Run) {
+    let (fps, bitrate_bps) = start_of(run);
     let d3d11 = D3d11::load().expect("the system's libraries");
     let adapter = adapter(&d3d11, INTEL);
     let index = d3d11
@@ -556,8 +751,8 @@ fn vpl_walk(codec: Codec, name: &str) {
             },
             width: WIDTH,
             height: HEIGHT,
-            fps: 60,
-            bitrate_bps: 20_000_000,
+            fps,
+            bitrate_bps,
             min_qp: WALK[0].min_qp(),
             thorough: WALK[0].thorough(),
             chroma: vpl::Chroma::Yuv420,
@@ -566,20 +761,19 @@ fn vpl_walk(codec: Codec, name: &str) {
     )
     .expect("an encoder");
     let decoding = d3d11.open(adapter.luid).expect("a second device");
-    let walked = walk(&mut encoder, 2, name);
-    check_d3d11(name, codec, &decoding, walked);
+    run_d3d11(&mut encoder, 2, name, codec, &decoding, run);
 }
 
 #[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn intel_h264_moves_live() {
-    vpl_walk(Codec::H264, "vpl h264");
+    vpl_walk(Codec::H264, "vpl h264", Run::Qualities);
 }
 
 #[cfg(windows)]
 #[test]
 #[ignore = "requires the vendor's GPU and driver"]
 fn intel_hevc_moves() {
-    vpl_walk(Codec::H265, "vpl hevc");
+    vpl_walk(Codec::H265, "vpl hevc", Run::Qualities);
 }

@@ -99,8 +99,8 @@ impl Quality {
     }
 }
 
-/// What moving a running encoder to another quality cost
-/// ([`Encoder::set_quality`]).
+/// What moving a running encoder to another quality or frame rate cost
+/// ([`Encoder::set_quality`], [`Encoder::set_fps`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moved {
     /// Taken as it runs: no keyframe, the reference chain unbroken.
@@ -186,6 +186,18 @@ pub trait Encoder {
     /// that is wrong with no error anywhere: measured on one vendor, until its
     /// reference count was pinned.
     fn set_quality(&mut self, _quality: Quality) -> Result<Moved, Self::Error> {
+        Ok(Moved::Rebuild)
+    }
+
+    /// Move the running encoder to `fps` pictures a second for subsequent
+    /// pictures, and say what that cost.
+    ///
+    /// **The rate a rate control shares the bitrate out by**, so an encoder
+    /// fed at another pace than it runs at spends another pace's share on
+    /// every picture: a quarter of the bitrate at 30 under an encoder at 120.
+    /// **A backend not shown to move answers [`Moved::Rebuild`]** and changes
+    /// nothing.
+    fn set_fps(&mut self, _fps: u32) -> Result<Moved, Self::Error> {
         Ok(Moved::Rebuild)
     }
 
