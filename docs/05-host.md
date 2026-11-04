@@ -561,6 +561,33 @@ matched by its maker's, device's and board's numbers, so two identical boards ar
 driver. The cost measured is 1 to 2.4 W while a stream runs. Linux is not measured, and its host
 does not hold.
 
+### §4.3 A frame rate moved while a stream runs
+
+*Added 2026-11-04.* **An encoder's rate control shares the rate out per picture at the frame rate
+it runs at**, so a stream paced at another rate spends another rate's share on every picture: at
+30 a second under an encoder at 120, a quarter of the rate asked, and the motion that needs it most
+smears. A change of `fps` that moves the pace ([06 §3](06-api.md)) is therefore asked of the
+encoder, as a quality is ([§4.1](#41-where-a-host-sits-between-delay-and-picture)), and answered
+the same three ways. Measured at 1280x720 against a source whose every picture costs its whole
+share, the rate moved from 120 through 30, 60, 144, 30 and 240:
+
+- **NVIDIA's moves as it runs, in both codecs**: the rate and the buffer sized for it in one
+  reconfiguration of under a tenth of a millisecond, no keyframe, every picture decoded; a picture
+  after each move costs what one at the new rate does, 0.60 to 0.80 of its share at every rate, as
+  at the rate it was built at.
+- **AMD's moves at a keyframe**: the rate written as it runs, which the runtime takes into its rate
+  control and opens a new sequence for on the next picture itself, in both codecs.
+- **Intel's is rebuilt**: its runtime refuses a reset that moves the rate and continues the
+  sequence, refuses one that moves the buffer even in a new sequence, and a buffer left at the
+  pictures it was built with is a picture and a half at 30 after 120 -- too little for its first
+  codec to raise its rate again after a cut ([§5](#5-congestion-and-the-frame-gate)).
+- **VA-API and Vulkan Video are rebuilt**: neither has been shown to move.
+
+**A rebuild takes the capture down with the encoder**: about a tenth of a second without
+pictures on the development machine, and on the host's own display, which follows the rate
+([06 §3](06-api.md) `virtual_hz`), a mode put as well. A move on the running encoder costs the
+call.
+
 ## §5 Congestion and the frame gate
 
 Two actuators, driven entirely by host-local signals ([01 §10](01-protocol.md)). There is no

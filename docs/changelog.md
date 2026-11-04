@@ -3,6 +3,18 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-04 - A change of frame rate moves the running encoder
+
+### Changed
+- **A change of `fps` that moves the pace is asked of the running encoder**, as a quality is
+  ([05 §4.3](05-host.md), [06 §3](06-api.md)), where it rebuilt the stream: NVIDIA's moves as it
+  runs, in a call of under a tenth of a millisecond with no keyframe, and AMD's at a keyframe the
+  runtime makes itself. The rebuild took the capture down with the encoder -- about a tenth of a
+  second without pictures at every change -- and stays for the encoders that cannot move:
+  Intel's, whose runtime refuses the buffer the move needs, and VA-API and Vulkan Video.
+- `lowlat-encode`: `Encoder::set_fps`, answering what the move cost as `set_quality` does; a
+  backend not shown to move answers that it must be rebuilt.
+
 ## 2026-11-03 - A frame rate that moves the pace rebuilds the encoder
 
 ### Fixed

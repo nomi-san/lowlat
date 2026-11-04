@@ -1426,6 +1426,10 @@ once, here.
   host's own display -- plugged, not watched -- at the new refresh, plugging it again for one it
   did not list, which moved windows onto it and stalled the stream for 400 to 760 ms; it follows
   the rate only while it is the display streamed now ([06 §3](06-api.md) `virtual_hz`).
+  *The next day, at the maintainer's ask:* the rebuild's pause went too -- **a change of rate is
+  moved on the running encoder** ([05 §4.3](05-host.md)): NVIDIA's as it runs, AMD's at a
+  keyframe of its own; Intel's runtime refuses the buffer such a move needs, so Intel's encoder
+  is still rebuilt.
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2764,6 +2768,8 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-04: W2.9: a change of frame rate moves the running encoder, NVIDIA's as it runs and
+  AMD's at a keyframe; Intel's still rebuilt; 05 §4.3 added, 06 §3 amended.
 - 2026-11-03: W2.9: a frame rate that moves the pace rebuilds the encoder, found at the desk; a
   change of bitrate keeps the rate asked; the host's own display follows the rate only while it
   is streamed; 06 §3 corrected again and `virtual_hz` amended, 11 §1.5 amended.
