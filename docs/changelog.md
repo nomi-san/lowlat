@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-04 - The demo draws nothing unseen, and less behind other windows
+
+### Changed
+- **A window nobody can see draws nothing**: minimized or hidden, the demo went on drawing at the
+  pictures' rate, at the same cost to the GPU as a window on the screen. The picture on the screen
+  stays held and the newest is taken when the window comes back; what it passed over is not counted
+  as skipped.
+- **Behind other windows a picture is waited for 100 ms, not 20**, so a still stream's picture is
+  drawn again ten times a second, not fifty. A new picture ends the wait at once.
+
+### Checked
+- Without the library or a host, the toolkit drawing as the demo's loop does on the RTX 5060's
+  monitor: at 120 pictures a second 120 draws a second shown, none minimized or hidden, and 120
+  again after each; covered or cloaked it goes on. At one picture a second behind another window,
+  48 draws a second to 10, the 3D engine 9.8 to 2.3 ms a second. The demo's files compile at their
+  warnings with both Windows compilers.
+
+### Not run
+- A session, which takes a host; the window in front, whose wait is the 20 ms it was; Linux and
+  macOS, whose answers to the two questions were read, not run.
+
 ## 2026-11-04 - The demo leaves the pointer alone from behind
 
 ### Fixed
