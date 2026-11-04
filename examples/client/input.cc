@@ -229,12 +229,16 @@ void tick(double now_ms)
 
 void host_relative(const lowlat_relative_event *r)
 {
-	// On the way out the pointer reappears where the host says, once.
+	// On the way out the pointer reappears where the host says, once, if the
+	// window is in front: from behind it would take the pointer from whatever
+	// the user is doing. Whether the platform can warp at all is a separate
+	// question, and says nothing of the window.
 	_relative = r->relative;
 	_released = false;
 	apply_relative();
-	if (!_relative && r->x >= 0 && r->y >= 0)
-		MTY_WindowWarpCursor(app::toolkit(), app::window(), (uint32_t) r->x, (uint32_t) r->y);
+	MTY_App *toolkit = app::toolkit();
+	if (!_relative && r->x >= 0 && r->y >= 0 && MTY_AppCanWarpCursor(toolkit) && MTY_AppIsActive(toolkit))
+		MTY_WindowWarpCursor(toolkit, app::window(), (uint32_t) r->x, (uint32_t) r->y);
 	printf("demo: pointer %s\n", _relative ? "captured by the host" : "returned");
 }
 

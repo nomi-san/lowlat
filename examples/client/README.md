@@ -184,7 +184,8 @@ Keyboard and mouse go to the host as the toolkit reports them, pads as SDL
 does; the rectangle the picture is drawn into is told to the library, which maps
 positions into the picture, so a resized window or a picture shown at its
 own size aims the same. When the host captures the pointer the demo confines
-and hides its own, and warps it back where the host says on the way out.
+and hides its own, and warps it back where the host says on the way out, if
+its window is in front.
 The chords are the demo's and are never sent, `Ctrl+Shift` and a letter:
 `I` grabs the keyboard (and lets it go), so the desktop's own keys -- the
 Windows key, its task switch -- go to the host while the window has the
