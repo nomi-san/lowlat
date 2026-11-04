@@ -1417,7 +1417,15 @@ once, here.
   settled it -- and a quality or a level asked after it pinned the rate to the pace read back.
   Both fixed: the stream settles a change as a build does ([06 §3](06-api.md) `fps`, corrected),
   and the desk asks from the rate asked; the host's own display, which re-plugs for a rate, was
-  never affected.
+  never affected. *And after it:* motion at 60 and 30 on that panel smeared where the established
+  host's stayed clean at the same rates -- a change of rate moved the pacing alone, and the
+  encoder went on sharing the rate out per picture at the rate it was built at, a quarter of it
+  at 30 under 120. A change that moves the pace now rebuilds the stream
+  ([06 §3](06-api.md) `fps`, corrected again), and a change of bitrate keeps the rate asked, as
+  the desk's other changes do. With that, streaming the panel, each change of rate also put the
+  host's own display -- plugged, not watched -- at the new refresh, plugging it again for one it
+  did not list, which moved windows onto it and stalled the stream for 400 to 760 ms; it follows
+  the rate only while it is the display streamed now ([06 §3](06-api.md) `virtual_hz`).
 
 **Gate:** the host on the development machine, with established clients on macOS and Android on
 the same LAN:
@@ -2756,6 +2764,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-03: W2.9: a frame rate that moves the pace rebuilds the encoder, found at the desk; a
+  change of bitrate keeps the rate asked; the host's own display follows the rate only while it
+  is streamed; 06 §3 corrected again and `virtual_hz` amended, 11 §1.5 amended.
 - 2026-11-03: W2.9: a frame rate changed while streaming is settled as a build settles it, found
   at the desk; 06 §3 corrected.
 - 2026-11-03: W2.9: the desk sets the frame rate, the quality and the congestion level from the

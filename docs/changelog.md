@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-03 - A frame rate that moves the pace rebuilds the encoder
+
+### Fixed
+- **A stream asked for a lower frame rate than it was built at smeared in motion**
+  ([06 §3](06-api.md) `fps`): a change of rate moved the pacing alone, and the encoder went on
+  sharing the rate out per picture at the rate it was built at, so 30 asked of a stream built at
+  120 spent a quarter of the rate on each picture. Found at the desk at 60 and 30 on a 120 Hz
+  panel. A change that moves the pace now rebuilds the stream around it, for one coded refresh,
+  every guest keeping its seat; one that leaves the pace where it was moves nothing, and one asked
+  while the stream is being built is taken before its first picture.
+- **A change of bitrate, from the tray or a guest's message, no longer pins the frame rate** to
+  the pace read back: the display's own rate, once chosen, stays chosen.
+
+### Changed
+- **The host's own display follows the frame rate only while it is the display streamed**
+  ([06 §3](06-api.md) `virtual_hz`). With a change of rate rebuilding, each one put it at a new
+  mode while another output was streamed -- plugged again for a refresh it did not list, which
+  moved windows onto it -- and stalled the stream being watched for 400 to 760 ms against 115
+  for the rebuild alone. Found at the desk the same day.
+
 ## 2026-11-03 - A frame rate changed while streaming is settled as a build settles it
 
 ### Fixed

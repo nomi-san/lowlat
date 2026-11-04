@@ -231,6 +231,11 @@ there, and written back as read it stands.
   configured size, though the same mode was put at once from the signed-in desktop. An attempt
   waits no more than a tenth of a second, on the stream's own thread between two pictures, so a
   system that goes on refusing costs a stream one short pause every two seconds.
+  *Amended 2026-11-03:* **a frame-rate ceiling is its refresh only while a stream captures it**;
+  a stream of another output leaves the refresh as it is ([06 §3](06-api.md) `virtual_hz`).
+  Once a change of rate rebuilt the stream, each one put the display nobody watched at a new
+  mode, plugged again for a refresh it did not list -- which moved windows onto it -- and the
+  stream of the display being watched stalled for 400 to 760 ms, measured.
 
 ### §1.6 Pictures
 
