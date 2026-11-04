@@ -51,6 +51,18 @@ static uint64_t _gfx_adapter;
 // none.
 static bool _loaded;
 static double _loaded_ms;
+// How long a new picture is waited for before the one on the screen is drawn
+// again. A new picture ends the wait at once, so behind other windows only the
+// repeats get rarer.
+static constexpr uint32_t WAIT_IN_FRONT_MS = 20;
+static constexpr uint32_t WAIT_BEHIND_MS = 100;
+// The window's state, asked at most ten times a second while it is seen: on
+// X11 each question is a round trip to the server.
+static double _window_asked_ms;
+static bool _window_seen = true;
+static bool _window_in_front = true;
+// The window has just come back: what it passed over was no skip.
+static bool _came_back;
 
 static std::atomic_uint _width;
 static std::atomic_uint _height;
@@ -158,6 +170,20 @@ static void *present_loop(void *opaque) noexcept
 #endif
 	while (!app::quitting()) {
 		double t = clocks::now_ms();
+		// A window nobody can see draws nothing, since drawing it costs the GPU
+		// what drawing a seen one does. The picture on the screen stays held,
+		// and the newest is taken when the window comes back.
+		if (!_window_seen || t - _window_asked_ms >= 100.0) {
+			_window_asked_ms = t;
+			_window_seen = MTY_WindowIsVisible(toolkit, window);
+			_window_in_front = MTY_AppIsActive(toolkit);
+		}
+		if (!_window_seen) {
+			_came_back = true;
+			_shown_at_ms = 0.0;
+			MTY_Sleep(50);
+			continue;
+		}
 		double taken_ms = 0.0;
 		uint64_t arrived_us = 0;
 		// The poll: the newest picture, or nothing new. **It waits for the
@@ -176,15 +202,17 @@ static void *present_loop(void *opaque) noexcept
 			_last_poll_ms = t;
 			_polls.fetch_add(1);
 			lowlat_frame fresh{.size = sizeof(lowlat_frame)};
-			uint32_t wait_ms = knobs.poll_period_ms > 0.0 ? 0 : 20;
+			uint32_t idle_ms = _window_in_front ? WAIT_IN_FRONT_MS : WAIT_BEHIND_MS;
+			uint32_t wait_ms = knobs.poll_period_ms > 0.0 ? 0 : idle_ms;
 			lowlat_status s = lowlat_client_acquire_frame(client, 0, wait_ms, &fresh);
 			if (s == LOWLAT_OK) {
 				taken_ms = clocks::now_ms();
 				arrived_us = fresh.arrived_us;
 				if (_showing)
 					lowlat_client_release_frame(client, &_shown, NULL);
-				if (_showing && fresh.sequence > _last_sequence + 1)
+				if (_showing && !_came_back && fresh.sequence > _last_sequence + 1)
 					_skips.fetch_add((uint32_t) (fresh.sequence - _last_sequence - 1));
+				_came_back = false;
 				_last_sequence = fresh.sequence;
 				_shown = fresh;
 				_showing = true;
@@ -221,7 +249,7 @@ static void *present_loop(void *opaque) noexcept
 				// to wait on and answers at once, so the wait is made here
 				// rather than spun.
 				if (s == LOWLAT_ERR_NOT_STARTED)
-					MTY_Sleep(20);
+					MTY_Sleep(idle_ms);
 			}
 		}
 
