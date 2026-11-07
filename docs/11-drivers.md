@@ -151,6 +151,11 @@ there, and written back as read it stands.
 - **A monitor's modes are fixed when it arrives**: a built-in list of common sizes at common
   rates, the custom modes, and the mode the plug asks for, kept within about ninety entries -- a
   monitor with around a hundred has been seen not to arrive. The preferred one is the plug's.
+  *Amended 2026-11-04:* **the system takes a monitor listing a hundred modes and refuses one
+  listing a hundred and one**, measured on Windows 10 -- it asks for every mode, then refuses the
+  arrival as not supported -- and ninety keeps a margin for a build not measured. The built-in
+  list is twelve sizes at 30, 60, 120, 144 and 165 Hz: 30 was not among them, so the first
+  stream asked for 30 a second plugged the host's own display again for it.
 - **A listed mode is set through the system's display configuration.** A kept monitor's is saved
   in the system's database of arrangements, as any monitor's is, so it comes back after a reboot
   where it was; a bound monitor's never is. **An arrangement in which only virtual displays would
@@ -385,6 +390,11 @@ into targets of its own, by measurement.
   after a restart and 283 ms after the process's end; updated twice under a stream, the driver
   was installed with no reboot owed and the guest kept, about 0.9 s without pictures, most of it
   the stream's wait for its once-a-second look at its display.
+  *Corrected 2026-11-07:* **not in a room emptied after a stream**, found at the desk. The host
+  looked at its display only while waiting for a first guest and as a stream was built; a stream
+  outlives its last guest, so a driver updated with nobody connected, after somebody had been,
+  left the display unplugged until the next guest arrived. It is looked at once a second in an
+  empty room too.
 - A GPU reset reassigns every swapchain; no monitor departs during one.
   *Measured 2026-10-16, at W3.5's review:* **the GPU's driver restarted, the system assigned the
   next swapchain on the same GPU by itself**, under the GPU's new identity, 3.5 s after the last

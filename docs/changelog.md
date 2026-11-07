@@ -3,6 +3,18 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-07 - The host's own display in an empty room; the tray offers no 240
+
+### Fixed
+- **The host's own display comes back within a second of its driver, however long since the
+  last guest left** ([11 §1.8](11-drivers.md)): a room left empty after a stream never looked at
+  the display, so a driver updated with nobody connected, after somebody had been, left it
+  unplugged until the next guest arrived.
+
+### Changed
+- **The tray's frame rates are the display's own and 30, 60, 120 and 144 a second**: 240, which
+  the host's own display no longer lists, would plug it again.
+
 ## 2026-11-04 - The demo draws nothing unseen, and less behind other windows
 
 ### Changed
@@ -84,6 +96,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ### Not run
 - Against an established host: the pictures here are a second device's clears, the arrangement of
   2026-10-27, whose figures this reproduces.
+
+## 2026-11-04 - The host's own display lists 30 Hz
+
+### Changed
+- **Every monitor of the display driver lists twelve common sizes at 30, 60, 120, 144 and 165
+  Hz** ([11 §1.5](11-drivers.md)), where it listed thirteen at 60, 120, 144 and 240: a stream asked
+  for 30 a second plugged the host's own display again for the rate, and windows moved onto it.
+  1680x1050 and 240 Hz are no longer listed; a mode not listed is still a replug of that monitor
+  alone.
+- **The limit on a monitor's list, measured**: the system takes a monitor listing a hundred modes
+  and refuses one listing a hundred and one, on Windows 10. The driver keeps to ninety.
 
 ## 2026-11-04 - A change of frame rate moves the running encoder
 

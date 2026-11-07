@@ -2770,6 +2770,11 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-07: W2.9: the host's own display is looked after in an empty room too, found at the
+  desk after a driver update; the tray offers no 240; 11 §1.8 corrected.
+- 2026-11-04: W2.9: the host's own display lists 30 Hz (and 165, no longer 240 or 1680x1050),
+  found at the desk: the first change to 30 plugged it again; a monitor's list limit measured at a
+  hundred; 11 §1.5 amended.
 - 2026-11-04: W2.9: a change of frame rate moves the running encoder, NVIDIA's as it runs and
   AMD's at a keyframe; Intel's still rebuilt; 05 §4.3 added, 06 §3 amended.
 - 2026-11-03: W2.9: a frame rate that moves the pace rebuilds the encoder, found at the desk; a
