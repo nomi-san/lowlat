@@ -58,7 +58,7 @@ impl fmt::Display for Mode {
 pub const DEFAULT: Mode = Mode::new(1920, 1080, 60);
 
 /// The common sizes every monitor lists.
-pub const SIZES: [(u32, u32); 13] = [
+pub const SIZES: [(u32, u32); 12] = [
     (3840, 2160),
     (3440, 1440),
     (2560, 1600),
@@ -66,7 +66,6 @@ pub const SIZES: [(u32, u32); 13] = [
     (2560, 1080),
     (1920, 1200),
     (1920, 1080),
-    (1680, 1050),
     (1600, 900),
     (1440, 900),
     (1366, 768),
@@ -74,17 +73,24 @@ pub const SIZES: [(u32, u32); 13] = [
     (1280, 720),
 ];
 
-/// The rates every listed size comes at.
-pub const RATES: [u32; 4] = [60, 120, 144, 240];
+/// The rates every listed size comes at. **30 among them**, so a stream asked
+/// for 30 a second puts the host's own display there without plugging it
+/// again, as one unlisted did.
+pub const RATES: [u32; 5] = [30, 60, 120, 144, 165];
 
 /// The custom modes the file may name (section 1.4), each listed by every
 /// monitor plugged after.
 pub const MAX_CUSTOM: usize = 16;
 
-/// The most modes a monitor lists: about ninety, since a monitor with around
-/// a hundred has been seen not to arrive. The plug's mode, its size at the
-/// listed rates, every custom mode and every listed size at every rate fit.
+/// The most modes a monitor lists. **The system takes a monitor listing a
+/// hundred and refuses one listing a hundred and one**, after asking for all of
+/// them, measured on Windows 10; ninety keeps a margin for a build not
+/// measured. The plug's mode, its size at the listed rates, every custom mode
+/// and every listed size at every rate fit.
 pub const MAX_MODES: usize = 90;
+
+// Within what the system takes (above).
+const _: () = assert!(MAX_MODES <= 100);
 
 /// The modes a monitor arrives with: the plug's own first and preferred, the
 /// plug's size at every listed rate, the custom modes, then every listed size
@@ -163,7 +169,7 @@ mod tests {
         }
         // The plug's size at the listed rates, then the custom ones, then
         // the listed sizes.
-        assert!(modes.contains(&Mode::new(2880, 1800, 240)));
+        assert!(modes.contains(&Mode::new(2880, 1800, 165)));
         assert!(list.lists(Mode::new(1920, 1080, 75)));
         assert!(list.lists(DEFAULT));
         assert!(!list.lists(Mode::new(1920, 1080, 75 + 1)));
@@ -187,7 +193,8 @@ mod tests {
     fn a_listed_mode_is_not_listed_again() {
         let list = ModeList::for_plug(DEFAULT, &[]);
         assert_eq!(list.as_slice().len(), SIZES.len() * RATES.len());
-        let fresh = ModeList::for_plug(Mode::new(3000, 2000, 30), &[]);
+        // A size and a rate no listed entry has.
+        let fresh = ModeList::for_plug(Mode::new(3000, 2000, 75), &[]);
         assert_eq!(
             fresh.as_slice().len(),
             1 + RATES.len() + SIZES.len() * RATES.len()
@@ -198,13 +205,27 @@ mod tests {
     fn the_cap_holds_a_fresh_plug_and_every_custom_mode() {
         let custom: [Mode; MAX_CUSTOM] =
             core::array::from_fn(|i| Mode::new(700 + u32::try_from(i).expect("small"), 500, 50));
-        let list = ModeList::for_plug(Mode::new(3000, 2000, 30), &custom);
+        let list = ModeList::for_plug(Mode::new(3000, 2000, 75), &custom);
         assert_eq!(
             list.as_slice().len(),
             1 + RATES.len() + MAX_CUSTOM + SIZES.len() * RATES.len()
         );
         assert!(list.as_slice().len() <= MAX_MODES);
         assert!(list.lists(Mode::new(715, 500, 50)), "the last custom mode");
+    }
+
+    /// **30 a second is listed at every size**: unlisted, the first stream
+    /// asked for it plugged the host's own display again, and windows moved
+    /// onto it.
+    #[test]
+    fn thirty_a_second_is_listed_at_every_size() {
+        let list = ModeList::for_plug(DEFAULT, &[]);
+        for (width, height) in SIZES {
+            assert!(
+                list.lists(Mode::new(width, height, 30)),
+                "{width}x{height}@30"
+            );
+        }
     }
 
     #[test]

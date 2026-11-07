@@ -609,7 +609,6 @@ mod tests {
                 tray::FPS_AT + 60,
                 tray::FPS_AT + 120,
                 tray::FPS_AT + 144,
-                tray::FPS_AT + 240,
                 tray::QUALITY_AT,
                 tray::QUALITY_AT + 1,
                 tray::QUALITY_AT + 2,
@@ -622,13 +621,13 @@ mod tests {
         assert_eq!(click_of(&numbered, 2), Some(Click::Kick(1)));
         assert_eq!(click_of(&numbered, 7), Some(Click::Bitrate(30)));
         assert_eq!(click_of(&numbered, 9), Some(Click::Fps(0)));
-        assert_eq!(click_of(&numbered, 14), Some(Click::Fps(240)));
-        assert_eq!(click_of(&numbered, 16), Some(Click::Quality(1)));
-        assert_eq!(click_of(&numbered, 20), Some(Click::CgLevel(2)));
+        assert_eq!(click_of(&numbered, 13), Some(Click::Fps(144)));
+        assert_eq!(click_of(&numbered, 15), Some(Click::Quality(1)));
+        assert_eq!(click_of(&numbered, 19), Some(Click::CgLevel(2)));
         // Nothing chosen, the status line, and a number past the menu.
         assert_eq!(click_of(&numbered, 0), None);
         assert_eq!(click_of(&numbered, 1), None);
-        assert_eq!(click_of(&numbered, 21), None);
+        assert_eq!(click_of(&numbered, 20), None);
         assert!(
             u16::try_from(numbered.len()).is_ok(),
             "every command fits the sixteen bits a menu command carries"

@@ -160,7 +160,7 @@ pub(crate) const QUALITIES: [(&str, &str); 3] = [
 const LEVEL_NAMES: [&str; 3] = ["Aggressive", "Sensitive", "Relaxed"];
 
 /// The frame-rate ceilings offered beside the display's own rate.
-const OFFERED_FPS: [u32; 5] = [30, 60, 120, 144, 240];
+const OFFERED_FPS: [u32; 4] = [30, 60, 120, 144];
 
 /// What the desk asks of the stream that no guest's message carries, in the
 /// words both platforms' trays send it in: the frame rate (the display's own
@@ -516,7 +516,6 @@ mod tests {
                 (FPS_AT + 60, true),
                 (FPS_AT + 120, false),
                 (FPS_AT + 144, false),
-                (FPS_AT + 240, false),
             ]
         );
         let names: Vec<String> = entries(&tree, LEVELS).into_iter().map(|e| e.1).collect();
@@ -545,7 +544,7 @@ mod tests {
     #[test]
     fn every_entry_asks_for_what_it_names() {
         assert_eq!(clicked(FPS_AT), Some(Click::Fps(0)));
-        assert_eq!(clicked(FPS_AT + 240), Some(Click::Fps(240)));
+        assert_eq!(clicked(FPS_AT + 144), Some(Click::Fps(144)));
         assert_eq!(clicked(RATE_AT + 30), Some(Click::Bitrate(30)));
         assert_eq!(clicked(QUALITY_AT), Some(Click::Quality(0)));
         assert_eq!(clicked(QUALITY_AT + 2), Some(Click::Quality(2)));
