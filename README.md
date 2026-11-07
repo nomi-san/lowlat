@@ -235,7 +235,8 @@ distribution's package recipe. What the machine needs at run time is loaded, not
 pulse server is one) and its client library; and the user-space driver of the GPU that
 encodes -- NVIDIA's for NVENC; for VA-API, Mesa's on AMD or Intel's media driver; the Vulkan
 loader for Vulkan Video. A Mesa built without the H.264 and HEVC codecs, as some
-distributions ship it, offers VA-API no encoder at all.
+distributions ship it, offers VA-API no encoder at all; **Fedora is one of them, and
+[09 §4a](docs/09-compatibility.md) names the package that carries the codecs back.**
 
 ## Documentation
 
