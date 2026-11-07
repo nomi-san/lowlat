@@ -179,6 +179,35 @@ the only way in. *Measured: the runtime's own link table and imported symbols.*
 
 ---
 
+## §4a Distributions that build the codecs out
+
+VAAPI's encoder is reached through a driver that the distribution builds, and one distribution
+builds the codecs out of it. The card is not the problem there and nothing about the part says
+so: the profiles are still listed, VAAPI still initialises, and the entry point the encode asks
+for is simply absent.
+
+| Distribution | Package | Encoder entry point |
+|---|---|---|
+| Arch | `mesa` | present: `radeonsi_drv_video.so` is built with both codecs |
+| Fedora | `mesa-dri-drivers`, which now provides `mesa-va-drivers` | **absent** |
+| Fedora, RPM Fusion | `mesa-va-drivers-freeworld` | present |
+
+**On Fedora this is a deliberate build decision, not a packaging accident.** The `%meson`
+invocation in `mesa.spec` enables `gallium-va` and passes no `-Dvideo-codecs=` at all, and the
+changelog carries "Drop codecs" (22.2.0~rc3-4, September 2022) with no re-enable after it. RPM
+Fusion's `mesa-va-drivers-freeworld` carries H.264 and HEVC encode and **replaces** the Fedora
+package rather than sitting beside it. Note that `mesa-va-drivers` is itself obsoleted into
+`mesa-dri-drivers` on current rawhide, so installing it by name gets a provide and not a driver.
+*From the packaging: the spec's build flags and the changelog, not a Fedora machine.*
+
+**The symptom is `vainfo` and not a refusal with a reason.** A host on that Mesa names the
+encode stage when it refuses, and `vainfo` is what distinguishes this from a card that cannot
+encode: the profiles appear with `VAEntrypointVLD` alone and no `VAEntrypointEncSlice`. Where
+the entry point is listed, the driver is not the fault and §3 and §4 above are. *From the
+packaging.*
+
+---
+
 ## §5 NVIDIA
 
 | Generation | Capture | Conversion | Encode | Hosts? |
