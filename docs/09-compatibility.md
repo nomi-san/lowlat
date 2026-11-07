@@ -132,6 +132,38 @@ version, not only the part. *From the driver.*
 
 ---
 
+## §3a Distributions that build the codecs out
+
+VAAPI's encoder is reached through a driver that the distribution builds, and the codecs are a
+build option of that driver. One distribution sets it to leave H.264 and HEVC out. The card is
+not the problem there and nothing about the part says so: VAAPI still initialises, and the
+profiles are simply not listed.
+
+| Distribution | Package | Profiles |
+|---|---|---|
+| Arch | `mesa` | H.264 and HEVC, encode included |
+| Fedora | `mesa-va-drivers`, folded into `mesa-dri-drivers` since 26.0.0-5 | **absent** |
+| Fedora, RPM Fusion | `mesa-va-drivers-freeworld` | H.264 and HEVC, encode included |
+
+**On Fedora this is a deliberate build decision, not a packaging accident.** Mesa's
+`video-codecs` option defaults to `all_free` -- AV1, VP9, MPEG-1/2 and JPEG -- and Fedora's
+`%meson` invocation passes no `-Dvideo-codecs=` at all, so H.264 and HEVC are out of the build
+for **decode as well as encode**. The changelog carries "Drop codecs" (22.2.0~rc3-4, September
+2022) with no re-enable after it. RPM Fusion's `mesa-va-drivers-freeworld` builds all of them;
+its driver lands in `dri-freeworld` **beside** Fedora's rather than replacing it, and Fedora's
+`libva` searches `dri-nonfree`, then `dri-freeworld`, then `dri`, so the freeworld driver is the
+one used. *From the packaging: both specs' build flags, the changelog, and libva's driver
+directory order.*
+
+**The symptom is `vainfo`, and it separates two different failures.** No H.264 or HEVC profile
+at all is this build: `vlVaQueryConfigProfiles` lists a profile only where the codec is built
+in, for decode or encode. A profile with `VAEntrypointVLD` alone and no `VAEntrypointEncSlice`
+is a part that cannot encode, which is §3 and §4. Where the entry point is listed, the driver
+is not the fault. *From the source: `vl_codec_supported` and `vlVaQueryConfigProfiles` in
+Mesa.*
+
+---
+
 ## §4 Intel
 
 | Generation | Capture | Conversion | Encode | Hosts? |

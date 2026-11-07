@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-15 - The codecs a distribution builds out
+
+### Changed
+- **09 §3a, distributions that build the codecs out of their Mesa.** A card that encodes can be
+  refused for a reason that has nothing to do with the card: Fedora's Mesa is built without
+  H.264 and HEVC, for decode as well as encode, so those profiles are not listed at all. RPM
+  Fusion's `mesa-va-drivers-freeworld` builds them in; its driver lands in `dri-freeworld`
+  beside Fedora's and `libva` finds it first. `vainfo` tells the two failures apart: no profile
+  is this build, and a profile with `VAEntrypointVLD` alone is a part that cannot encode.
+
+### Checked
+- Arch, on the CachyOS machine this was found on (AMD Renoir): `vainfo` lists both codec
+  profiles with `VAEntrypointEncSlice`, and a stock client streams H.264 and HEVC over VAAPI
+  from it.
+
+### Not run
+- Fedora. The absence is read from `mesa.spec`'s build flags and the changelog entry that
+  dropped the codecs, the remedy from RPM Fusion's spec, and the driver order from Fedora's
+  `libva` spec; no Fedora machine encoded anything here.
+
 ## 2026-11-13 - The web client through a relay
 
 ### Added
