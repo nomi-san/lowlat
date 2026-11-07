@@ -3953,6 +3953,13 @@ fn encode_loop<E: Encoder + FromDevice>(
         // else.** Switching sound off while a host runs arrives the same way.
         reconcile_sound(shared, active.len(), &config);
         if active.is_empty() {
+            // **The host's own display is looked after here as the waiting
+            // loop looks after it**, once a second: a run outlives its last
+            // guest, and a driver that went and came back while the room was
+            // empty left the display unplugged until somebody arrived.
+            if let Some(own) = own.as_deref_mut() {
+                own.idle(shared, &config);
+            }
             std::thread::sleep(IDLE_WAIT);
             next_frame_ms = lowlat_common::clock::elapsed_ms(started);
             continue;
