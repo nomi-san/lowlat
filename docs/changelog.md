@@ -3,6 +3,39 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-09 - Intel's older video runtime is no longer opened
+
+### Fixed
+- **Listing the decoders no longer ends the process on a machine whose Intel install mixes two
+  driver packages** ([10 SEC5.2](10-client.md)): there the older runtime's first decoder build
+  faulted inside the vendor's code, through Direct3D 11 and through Direct3D 9 alike, and an
+  application listing the decoders at its start crashed at launch.
+
+### Changed
+- **Intel's older runtime is no longer opened**: a part the current runtime does not reach has no
+  Intel row -- its slot says the runtime is not on the machine, and the `MFX [Intel]` label is
+  gone -- and decodes through the system's interface, which the automatic order already chose
+  there and which decoded no slower than the older runtime on the same GPU.
+
+### Checked
+- On the machine that crashed (an i5-6500T's HD 530, two Intel driver packages), before the
+  change: the older runtime opened every way, each in a process of its own -- Direct3D 11,
+  Direct3D 9 and either, by both ways of starting a session -- crashed in all six at the first
+  decoder build; the same runtime layout on a 2015 laptop decoded the committed clip bit for bit
+  through all six.
+- After: on the 2015 laptop the decoder table gives the system's interface on its Intel GPU (H.264
+  and HEVC at both depths, by handle) and the vendor slot saying the runtime is not on the
+  machine. On the Arc A380, Intel's decoder as before: every clip bit for bit by planes and
+  through the textures in the readers' order, nothing allocated per unit, the client's queue
+  whole. The Windows workspace's lints; the changed crates' tests; the header regenerated, one
+  line of its label list. On Linux the workspace's ASCII and formatting and the SDK's lints and
+  header test; one SDK test, which needs a localhost answering on both address families, fails
+  there with and without this change.
+
+### Not run
+- The crashing machine with this build, and the 2012 laptop whose Intel row never appeared; macOS,
+  untouched but for the header's comment.
+
 ## 2026-11-07 - The host's own display in an empty room; the tray offers no 240
 
 ### Fixed

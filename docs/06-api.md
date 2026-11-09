@@ -946,9 +946,10 @@ GPU opens Intel's own decoder through the runtime its display driver installs, f
 GPU itself. Its current runtime decodes on the library's own device and hands out both kinds --
 planes, and by handle the same shared textures as the open decoder, signalled on the library's
 fence -- full chroma at both depths where the GPU has it. A part the current runtime does not
-reach has the older one, which hands out planes alone, eight-bit and ten-bit 4:2:0. The slot is
-the maker's own, 8 to 15, labelled `VPL [Intel]` (`MFX [Intel]` for the older runtime), its
-words the GPU's name and the runtime's version; its size limits are the device's as the open
+reach has no Intel decoder (*amended 2026-11-09*: the older runtime it was given until then,
+labelled `MFX [Intel]`, is no longer opened, [10 §5.2](10-client.md)); its slot says the
+runtime is not on the machine and the open decoder serves it. The slot is the maker's own, 8
+to 15, labelled `VPL [Intel]`, its words the GPU's name and the runtime's version; its size limits are the device's as the open
 decoder finds them. `LOWLAT_DECODER_AUTO` keeps the open decoder first on an Intel GPU and
 Intel's second, having measured it no faster there ([10 §5.2](10-client.md)). A device lost
 under it is found again on the same GPU and a session of the runtime made again there; the

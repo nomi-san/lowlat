@@ -170,7 +170,8 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   after W1.4*: W1 builds Intel's VPL too, as W1.7, though D3D11 did not prove short on the
   Intel card, so that every Intel part has its vendor's runtime, the older ones through MFX;
   on an Intel GPU it comes first only if it measures faster than D3D11. NVDEC moves ahead of
-  AMF, as W1.5.)
+  AMF, as W1.5. *Amended 2026-11-09*: the older MFX dropped, W1.7 below; the parts only it
+  reaches decode through D3D11.)
 - **The software decoders**: the pair keeps D14's rule, loaded at runtime only when it is an
   LGPL build and never shipped, and is found in the directory the application names or beside
   the application, by the platform's versioned names. The system's decoder is software only
@@ -415,6 +416,20 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   order, five minutes from an established host -- no slower than the system's interface on
   the same GPU, 15.5 ms from arrival to acquired against 15.8 at 1440p -- and the GPU's
   driver restarted mid-session, the session going on.)
+  *Amended 2026-11-09: the older runtime dropped*, D1 reversed (the maintainer's decision, on
+  the evidence). On a customer's machine (an i5-6500T's HD 530) whose Intel install mixed two
+  driver packages -- the older runtime and its registry list from one installer, the display
+  bound to another package -- that runtime's first decoder build faulted inside the vendor's
+  code and ended the process; an application listing the decoders at its start crashed at
+  launch, the table building a decoder to ask. Every way of opening it, each run in a process
+  of its own -- Direct3D 11, Direct3D 9 and either, by the newer and the older initialisation
+  -- crashed there at the first decoder build; the same runtime layout on the 2015 laptop
+  decodes through all six. A fault inside the vendor's code is past anything the process can
+  catch, and the older runtime gained nothing over the system's interface on the parts it
+  reaches, above. So it is no longer opened: the runtime is the one the GPU's own driver names
+  for the current interface or none, a part only the older one reaches has no Intel row -- its
+  slot says the runtime is not on the machine -- and the system's interface decodes there, as
+  the automatic order already chose.
 - [x] **W1.8 the system's decoder**, software only. Checked by the clips it decodes. *Built
   2026-10-01.* Decided at its interview: a decoder kind of its own,
   `LOWLAT_DECODER_SYSTEM`, with its own slot, the table's last, minor 20 -- the software kind
@@ -2770,6 +2785,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-09: W1.7: Intel's older runtime dropped, D1 reversed: its first decoder build ended
+  the process on a machine with two Intel driver packages mixed, by every way of opening it,
+  and it gained nothing over the system's interface; 10 §5.2 and 06 amended.
 - 2026-11-07: W2.9: the host's own display is looked after in an empty room too, found at the
   desk after a driver update; the tray offers no 240; 11 §1.8 corrected.
 - 2026-11-04: W2.9: the host's own display lists 30 Hz (and 165, no longer 240 or 1680x1050),

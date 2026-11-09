@@ -788,7 +788,7 @@ otherwise.
 | D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
 | NVDEC | the vendor's decode interface, loaded at runtime, as on Linux (W1.5); first on an NVIDIA GPU | planes by a device-to-host copy; shared textures filled by a device copy (§4.2) |
 | AMF | AMD's own decoder, loaded at runtime, in its low-latency mode, driven by the library's own readers (W1.6); first on an AMD GPU where the runtime has that mode | planes by read-back; shared textures filled by the split (§4.2) |
-| VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); second on an Intel GPU, measured no faster | planes; shared textures filled by the split (§4.2); the older runtime planes alone |
+| VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, on the parts its current runtime reaches (W1.7); second on an Intel GPU, measured no faster | planes; shared textures filled by the split (§4.2) |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
 | the system's decoder | the platform's own media framework, in software only (W1.8); last | planes: H.264 eight-bit 4:2:0, HEVC eight and ten-bit 4:2:0 |
 
@@ -805,11 +805,12 @@ The two vendors' own decoders go after NVDEC once they are built, except on an A
 AMD's comes first (*decided 2026-09-28*, W1.6): the system's interface proved short there on
 speed, below. Each puts a second reader and its own buffering in front of the same hardware,
 so they are built where the system's interface proves short on a device -- a missing
-profile, a driver fault, speed -- and not before, with Intel's older runtime for the parts
-its newer one cannot reach. (*Amended 2026-09-28*, W1.7: Intel's is built all the same,
-though the system's interface decoded every clip on the Intel card, so that every Intel part
-has its vendor's runtime, the older ones included; on an Intel GPU it comes first only if it
-measures faster than the system's interface.) The pair keeps D14's rule and is found in the
+profile, a driver fault, speed -- and not before. (*Amended 2026-09-28*, W1.7: Intel's is
+built all the same, though the system's interface decoded every clip on the Intel card, so
+that every Intel part has its vendor's runtime, the older ones included; on an Intel GPU it
+comes first only if it measures faster than the system's interface.) (*Amended 2026-11-09*:
+the older runtime is no longer opened, below; a part only it reaches decodes through the
+system's interface.) The pair keeps D14's rule and is found in the
 directory the application names or beside the application, by the platform's versioned
 names. The system's decoder needs nothing installed for H.264 and the system's HEVC
 extension for HEVC, and comes last, because eight-bit 4:2:0 is all it decodes. (*Amended
@@ -1001,15 +1002,17 @@ the next decoder built. Every committed clip decodes bit for bit by planes and t
 textures, full chroma at both depths included, in the order the system's interface lets the
 same clip out in. A device lost under it is found again on the same GPU and a session of the
 runtime made again there: restarting the GPU's driver mid-session cost about a second and at
-most two skipped pictures. **The older runtime** is reached where the driver names no current
-one, on the GPU by its place in the plain enumeration -- one of the first four -- and hands out
-planes alone, decoded into memory of the backend's own and waited for in the read-back;
-H.264 and 4:2:0 HEVC at both depths where the runtime has them built in -- a runtime that
-decodes HEVC only through a plugin offers H.264 alone. On a 2015 integrated GPU only the older
-runtime reaches, found through the runtime's own registry list, every H.264 clip decodes bit
-for bit; from an established host at 1440p a picture was acquired 15.5 ms after its arrival,
-against 15.8 through the system's interface on the same GPU, and the GPU's driver restarted
-mid-session left the session going.
+most two skipped pictures. **A part the current runtime does not reach has no Intel decoder**
+(*amended 2026-11-09*): its slot says the runtime is not on the machine, and the system's
+interface decodes there. Intel's older runtime, which such a part has, was opened until then,
+handing out planes alone. It is named by a registry list a driver installer leaves behind, and
+on a machine whose Intel install mixed two driver packages its first decoder build faulted
+inside the vendor's code and ended the process -- through Direct3D 11 and through Direct3D 9,
+by either of its two ways of opening a session -- so an application listing the decoders at its
+start crashed at launch, the table building a decoder to ask. Nothing in the process survives a
+fault there, and the older runtime gained nothing over the system's interface on the same
+engine: on a 2015 integrated GPU, at 1440p from an established host, a picture was acquired
+15.5 ms after its arrival through it against 15.8 through the system's interface.
 
 **On an Intel GPU it comes second.** Against the system's interface on the Intel card, in one
 session per codec and kind with the decoders alternating every twenty seconds, 2560x1440 from
