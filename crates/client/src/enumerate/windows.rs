@@ -10,7 +10,7 @@ use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11};
-use lowlat_drivers::vpl::{Runtime, Vpl};
+use lowlat_drivers::vpl::Vpl;
 
 use super::{Available, NO_CONTEXT, NO_DEVICE, PROFILE, RUNTIME, codec_library, label};
 use crate::config::Backend;
@@ -134,19 +134,12 @@ fn amd(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
     }
 }
 
-/// Intel's decoder on `adapter`, through the runtime its driver installs:
-/// the current one on a device of the library's own there, its pictures
-/// that device's textures, labelled `VPL`; the older one, planes alone,
-/// labelled `MFX`.
+/// Intel's decoder on `adapter`, through the runtime its driver installs, on
+/// a device of the library's own there, its pictures that device's textures.
 fn intel(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
-    let unnamed = label("VPL", Some("Intel"));
+    let name = label("VPL", Some("Intel"));
     let Ok(runtime) = Vpl::for_adapter(adapter) else {
-        return Available::unavailable(Backend::Nvdec, &device_name, unnamed, RUNTIME);
-    };
-    let kind = runtime.runtime();
-    let name = match kind {
-        Runtime::Current => unnamed,
-        Runtime::Older => label("MFX", Some("Intel")),
+        return Available::unavailable(Backend::Nvdec, &device_name, name, RUNTIME);
     };
     let Ok(device) = d3d11.open(adapter.luid) else {
         return Available::unavailable(Backend::Nvdec, &device_name, name, NO_CONTEXT);
@@ -154,14 +147,10 @@ fn intel(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
     let Ok(Some(index)) = d3d11.plain_index(adapter.luid) else {
         return Available::unavailable(Backend::Nvdec, &device_name, name, NO_DEVICE);
     };
-    let session = match kind {
-        Runtime::Current => runtime.session(&device, index),
-        Runtime::Older => runtime.system_session(index),
-    };
-    let Ok(session) = session else {
+    let Ok(session) = runtime.session(&device, index) else {
         return Available::unavailable(Backend::Nvdec, &device_name, name, NO_CONTEXT);
     };
-    let caps = vpl::caps(&session, kind);
+    let caps = vpl::caps(&session);
     if !caps.any() {
         return Available::unavailable(Backend::Nvdec, &device_name, name, PROFILE);
     }
@@ -173,8 +162,8 @@ fn intel(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
         name,
         driver: format!("{} runtime {major}.{minor}", adapter.description),
         caps,
-        // Textures need the current runtime, on the device the fence is.
-        handle: kind == Runtime::Current && device.has_fences(),
+        // Textures need the fence that says when a picture is finished.
+        handle: device.has_fences(),
         // The runtime's own description of its limits is not its engine's;
         // the system's interface asks the device.
         max_h264: d3d11::limits(&device, Codec::H264),
@@ -312,14 +301,8 @@ mod tests {
             if slot < (OPEN_SLOTS + VENDOR_SLOTS) as usize {
                 assert_eq!(row.backend, Backend::Nvdec);
                 assert!(
-                    [
-                        "NVDEC",
-                        "NVDEC [NVIDIA]",
-                        "AMF [AMD]",
-                        "VPL [Intel]",
-                        "MFX [Intel]"
-                    ]
-                    .contains(&row.name.as_str()),
+                    ["NVDEC", "NVDEC [NVIDIA]", "AMF [AMD]", "VPL [Intel]"]
+                        .contains(&row.name.as_str()),
                     "a label off the grammar: {}",
                     row.name
                 );
@@ -327,15 +310,8 @@ mod tests {
                     let system = rows.get(slot - OPEN_SLOTS as usize).expect("a row");
                     assert_eq!(row.device, system.device, "another adapter");
                     // A maker's own decoder takes its textures on every GPU
-                    // here -- but Intel's older runtime, which hands out
-                    // planes alone.
-                    assert_eq!(
-                        row.handle,
-                        row.name != "MFX [Intel]",
-                        "{}: {}",
-                        row.device,
-                        row.name
-                    );
+                    // here.
+                    assert!(row.handle, "{}: {}", row.device, row.name);
                 }
                 continue;
             }

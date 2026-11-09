@@ -11,7 +11,7 @@ use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::ffi::d3d11::DXGI_FORMAT_R8_UNORM;
-use lowlat_drivers::vpl::{Runtime, Vpl};
+use lowlat_drivers::vpl::Vpl;
 
 use super::{DecoderStage, Error, most_telling, probe_software, software_dir};
 use crate::config::{Backend, Caps, Decoding, FrameKind};
@@ -46,9 +46,8 @@ pub enum Opened {
     /// Intel's own decoder, on the adapter with this identity.
     Vpl {
         luid: Luid,
-        /// Its pictures can be handed out as textures: its current runtime
-        /// decodes on a device of the library's own, which has a fence; the
-        /// older one hands out planes alone.
+        /// Its pictures can be handed out as textures: its runtime decodes
+        /// on a device of the library's own, which has a fence.
         handles: bool,
     },
     /// The machine's own codec library, from the directory named or from
@@ -201,9 +200,9 @@ fn probe_amf(luid: Luid) -> Result<(Caps, bool, bool), DecoderStage> {
 }
 
 /// Probe Intel's decoder on `adapter`: its runtime found by the adapter, a
-/// session of it -- on a device of the library's own there for the current
-/// runtime -- and a real decoder built per combination; with whether it can
-/// hand pictures out as textures.
+/// session of it on a device of the library's own there, and a real decoder
+/// built per combination; with whether it can hand pictures out as
+/// textures.
 fn probe_vpl(adapter: &Adapter) -> Result<(Caps, bool), DecoderStage> {
     let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
     let index = d3d11
@@ -212,25 +211,15 @@ fn probe_vpl(adapter: &Adapter) -> Result<(Caps, bool), DecoderStage> {
         .flatten()
         .ok_or(DecoderStage::Device)?;
     let vpl = Vpl::for_adapter(adapter).map_err(|_| DecoderStage::Runtime)?;
-    let (caps, handles) = match vpl.runtime() {
-        Runtime::Current => {
-            let device = d3d11.open(adapter.luid).map_err(|_| DecoderStage::Device)?;
-            let session = vpl
-                .session(&device, index)
-                .map_err(|_| DecoderStage::Device)?;
-            (vpl::caps(&session, Runtime::Current), device.has_fences())
-        }
-        Runtime::Older => {
-            let session = vpl
-                .system_session(index)
-                .map_err(|_| DecoderStage::Device)?;
-            (vpl::caps(&session, Runtime::Older), false)
-        }
-    };
+    let device = d3d11.open(adapter.luid).map_err(|_| DecoderStage::Device)?;
+    let session = vpl
+        .session(&device, index)
+        .map_err(|_| DecoderStage::Device)?;
+    let caps = vpl::caps(&session);
     if !caps.any() {
         return Err(DecoderStage::Profile);
     }
-    Ok((caps, handles))
+    Ok((caps, device.has_fences()))
 }
 
 /// The system's own decoder: what it decodes here, each decoder made and

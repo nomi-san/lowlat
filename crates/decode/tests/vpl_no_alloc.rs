@@ -15,7 +15,7 @@ use lowlat_decode::d3d11::plane_textures;
 use lowlat_decode::vpl::Backend;
 use lowlat_decode::{Decoder, Fed, Format, Planes};
 use lowlat_drivers::d3d11::D3d11;
-use lowlat_drivers::vpl::{Runtime, Vpl};
+use lowlat_drivers::vpl::Vpl;
 
 #[global_allocator]
 static ALLOC: Counting = Counting;
@@ -49,14 +49,7 @@ fn a_unit_allocates_nothing_by_either_route() {
             ("synthetic-720p-hevc.bin", Codec::H265),
         ] {
             let units = common::units(clip);
-            let mut backend = Backend::new(
-                &session,
-                Runtime::Current,
-                Some(&device),
-                (4096, 4096),
-                1 << 20,
-            )
-            .expect("new");
+            let mut backend = Backend::new(&session, &device, (4096, 4096), 1 << 20).expect("new");
             backend
                 .build(&VideoHeader {
                     frame_id: 1,

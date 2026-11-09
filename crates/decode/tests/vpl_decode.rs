@@ -2,8 +2,8 @@
 //! reference decoder produced **and in the readers' order** -- the order the
 //! system's interface lets them out in on the same device, the runtime
 //! handing its pictures out in decode order -- by planes and through the
-//! plane textures, full chroma included; and through the older runtime's
-//! calls, by planes. Needs an Intel GPU and its runtime, so off by default:
+//! plane textures, full chroma included. Needs an Intel GPU and its
+//! runtime, so off by default:
 //! `cargo test -p lowlat-decode --test vpl_decode -- --ignored --nocapture`.
 
 // The runtime is reached on Windows alone.
@@ -21,7 +21,7 @@ use lowlat_decode::d3d11::plane_textures;
 use lowlat_decode::vpl::{Backend, MOST_UNFINISHED, caps};
 use lowlat_decode::{Caps, Decoder, Fed, Format};
 use lowlat_drivers::d3d11::{D3d11, Device, Event, SharedTexture};
-use lowlat_drivers::vpl::{Runtime, Session, Vpl};
+use lowlat_drivers::vpl::{Session, Vpl};
 
 use common::reader::Reader;
 
@@ -150,16 +150,14 @@ fn compare(
 /// reference and the readers' order on `device`.
 fn check(
     session: &Session<'_>,
-    runtime: Runtime,
     device: &Device,
     clip: &str,
     sums: &str,
     codec: Codec,
     ten_bit: bool,
 ) -> Result<(), String> {
-    let decodes_on = (runtime == Runtime::Current).then_some(device);
-    let mut backend = Backend::new(session, runtime, decodes_on, (4096, 4096), UNIT_BYTES)
-        .map_err(|e| format!("new: {e}"))?;
+    let mut backend =
+        Backend::new(session, device, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
     backend
         .build(&header(codec, ten_bit))
         .map_err(|e| format!("build: {e:?}"))?;
@@ -185,14 +183,8 @@ fn check_textures(
     codec: Codec,
     ten_bit: bool,
 ) -> Result<(), String> {
-    let mut backend = Backend::new(
-        session,
-        Runtime::Current,
-        Some(device),
-        (4096, 4096),
-        UNIT_BYTES,
-    )
-    .map_err(|e| format!("new: {e}"))?;
+    let mut backend =
+        Backend::new(session, device, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
     let fence = backend.fence().ok_or("the device has no split")?;
     backend
         .build(&header(codec, ten_bit))
@@ -257,9 +249,8 @@ fn check_textures(
 fn every_clip_decodes_to_the_reference_pictures_in_order() {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let (device, vpl, index) = intel(&d3d11);
-    assert_eq!(vpl.runtime(), Runtime::Current);
     let session = vpl.session(&device, index).expect("a session");
-    let caps = caps(&session, Runtime::Current);
+    let caps = caps(&session);
     println!(
         "{} driver {:?}, runtime {:?}: {caps:?}",
         device.adapter.description,
@@ -273,15 +264,7 @@ fn every_clip_decodes_to_the_reference_pictures_in_order() {
             println!("  {clip}: no decoder for it");
             continue;
         }
-        if let Err(e) = check(
-            &session,
-            Runtime::Current,
-            &device,
-            &clip,
-            &sums,
-            codec,
-            ten_bit,
-        ) {
+        if let Err(e) = check(&session, &device, &clip, &sums, codec, ten_bit) {
             println!("  {clip}: FAILED: {e}");
             failures.push(format!("{clip}: {e}"));
         }
@@ -298,91 +281,13 @@ fn every_clip_decodes_through_the_plane_textures_in_order() {
     let d3d11 = D3d11::load().expect("the system's libraries");
     let (device, vpl, index) = intel(&d3d11);
     let session = vpl.session(&device, index).expect("a session");
-    let caps = caps(&session, Runtime::Current);
+    let caps = caps(&session);
     let mut failures = Vec::new();
     for (clip, sums, codec, ten_bit) in clips() {
         if !able(&caps, &clip, codec, ten_bit) {
             continue;
         }
         if let Err(e) = check_textures(&session, &device, &d3d11, &clip, &sums, codec, ten_bit) {
-            println!("  {clip}: FAILED: {e}");
-            failures.push(format!("{clip}: {e}"));
-        }
-    }
-    assert!(failures.is_empty(), "{failures:#?}");
-}
-
-/// **The older runtime's calls decode every four-two-zero clip by planes, in
-/// the readers' order**, into surfaces of the backend's own memory -- reached
-/// here through the system directory's loader, which answers with the
-/// current runtime in its older role: the calls, not an older part.
-#[test]
-#[ignore = "requires an Intel GPU and the system directory's loader"]
-fn the_older_runtime_decodes_every_clip_by_planes() {
-    let d3d11 = D3d11::load().expect("the system's libraries");
-    let (device, _, index) = intel(&d3d11);
-    let system = std::env::var("SystemRoot").expect("the system root");
-    let vpl = Vpl::open(
-        &format!("{system}\\System32\\libmfxhw64.dll"),
-        Runtime::Older,
-    )
-    .expect("the loader");
-    let session = vpl.system_session(index).expect("a session");
-    let caps = caps(&session, Runtime::Older);
-    println!("older runtime {:?}: {caps:?}", session.version());
-    assert!(caps.h264 && caps.hevc, "{caps:?}");
-    assert!(!caps.hevc_444 && !caps.hevc_444_10, "{caps:?}");
-    let mut failures = Vec::new();
-    for (clip, sums, codec, ten_bit) in clips() {
-        if !able(&caps, &clip, codec, ten_bit) {
-            continue;
-        }
-        if let Err(e) = check(
-            &session,
-            Runtime::Older,
-            &device,
-            &clip,
-            &sums,
-            codec,
-            ten_bit,
-        ) {
-            println!("  {clip}: FAILED: {e}");
-            failures.push(format!("{clip}: {e}"));
-        }
-    }
-    assert!(failures.is_empty(), "{failures:#?}");
-}
-
-/// **The runtime the Intel GPU's own driver installs decodes every clip it
-/// builds a decoder for, by planes, in the readers' order** -- whichever
-/// runtime that is: on a part the current runtime does not reach, the older
-/// one, found the older ways and decoding into the backend's own memory.
-#[test]
-#[ignore = "requires an Intel GPU and its runtime"]
-fn the_adapters_own_runtime_decodes_every_clip_it_builds_for() {
-    let d3d11 = D3d11::load().expect("the system's libraries");
-    let (device, vpl, index) = intel(&d3d11);
-    let runtime = vpl.runtime();
-    let session = match runtime {
-        Runtime::Current => vpl.session(&device, index),
-        Runtime::Older => vpl.system_session(index),
-    }
-    .expect("a session");
-    let caps = caps(&session, runtime);
-    println!(
-        "{} driver {:?}, {runtime:?} runtime {:?} at index {index}: {caps:?}",
-        device.adapter.description,
-        device.adapter.driver,
-        session.version()
-    );
-    assert!(caps.h264, "{caps:?}");
-    let mut failures = Vec::new();
-    for (clip, sums, codec, ten_bit) in clips() {
-        if !able(&caps, &clip, codec, ten_bit) {
-            println!("  {clip}: no decoder for it");
-            continue;
-        }
-        if let Err(e) = check(&session, runtime, &device, &clip, &sums, codec, ten_bit) {
             println!("  {clip}: FAILED: {e}");
             failures.push(format!("{clip}: {e}"));
         }
@@ -421,14 +326,7 @@ fn a_stream_whose_sets_travel_alone_still_builds() {
     );
     units.insert(0, slices);
     units.insert(0, sets);
-    let mut backend = Backend::new(
-        &session,
-        Runtime::Current,
-        Some(&device),
-        (4096, 4096),
-        UNIT_BYTES,
-    )
-    .expect("new");
+    let mut backend = Backend::new(&session, &device, (4096, 4096), UNIT_BYTES).expect("new");
     backend.build(&header(Codec::H265, false)).expect("build");
     let pitch = 1280;
     let (mut y, mut uv) = (vec![0u8; pitch * 720], vec![0u8; pitch * 360]);
@@ -478,14 +376,7 @@ fn a_units_trailing_filler_costs_no_keyframe() {
         ),
     ];
     for (clip, codec, filler) in clips {
-        let mut backend = Backend::new(
-            &session,
-            Runtime::Current,
-            Some(&device),
-            (4096, 4096),
-            UNIT_BYTES,
-        )
-        .expect("new");
+        let mut backend = Backend::new(&session, &device, (4096, 4096), UNIT_BYTES).expect("new");
         backend.build(&header(codec, false)).expect("build");
         let pitch = 1280;
         let (mut y, mut uv) = (vec![0u8; pitch * 720], vec![0u8; pitch * 360]);
@@ -527,14 +418,7 @@ fn a_device_fallen_behind_holds_the_next_unit_back() {
     let (device, vpl, index) = intel(&d3d11);
     let session = vpl.session(&device, index).expect("a session");
     let units = common::units("synthetic-720p-hevc.bin");
-    let mut backend = Backend::new(
-        &session,
-        Runtime::Current,
-        Some(&device),
-        (4096, 4096),
-        UNIT_BYTES,
-    )
-    .expect("new");
+    let mut backend = Backend::new(&session, &device, (4096, 4096), UNIT_BYTES).expect("new");
     let fence = backend.fence().expect("a split");
     backend.build(&header(Codec::H265, false)).expect("build");
     let planes = plane_textures(Format::Nv12, 1280, 720)

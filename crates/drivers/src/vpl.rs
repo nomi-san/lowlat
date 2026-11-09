@@ -6,12 +6,15 @@
 //! for it in the display device's own registry key: the device among those
 //! present whose hardware numbers are the adapter's. The display class's keys
 //! are never walked in order, since they keep entries for drivers long
-//! removed, pointing at folders that no longer exist. The current runtime is
-//! the one named for this interface; a part it does not reach has the older
-//! one, named the older way, or before the driver store in the runtime's own
-//! registry list. Nothing is looked for on the search path or beside the
-//! application and no dispatcher is involved: the runtime is one library,
-//! opened by its full path.
+//! removed, pointing at folders that no longer exist. Nothing is looked for
+//! on the search path or beside the application and no dispatcher is
+//! involved: the runtime is one library, opened by its full path.
+//!
+//! **A part only the older runtime reaches has none here.** That runtime is
+//! named by a list an installer may have left behind, and on a machine whose
+//! Intel install mixes two driver packages its first decoder build faults
+//! inside the vendor's code, through either device interface, which no
+//! process survives; the system's interface decodes on every such part.
 //!
 //! **A session of the current runtime decodes on the device it is handed**,
 //! and the device must have its lock on: without it -- or handed over once
@@ -22,9 +25,6 @@
 //! thread, inside the decode call, so work queued on the context afterwards
 //! runs after the decode and nothing here waits for one. It also calls into
 //! the context from a thread of its own, which the lock serialises.
-//!
-//! **The older runtime decodes into memory of the caller's**, on a device of
-//! its own on the adapter it is given by number, and is waited for.
 //!
 //! **An encoder of the current runtime reads textures of the caller's**, in a
 //! session made for one: an allocator that answers no request -- the runtime
@@ -47,16 +47,14 @@ use crate::ffi::vpl::{
     _mfxSession, MFX_ACCEL_MODE_VIA_D3D11, MFX_BITSTREAM_COMPLETE_FRAME, MFX_ERR_INVALID_HANDLE,
     MFX_ERR_NONE, MFX_ERR_NOT_ENOUGH_BUFFER, MFX_ERR_NULL_PTR, MFX_ERR_UNSUPPORTED,
     MFX_EXTBUFF_THREADS_PARAM, MFX_FRAMETYPE_I, MFX_FRAMETYPE_IDR, MFX_FRAMETYPE_REF,
-    MFX_HANDLE_D3D11_DEVICE, MFX_IMPL_HARDWARE, MFX_IMPL_HARDWARE2, MFX_IMPL_HARDWARE3,
-    MFX_IMPL_HARDWARE4, MFX_IMPL_VIA_D3D11, MFX_RESOURCE_DX11_TEXTURE, mfxBitstream, mfxEncodeCtrl,
-    mfxExtBuffer, mfxExtThreadsParam, mfxFrameAllocRequest, mfxFrameAllocResponse,
-    mfxFrameAllocator, mfxFrameData, mfxFrameInfo, mfxFrameSurface1, mfxHDL, mfxHDLPair,
-    mfxHandleType, mfxInitParam, mfxInitializationParam, mfxMemId, mfxResourceType, mfxSession,
-    mfxStatus, mfxSyncPoint, mfxU32, mfxVersion, mfxVideoParam,
+    MFX_HANDLE_D3D11_DEVICE, MFX_RESOURCE_DX11_TEXTURE, mfxBitstream, mfxEncodeCtrl, mfxExtBuffer,
+    mfxExtThreadsParam, mfxFrameAllocRequest, mfxFrameAllocResponse, mfxFrameAllocator,
+    mfxFrameData, mfxFrameInfo, mfxFrameSurface1, mfxHDL, mfxHDLPair, mfxHandleType,
+    mfxInitializationParam, mfxMemId, mfxResourceType, mfxSession, mfxStatus, mfxSyncPoint, mfxU32,
+    mfxVersion, mfxVideoParam,
 };
 
 type Initialize = unsafe extern "C" fn(mfxInitializationParam, *mut mfxSession) -> mfxStatus;
-type InitEx = unsafe extern "C" fn(mfxInitParam, *mut mfxSession) -> mfxStatus;
 type Close = unsafe extern "C" fn(mfxSession) -> mfxStatus;
 type QueryVersion = unsafe extern "C" fn(mfxSession, *mut mfxVersion) -> mfxStatus;
 type SetHandle = unsafe extern "C" fn(mfxSession, mfxHandleType, mfxHDL) -> mfxStatus;
@@ -65,8 +63,6 @@ type DecodeQuery =
     unsafe extern "C" fn(mfxSession, *mut mfxVideoParam, *mut mfxVideoParam) -> mfxStatus;
 type DecodeHeader =
     unsafe extern "C" fn(mfxSession, *mut mfxBitstream, *mut mfxVideoParam) -> mfxStatus;
-type QueryIoSurf =
-    unsafe extern "C" fn(mfxSession, *mut mfxVideoParam, *mut mfxFrameAllocRequest) -> mfxStatus;
 type DecodeInit = unsafe extern "C" fn(mfxSession, *mut mfxVideoParam) -> mfxStatus;
 type DecodeClose = unsafe extern "C" fn(mfxSession) -> mfxStatus;
 type DecodeFrameAsync = unsafe extern "C" fn(
@@ -94,15 +90,8 @@ type EncodeFrameAsync = unsafe extern "C" fn(
 const INTEL: u32 = 0x8086;
 /// The current runtime's file, in the folder its driver names.
 const CURRENT_LIBRARY: &str = "libmfx64-gen.dll";
-/// The older runtime's file.
-const OLDER_LIBRARY: &str = "libmfxhw64.dll";
-/// The value a display device's key names the current runtime's folder by,
-/// and the older runtime's.
+/// The value a display device's key names the current runtime's folder by.
 const CURRENT_FOLDER: &str = "DriverStorePathForVPL";
-const OLDER_FOLDER: &str = "DriverStorePathForMediaSDK";
-/// The older runtime's own list, before the driver store: one key per
-/// installed runtime, each with its hardware numbers and its file's path.
-const DISPATCH_KEY: &str = "SOFTWARE\\Intel\\MediaSDK\\Dispatch";
 /// The display adapters' device class.
 const DISPLAY_CLASS: &str = "{4D36E968-E325-11CE-BFC1-08002BE10318}";
 
@@ -148,8 +137,6 @@ pub enum Error {
     /// The device's lock could not be turned on, without which the runtime
     /// would decode on a device of its own.
     Unprotected,
-    /// The adapter is past the older runtime's four.
-    Unreachable,
     /// A call failed, with its status.
     Status(i32),
 }
@@ -161,7 +148,6 @@ impl fmt::Display for Error {
             Self::NoRuntime => f.write_str("no Intel video runtime for this adapter"),
             Self::MissingSymbol => f.write_str("Intel video runtime missing an entry point"),
             Self::Unprotected => f.write_str("device lock could not be turned on"),
-            Self::Unreachable => f.write_str("adapter out of the older runtime's reach"),
             Self::Status(s) => write!(f, "Intel video runtime returned {s}"),
         }
     }
@@ -186,27 +172,15 @@ fn zeroed<T>() -> T {
     unsafe { core::mem::zeroed() }
 }
 
-/// Which runtime a library is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Runtime {
-    /// The current one: decodes on a device of the caller's.
-    Current,
-    /// The older one: decodes into memory of the caller's.
-    Older,
-}
-
 /// A runtime loaded and the entry points resolved from it.
 pub struct Vpl {
-    runtime: Runtime,
     initialize: Option<Initialize>,
-    init_ex: Option<InitEx>,
     close: Close,
     query_version: QueryVersion,
     set_handle: SetHandle,
     sync_operation: SyncOperation,
     query: DecodeQuery,
     header: DecodeHeader,
-    query_io_surf: QueryIoSurf,
     init: DecodeInit,
     decode_close: DecodeClose,
     decode: DecodeFrameAsync,
@@ -223,9 +197,7 @@ pub struct Vpl {
 
 impl fmt::Debug for Vpl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Vpl")
-            .field("runtime", &self.runtime)
-            .finish()
+        f.write_str("Vpl")
     }
 }
 
@@ -241,8 +213,8 @@ unsafe fn symbol<T: Copy>(library: &Library, name: &CStr) -> Result<T> {
 }
 
 /// Whether `adapter`'s own driver names the current runtime, the one
-/// [`Vpl::for_adapter`] opens first: read from the driver's key alone,
-/// nothing loaded.
+/// [`Vpl::for_adapter`] opens: read from the driver's key alone, nothing
+/// loaded.
 pub fn has_current(adapter: &Adapter) -> bool {
     adapter.vendor == INTEL
         && Registry::load().is_ok_and(|registry| {
@@ -253,43 +225,32 @@ pub fn has_current(adapter: &Adapter) -> bool {
 }
 
 impl Vpl {
-    /// The runtime for `adapter`: the current one where its driver names
-    /// one, the older one otherwise.
+    /// The runtime for `adapter`, where its driver names one.
     pub fn for_adapter(adapter: &Adapter) -> Result<Self> {
         if adapter.vendor != INTEL {
             return Err(Error::NoRuntime);
         }
-        let registry = Registry::load()?;
-        if let Some(folder) = registry.driver_value(adapter.device, CURRENT_FOLDER) {
-            return Self::open(&format!("{folder}\\{CURRENT_LIBRARY}"), Runtime::Current);
-        }
-        if let Some(folder) = registry.driver_value(adapter.device, OLDER_FOLDER) {
-            return Self::open(&format!("{folder}\\{OLDER_LIBRARY}"), Runtime::Older);
-        }
-        let path = registry
-            .dispatch_path(adapter.device)
+        let folder = Registry::load()?
+            .driver_value(adapter.device, CURRENT_FOLDER)
             .ok_or(Error::NoRuntime)?;
-        Self::open(&path, Runtime::Older)
+        Self::open(&format!("{folder}\\{CURRENT_LIBRARY}"))
     }
 
-    /// The runtime at the absolute `path`, as `runtime`.
-    pub fn open(path: &str, runtime: Runtime) -> Result<Self> {
+    /// The runtime at the absolute `path`.
+    pub fn open(path: &str) -> Result<Self> {
         let name = CString::new(path).map_err(|_| Error::NoRuntime)?;
         let library = Library::open(&name).ok_or(Error::NoRuntime)?;
         // SAFETY: each type is the entry point's declaration in the vendored
         // headers; the calling convention on this platform is one.
         unsafe {
             Ok(Self {
-                runtime,
                 initialize: library.symbol(c"MFXInitialize"),
-                init_ex: library.symbol(c"MFXInitEx"),
                 close: symbol(&library, c"MFXClose")?,
                 query_version: symbol(&library, c"MFXQueryVersion")?,
                 set_handle: symbol(&library, c"MFXVideoCORE_SetHandle")?,
                 sync_operation: symbol(&library, c"MFXVideoCORE_SyncOperation")?,
                 query: symbol(&library, c"MFXVideoDECODE_Query")?,
                 header: symbol(&library, c"MFXVideoDECODE_DecodeHeader")?,
-                query_io_surf: symbol(&library, c"MFXVideoDECODE_QueryIOSurf")?,
                 init: symbol(&library, c"MFXVideoDECODE_Init")?,
                 decode_close: symbol(&library, c"MFXVideoDECODE_Close")?,
                 decode: symbol(&library, c"MFXVideoDECODE_DecodeFrameAsync")?,
@@ -303,10 +264,6 @@ impl Vpl {
                 _library: library,
             })
         }
-    }
-
-    pub fn runtime(&self) -> Runtime {
-        self.runtime
     }
 
     /// A session of the current runtime decoding on `device`, whose lock is
@@ -371,37 +328,6 @@ impl Vpl {
             (self.set_frame_allocator)(session.raw(), (&raw const TEXTURES.0).cast_mut())
         })?;
         Ok(session)
-    }
-
-    /// A session of the older runtime on the adapter at `index` in the
-    /// plain enumeration, of which it reaches the first four, decoding into
-    /// memory of the caller's on a device of its own.
-    pub fn system_session(&self, index: u32) -> Result<Session<'_>> {
-        let init_ex = self.init_ex.ok_or(Error::MissingSymbol)?;
-        let hardware = [
-            MFX_IMPL_HARDWARE,
-            MFX_IMPL_HARDWARE2,
-            MFX_IMPL_HARDWARE3,
-            MFX_IMPL_HARDWARE4,
-        ];
-        let which = usize::try_from(index)
-            .ok()
-            .and_then(|i| hardware.get(i))
-            .ok_or(Error::Unreachable)?;
-        let mut init: mfxInitParam = zeroed();
-        init.Implementation = which | MFX_IMPL_VIA_D3D11;
-        init.Version.__bindgen_anon_1.Major = 1;
-        init.Version.__bindgen_anon_1.Minor = 0;
-        let mut raw: mfxSession = core::ptr::null_mut();
-        // SAFETY: the parameters are plain data passed by value; the output
-        // is a local.
-        check(unsafe { init_ex(init, &raw mut raw) })?;
-        let raw = NonNull::new(raw).ok_or(Error::Unavailable)?;
-        Ok(Session {
-            raw,
-            vpl: self,
-            _device: PhantomData,
-        })
     }
 }
 
@@ -488,19 +414,6 @@ impl Session<'_> {
         check(unsafe { (self.vpl.query)(self.raw(), param, param) })
     }
 
-    /// The surfaces a decoder of `param` asks for.
-    ///
-    /// # Safety
-    ///
-    /// As [`Session::query`].
-    pub unsafe fn surfaces(&self, param: &mut mfxVideoParam) -> Result<mfxFrameAllocRequest> {
-        let mut request: mfxFrameAllocRequest = zeroed();
-        // SAFETY: a live session; both are live for the call, `param`'s
-        // buffers as the caller says.
-        check(unsafe { (self.vpl.query_io_surf)(self.raw(), param, &raw mut request) })?;
-        Ok(request)
-    }
-
     /// Build the session's decoder for `param`. A failure leaves nothing
     /// built: the next build would otherwise be refused.
     ///
@@ -524,28 +437,28 @@ impl Session<'_> {
         unsafe { (self.vpl.decode_close)(self.raw()) };
     }
 
-    /// Hand the decoder `bitstream`, one whole unit, with `work` a surface
-    /// of the caller's for the older runtime and null for the current one,
-    /// which draws its own. The unit's bytes are the caller's again once
-    /// this returns.
+    /// Hand the decoder `bitstream`, one whole unit; the runtime draws the
+    /// surface it decodes into from its own. The unit's bytes are the
+    /// caller's again once this returns.
     ///
     /// # Safety
     ///
-    /// `work` is null, or a surface of the caller's, unlocked, whose
-    /// description and planes stay valid and in place while the session may
-    /// still use it -- until the decoder is closed or the surface's lock
-    /// count is back to zero.
-    pub unsafe fn decode(
-        &self,
-        bitstream: &mut mfxBitstream,
-        work: *mut mfxFrameSurface1,
-    ) -> Result<Decoded<'_>> {
+    /// `bitstream`'s data is `DataLength` bytes from `DataOffset` that stay
+    /// valid for the call.
+    pub unsafe fn decode(&self, bitstream: &mut mfxBitstream) -> Result<Decoded<'_>> {
         let mut out: *mut mfxFrameSurface1 = core::ptr::null_mut();
         let mut sync: mfxSyncPoint = core::ptr::null_mut();
-        // SAFETY: a live session; the bitstream and outputs live for the
-        // call, the work surface as the caller's contract says.
-        let status =
-            unsafe { (self.vpl.decode)(self.raw(), bitstream, work, &raw mut out, &raw mut sync) };
+        // SAFETY: a live session; the bitstream, its bytes by the caller's
+        // contract, and the outputs live for the call; no work surface.
+        let status = unsafe {
+            (self.vpl.decode)(
+                self.raw(),
+                bitstream,
+                core::ptr::null_mut(),
+                &raw mut out,
+                &raw mut sync,
+            )
+        };
         use crate::ffi::vpl::{
             MFX_ERR_INCOMPATIBLE_VIDEO_PARAM, MFX_ERR_MORE_DATA, MFX_ERR_MORE_SURFACE,
             MFX_WRN_DEVICE_BUSY,
@@ -567,8 +480,6 @@ impl Session<'_> {
         };
         let picture = Picture {
             surface,
-            sync,
-            session: self.raw,
             _session: PhantomData,
         };
         if sync.is_null() {
@@ -579,19 +490,6 @@ impl Session<'_> {
             return Ok(nothing);
         }
         Ok(Decoded::Picture(picture))
-    }
-
-    /// Wait up to `wait_ms` for `picture` to be decoded: whether it is. The
-    /// older runtime's; the current one's pictures are ordered on the
-    /// device instead. A picture of another session is refused.
-    pub fn sync(&self, picture: &Picture<'_>, wait_ms: u32) -> Result<bool> {
-        if picture.session != self.raw {
-            return Err(Error::Status(MFX_ERR_INVALID_HANDLE));
-        }
-        // SAFETY: a live session and a sync point it handed out.
-        let status = unsafe { (self.vpl.sync_operation)(self.raw(), picture.sync, wait_ms) };
-        check(status)?;
-        Ok(status == 0)
     }
 
     /// Whether an encoder of `param` builds here, as the runtime answers for
@@ -734,13 +632,9 @@ impl Drop for Session<'_> {
 }
 
 /// A picture the decoder handed out, held until dropped: a surface the
-/// current runtime counts references on, given back on drop, or one of the
-/// caller's own for the older runtime.
+/// runtime counts references on, given back on drop.
 pub struct Picture<'s> {
     surface: NonNull<mfxFrameSurface1>,
-    sync: mfxSyncPoint,
-    /// The session that handed it out, whose sync point it carries.
-    session: NonNull<_mfxSession>,
     _session: PhantomData<&'s ()>,
 }
 
@@ -751,12 +645,6 @@ impl fmt::Debug for Picture<'_> {
 }
 
 impl Picture<'_> {
-    /// The surface itself: its description and, for a surface of the
-    /// caller's, its planes.
-    pub fn surface(&self) -> *mut mfxFrameSurface1 {
-        self.surface.as_ptr()
-    }
-
     /// The time stamp the unit that completed the picture carried.
     pub fn timestamp(&self) -> u64 {
         // SAFETY: a live surface; the field is plain data.
@@ -765,11 +653,10 @@ impl Picture<'_> {
 
     /// The texture the picture is in, an `ID3D11Texture2D` of the session's
     /// device, every plane in the one texture: borrowed from the surface,
-    /// valid while the picture is held. Null for a surface of the caller's.
+    /// valid while the picture is held. Null where the surface names none.
     pub fn texture(&self) -> *mut c_void {
         let surface = self.surface.as_ptr();
-        // SAFETY: a live surface; its interface is the runtime's, or null
-        // on a surface of the caller's.
+        // SAFETY: a live surface; its interface is the runtime's, or null.
         let Some(interface) = (unsafe { (*surface).__bindgen_anon_1.FrameInterface.as_ref() })
         else {
             return core::ptr::null_mut();
@@ -793,8 +680,8 @@ impl Drop for Picture<'_> {
     fn drop(&mut self) {
         let surface = self.surface.as_ptr();
         // SAFETY: a live surface, whose interface is the runtime's -- one
-        // reference the decode call handed over, released once -- or null on
-        // a surface of the caller's, which nothing counts.
+        // reference the decode call handed over, released once -- or null,
+        // which nothing counts.
         unsafe {
             if let Some(interface) = (*surface).__bindgen_anon_1.FrameInterface.as_ref()
                 && let Some(release) = interface.Release
@@ -912,18 +799,6 @@ type QueryValue = unsafe extern "system" fn(
     *mut u8,
     *mut u32,
 ) -> i32;
-type OpenKey =
-    unsafe extern "system" fn(*mut c_void, *const u16, u32, u32, *mut *mut c_void) -> i32;
-type EnumKey = unsafe extern "system" fn(
-    *mut c_void,
-    u32,
-    *mut u16,
-    *mut u32,
-    *mut u32,
-    *mut u16,
-    *mut u32,
-    *mut c_void,
-) -> i32;
 type CloseKey = unsafe extern "system" fn(*mut c_void) -> i32;
 
 /// Only devices present, of one class.
@@ -933,10 +808,6 @@ const CM_REGISTRY_SOFTWARE: u32 = 1;
 const REG_DISPOSITION_OPEN_EXISTING: u32 = 1;
 const KEY_READ: u32 = 0x2_0019;
 const REG_SZ: u32 = 1;
-const REG_DWORD: u32 = 4;
-/// The machine's registry root, as the system spells it on a 64-bit
-/// process: the 32-bit value sign-extended.
-const HKEY_LOCAL_MACHINE: usize = 0xFFFF_FFFF_8000_0002;
 
 /// The configuration manager's and the registry's calls, resolved at run
 /// time as every library here is.
@@ -946,8 +817,6 @@ struct Registry {
     locate: Locate,
     open_device_key: OpenDevKey,
     query_value: QueryValue,
-    open_key: OpenKey,
-    enum_key: EnumKey,
     close_key: CloseKey,
     _cfgmgr: Library,
     _advapi: Library,
@@ -984,8 +853,6 @@ impl Registry {
                 locate: symbol(&cfgmgr, c"CM_Locate_DevNodeW")?,
                 open_device_key: symbol(&cfgmgr, c"CM_Open_DevNode_Key")?,
                 query_value: symbol(&advapi, c"RegQueryValueExW")?,
-                open_key: symbol(&advapi, c"RegOpenKeyExW")?,
-                enum_key: symbol(&advapi, c"RegEnumKeyExW")?,
                 close_key: symbol(&advapi, c"RegCloseKey")?,
                 _cfgmgr: cfgmgr,
                 _advapi: advapi,
@@ -1091,80 +958,6 @@ impl Registry {
         let value = String::from_utf16_lossy(text.get(..end)?);
         (!value.is_empty()).then_some(value)
     }
-
-    /// The 32-bit value `name` of `key`.
-    fn number(&self, key: &Key<'_>, name: &str) -> Option<u32> {
-        let name = wide(name);
-        let mut kind = 0u32;
-        let mut value = 0u32;
-        let mut size = 4u32;
-        // SAFETY: a live key and a terminated name; the outputs are locals of
-        // the size named.
-        let status = unsafe {
-            (self.query_value)(
-                key.raw,
-                name.as_ptr(),
-                core::ptr::null_mut(),
-                &raw mut kind,
-                (&raw mut value).cast(),
-                &raw mut size,
-            )
-        };
-        (status == 0 && kind == REG_DWORD).then_some(value)
-    }
-
-    fn open(&self, parent: *mut c_void, path: &str) -> Option<Key<'_>> {
-        let path = wide(path);
-        let mut raw: *mut c_void = core::ptr::null_mut();
-        // SAFETY: a live parent and a terminated path; the output is a local.
-        let status = unsafe { (self.open_key)(parent, path.as_ptr(), 0, KEY_READ, &raw mut raw) };
-        (status == 0 && !raw.is_null()).then_some(Key {
-            raw,
-            registry: self,
-        })
-    }
-
-    /// The older runtime's file from its own list: the entry for Intel's
-    /// vendor number and the device number `device` with the highest merit.
-    fn dispatch_path(&self, device: u32) -> Option<String> {
-        let root = core::ptr::without_provenance_mut::<c_void>(HKEY_LOCAL_MACHINE);
-        let list = self.open(root, DISPATCH_KEY)?;
-        let mut best: Option<(u32, String)> = None;
-        for index in 0.. {
-            let mut name = [0u16; 256];
-            let mut len = 256u32;
-            // SAFETY: a live key; the name buffer holds the length named.
-            let status = unsafe {
-                (self.enum_key)(
-                    list.raw,
-                    index,
-                    name.as_mut_ptr(),
-                    &raw mut len,
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                )
-            };
-            if status != 0 {
-                break;
-            }
-            let name = String::from_utf16_lossy(name.get(..usize::try_from(len).ok()?)?);
-            let Some(entry) = self.open(list.raw, &name) else {
-                continue;
-            };
-            let ours = self.number(&entry, "VendorID") == Some(INTEL)
-                && self.number(&entry, "DeviceID") == Some(device);
-            let merit = self.number(&entry, "Merit").unwrap_or(0);
-            if ours
-                && best.as_ref().is_none_or(|(m, _)| merit > *m)
-                && let Some(path) = self.string(&entry, "Path")
-            {
-                best = Some((merit, path));
-            }
-        }
-        best.map(|(_, path)| path)
-    }
 }
 
 #[cfg(test)]
@@ -1189,7 +982,6 @@ mod tests {
             .find(|a| a.decodes_here() && a.vendor == INTEL)
             .expect("an Intel GPU");
         let vpl = Vpl::for_adapter(&adapter).expect("the runtime");
-        assert_eq!(vpl.runtime(), Runtime::Current);
         assert!(has_current(&adapter), "the current runtime not named");
         // Another maker's GPU names none, whatever Intel's driver says.
         if let Some(other) = d3d11
@@ -1441,40 +1233,6 @@ mod tests {
         let rate = unsafe { &mut param.__bindgen_anon_1.mfx.__bindgen_anon_1.__bindgen_anon_1 };
         rate.__bindgen_anon_2.TargetKbps = kbps;
         rate.__bindgen_anon_3.MaxKbps = kbps;
-    }
-
-    /// **The older runtime's session opens on the adapter by its place in
-    /// the plain enumeration**, reached here through the system directory's
-    /// loader, which answers with the current runtime in its older role --
-    /// the calls, not an older part.
-    #[test]
-    #[ignore = "requires an Intel GPU and the system directory's loader"]
-    fn the_older_session_opens_on_the_adapter_by_its_place() {
-        let d3d11 = D3d11::load().expect("the system's libraries");
-        let adapter = d3d11
-            .adapters()
-            .expect("the adapters")
-            .into_iter()
-            .find(|a| a.decodes_here() && a.vendor == INTEL)
-            .expect("an Intel GPU");
-        let index = d3d11
-            .plain_index(adapter.luid)
-            .expect("the enumeration")
-            .expect("the adapter");
-        let system = std::env::var("SystemRoot").expect("the system root");
-        let vpl = Vpl::open(
-            &format!("{system}\\System32\\{OLDER_LIBRARY}"),
-            Runtime::Older,
-        )
-        .expect("the loader");
-        let session = vpl.system_session(index).expect("a session");
-        let (major, _) = session.version().expect("the version");
-        assert_eq!(major, 1);
-        assert_eq!(
-            vpl.system_session(4).map(|_| ()),
-            Err(Error::Unreachable),
-            "a fifth adapter is out of reach"
-        );
     }
 
     /// Another maker's GPU has no Intel runtime, whatever is installed.

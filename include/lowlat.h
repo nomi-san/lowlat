@@ -1823,7 +1823,7 @@ typedef struct lowlat_decoder_info {
     char device[LOWLAT_OUTPUT_MAX];
     /// A label for a menu, NUL-terminated: the interface, and the card's
     /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
-    /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `MFX [Intel]`,
+    /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`,
     /// `D3D11 [NVIDIA]`, `libavcodec [LGPL]`, `MF [Microsoft]`; the
     /// interface alone for a slot
     /// with nothing behind it.

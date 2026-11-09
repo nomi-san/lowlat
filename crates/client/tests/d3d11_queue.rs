@@ -38,7 +38,7 @@ use lowlat_drivers::ffi::d3d11::{
     D3D11_USAGE_STAGING, ID3D11Resource, ID3D11Texture2D,
 };
 use lowlat_drivers::vcall;
-use lowlat_drivers::vpl::{Runtime, Vpl};
+use lowlat_drivers::vpl::Vpl;
 
 fn data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -449,14 +449,7 @@ fn run_intel(
         .expect("the adapter");
     let frames = Arc::new(Frames::new((4096, 4096), FrameKind::Handle));
     let session = runtime.session(&device, index).expect("a session");
-    let mut backend = vpl::Backend::new(
-        &session,
-        Runtime::Current,
-        Some(&device),
-        (4096, 4096),
-        1 << 20,
-    )
-    .expect("new");
+    let mut backend = vpl::Backend::new(&session, &device, (4096, 4096), 1 << 20).expect("new");
     frames.open_device(Arc::clone(&device), backend.fence().expect("a fence"), None);
     backend.build(&header(codec, ten_bit)).expect("build");
 

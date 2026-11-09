@@ -1,6 +1,5 @@
-//! Intel's own decoder, through its runtime: the current runtime on a device
-//! of the library's own, or the older one into memory of its own; the
-//! readers here say which picture leaves when.
+//! Intel's own decoder, through its runtime on a device of the library's
+//! own; the readers here say which picture leaves when.
 //!
 //! **The readers stay in front.** The runtime parses the stream itself, so a
 //! unit goes to it whole; the readers read it too, for what the runtime does
@@ -14,22 +13,19 @@
 //! carries out, so a picture finds its readers' slot however late a runtime
 //! hands it out.
 //!
-//! **Nothing waits for a decode on the current runtime.** It makes its decode
-//! calls on the device's context inside the decode call, so the split and a
-//! read-back's copy queued on that context afterwards are ordered behind the
-//! decode, and the library's fence is signalled behind the split. No more
-//! than two split pictures are left unfinished when the next unit goes in:
-//! past that the decode thread sleeps on the fence, which only a device
-//! fallen behind the stream makes it do. **The older runtime decodes into
-//! surfaces of the backend's own memory**, planes only, and a read-back waits
-//! for its picture there.
+//! **Nothing waits for a decode.** The runtime makes its decode calls on the
+//! device's context inside the decode call, so the split and a read-back's
+//! copy queued on that context afterwards are ordered behind the decode, and
+//! the library's fence is signalled behind the split. No more than two split
+//! pictures are left unfinished when the next unit goes in: past that the
+//! decode thread sleeps on the fence, which only a device fallen behind the
+//! stream makes it do.
 //!
 //! **A unit of parameter sets alone is kept**, and given to the readers and to
 //! the runtime again whenever a decoder is built, so a stream whose sets
 //! travel ahead of the keyframe still builds one.
 
 use core::fmt;
-use core::ptr::NonNull;
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -42,17 +38,16 @@ use lowlat_drivers::ffi::d3d11::{
 use lowlat_drivers::ffi::vpl::{
     MFX_BITSTREAM_COMPLETE_FRAME, MFX_CHROMAFORMAT_YUV420, MFX_CHROMAFORMAT_YUV444, MFX_CODEC_AVC,
     MFX_CODEC_HEVC, MFX_ERR_DEVICE_FAILED, MFX_ERR_DEVICE_LOST, MFX_ERR_GPU_HANG, MFX_FOURCC_AYUV,
-    MFX_FOURCC_NV12, MFX_FOURCC_P010, MFX_FOURCC_Y410, MFX_IOPATTERN_OUT_SYSTEM_MEMORY,
-    MFX_IOPATTERN_OUT_VIDEO_MEMORY, MFX_PICSTRUCT_PROGRESSIVE, MFX_PROFILE_AVC_HIGH,
-    MFX_PROFILE_HEVC_MAIN, MFX_PROFILE_HEVC_MAIN10, MFX_PROFILE_HEVC_REXT, mfxBitstream,
-    mfxFrameInfo, mfxFrameSurface1, mfxVideoParam,
+    MFX_FOURCC_NV12, MFX_FOURCC_P010, MFX_FOURCC_Y410, MFX_IOPATTERN_OUT_VIDEO_MEMORY,
+    MFX_PICSTRUCT_PROGRESSIVE, MFX_PROFILE_AVC_HIGH, MFX_PROFILE_HEVC_MAIN,
+    MFX_PROFILE_HEVC_MAIN10, MFX_PROFILE_HEVC_REXT, mfxBitstream, mfxFrameInfo, mfxVideoParam,
 };
 use lowlat_drivers::vcall;
-use lowlat_drivers::vpl::{self as runtime, Decoded, Picture as Held, Runtime, Session};
+use lowlat_drivers::vpl::{self as runtime, Decoded, Picture as Held, Session};
 
 use crate::amf::Pending;
 use crate::d3d11;
-use crate::split::{self, Split, copy_planes, copy_rows, micros};
+use crate::split::{self, Split, copy_planes, micros};
 use crate::{Caps, Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc, nal};
 
 /// Surfaces the readers' slots name: what either picture buffer indexes.
@@ -70,11 +65,6 @@ const SETTLE_WAIT: Duration = Duration::from_secs(1);
 /// How long a busy device is waited for, a millisecond at a time.
 const BUSY_TRIES: u32 = 50;
 const BUSY_WAIT: Duration = Duration::from_millis(1);
-/// How long the older runtime's read-back waits for its picture.
-const SYNC_WAIT_MS: u32 = 1000;
-/// Surfaces of its own the older runtime is given beyond what it asks for:
-/// the pictures the readers hold for their turn.
-const SPARE_SURFACES: usize = 4;
 /// The size a decoder is built at to ask whether it builds at all.
 const PROBE_SIZE: (u16, u16) = (1280, 720);
 
@@ -91,7 +81,6 @@ const fn word(value: i32) -> u16 {
 }
 
 const VIDEO_MEMORY: u16 = word(MFX_IOPATTERN_OUT_VIDEO_MEMORY);
-const SYSTEM_MEMORY: u16 = word(MFX_IOPATTERN_OUT_SYSTEM_MEMORY);
 const COMPLETE_FRAME: u16 = word(MFX_BITSTREAM_COMPLETE_FRAME);
 const PROGRESSIVE: u16 = word(MFX_PICSTRUCT_PROGRESSIVE);
 const YUV420: u16 = word(MFX_CHROMAFORMAT_YUV420);
@@ -217,76 +206,6 @@ struct Staging {
 /// kept, since the views hold the texture.
 type Views = (usize, [Option<Com<ID3D11ShaderResourceView>>; 2]);
 
-/// The older runtime's surfaces: descriptions over one block of memory,
-/// made with the decoder and never moved while it lives. **Reached through
-/// raw pointers alone, never a reference**: the runtime keeps pointers into
-/// both while it lives, and its threads write the descriptions' lock counts.
-struct Pool {
-    surfaces: NonNull<[mfxFrameSurface1]>,
-    memory: NonNull<[u8]>,
-    /// Each surface's bytes in the block, a row's, and its rows of luma, as
-    /// the pool laid them out -- never as a description says, which the
-    /// runtime writes.
-    frame: usize,
-    pitch: usize,
-    rows: usize,
-}
-
-impl Pool {
-    /// The pool's surface at `index`.
-    fn surface(&self, index: usize) -> Option<*mut mfxFrameSurface1> {
-        (index < self.surfaces.len()).then(|| {
-            self.surfaces
-                .as_ptr()
-                .cast::<mfxFrameSurface1>()
-                .wrapping_add(index)
-        })
-    }
-
-    /// The index of `surface` among the pool's, if it is one.
-    fn index_of(&self, surface: *const mfxFrameSurface1) -> Option<usize> {
-        let first = self.surfaces.as_ptr().cast::<mfxFrameSurface1>().addr();
-        let offset = surface.addr().checked_sub(first)?;
-        let size = core::mem::size_of::<mfxFrameSurface1>();
-        let index = offset / size;
-        (offset % size == 0 && index < self.surfaces.len()).then_some(index)
-    }
-
-    /// The luma and chroma rows of the surface at `index`.
-    ///
-    /// # Safety
-    ///
-    /// The runtime has finished decoding into the surface and does not
-    /// write it while the planes are borrowed.
-    unsafe fn planes(&self, index: usize) -> Option<(&[u8], &[u8])> {
-        let luma = self.pitch * self.rows;
-        let start = index.checked_mul(self.frame)?;
-        if start + luma + luma / 2 > self.memory.len() {
-            return None;
-        }
-        let y = self.memory.as_ptr().cast::<u8>().wrapping_add(start);
-        // SAFETY: inside the block, checked above, which lives as long as
-        // the pool; the caller says nothing writes it meanwhile.
-        unsafe {
-            Some((
-                core::slice::from_raw_parts(y, luma),
-                core::slice::from_raw_parts(y.add(luma), luma / 2),
-            ))
-        }
-    }
-}
-
-impl Drop for Pool {
-    fn drop(&mut self) {
-        // SAFETY: both were made by `Box::into_raw` and are freed once, here,
-        // after the decoder that held pointers into them was closed.
-        unsafe {
-            drop(Box::from_raw(self.surfaces.as_ptr()));
-            drop(Box::from_raw(self.memory.as_ptr()));
-        }
-    }
-}
-
 /// A decoder built for a stream and what it has handed out.
 struct Built<'a> {
     shape: Shape,
@@ -301,16 +220,14 @@ struct Built<'a> {
     /// Where the next pair of views goes.
     next_view: usize,
     staging: Option<Staging>,
-    pool: Option<Pool>,
 }
 
 /// Intel's decoder in one session of its runtime.
 pub struct Backend<'a> {
     built: Option<Built<'a>>,
     session: &'a Session<'a>,
-    runtime: Runtime,
-    /// The current runtime's device; none for the older one's.
-    device: Option<&'a Device>,
+    /// The device the session decodes on.
+    device: &'a Device,
     /// The largest coded picture the caller's planes take.
     ceiling: (u32, u32),
     /// The split and the fence it signals, on a device that has fences.
@@ -339,7 +256,6 @@ pub struct Backend<'a> {
 impl fmt::Debug for Backend<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Backend")
-            .field("runtime", &self.runtime)
             .field("codec", &self.codec)
             .field("shape", &self.built.as_ref().map(|b| b.shape))
             .field("coded", &self.built.as_ref().map(|b| b.coded))
@@ -381,32 +297,26 @@ fn param_for(shape: Shape, (width, height): (u16, u16), memory: u16) -> mfxVideo
 
 /// What Intel's decoder decodes in `session`, **asked by building a real
 /// decoder per codec, depth and chroma and dropping it**, never a list
-/// believed. The older runtime's is asked for four-two-zero alone, which is
-/// all it hands out.
-pub fn caps(session: &Session<'_>, runtime: Runtime) -> Caps {
-    let memory = match runtime {
-        Runtime::Current => VIDEO_MEMORY,
-        Runtime::Older => SYSTEM_MEMORY,
-    };
+/// believed.
+pub fn caps(session: &Session<'_>) -> Caps {
     let builds = |codec, ten_bit, full_chroma| {
         let shape = Shape {
             codec,
             ten_bit,
             full_chroma,
         };
-        let mut param = param_for(shape, PROBE_SIZE, memory);
+        let mut param = param_for(shape, PROBE_SIZE, VIDEO_MEMORY);
         // SAFETY: parameters made here, no extension buffer attached.
         let built = unsafe { session.init(&mut param) }.is_ok();
         session.close_decoder();
         built
     };
-    let full = runtime == Runtime::Current;
     Caps {
         h264: builds(Codec::H264, false, false),
         hevc: builds(Codec::H265, false, false),
         hevc_10: builds(Codec::H265, true, false),
-        hevc_444: full && builds(Codec::H265, false, true),
-        hevc_444_10: full && builds(Codec::H265, true, true),
+        hevc_444: builds(Codec::H265, false, true),
+        hevc_444_10: builds(Codec::H265, true, true),
     }
 }
 
@@ -464,28 +374,22 @@ fn carries_sets(codec: Codec, unit: &[u8]) -> bool {
 }
 
 impl<'a> Backend<'a> {
-    /// The decoder in `session`, of `runtime`; `device` the current
-    /// runtime's, the one the session decodes on, and none for the older
-    /// one; `unit_bytes` the largest unit that comes.
+    /// The decoder in `session`, which decodes on `device`; `unit_bytes` the
+    /// largest unit that comes.
     pub fn new(
         session: &'a Session<'a>,
-        runtime: Runtime,
-        device: Option<&'a Device>,
+        device: &'a Device,
         ceiling: (u32, u32),
         unit_bytes: usize,
     ) -> Result<Self> {
-        if (runtime == Runtime::Current) != device.is_some() {
-            return Err(Error::NoProfile);
-        }
         Ok(Self {
             built: None,
             session,
-            runtime,
             device,
             ceiling,
             // The split needs the fence to say when its work is done; a
             // device without one hands pictures out by read-back only.
-            split: device.and_then(Split::new),
+            split: Split::new(device),
             event: Event::new()?,
             codec: Codec::H264,
             ten_bit: false,
@@ -523,7 +427,7 @@ impl<'a> Backend<'a> {
 
     /// Whether the device is gone.
     pub fn lost(&self) -> bool {
-        self.device.is_some_and(Device::lost)
+        self.device.lost()
     }
 
     /// The fence the split signals, on a device that splits.
@@ -531,8 +435,8 @@ impl<'a> Backend<'a> {
         self.split.as_ref().map(Split::fence)
     }
 
-    /// Whether pictures can leave as textures: the current runtime on a
-    /// device with the split and the fence it signals.
+    /// Whether pictures can leave as textures: a device with the split and
+    /// the fence it signals.
     pub fn splits(&self) -> bool {
         self.split.is_some()
     }
@@ -550,13 +454,6 @@ impl<'a> Backend<'a> {
             Fault::DeviceLost
         } else {
             otherwise
-        }
-    }
-
-    fn memory(&self) -> u16 {
-        match self.runtime {
-            Runtime::Current => VIDEO_MEMORY,
-            Runtime::Older => SYSTEM_MEMORY,
         }
     }
 
@@ -585,7 +482,7 @@ impl<'a> Backend<'a> {
         if fourcc != shape.fourcc() {
             return Err(Error::NoProfile);
         }
-        param.IOPattern = self.memory();
+        param.IOPattern = VIDEO_MEMORY;
         // Five in flight is the runtime's own default; asked for one, it
         // answers busy on nearly every unit decoded back to back.
         param.AsyncDepth = 0;
@@ -596,10 +493,6 @@ impl<'a> Backend<'a> {
             .__bindgen_anon_1
             .__bindgen_anon_2
             .DecodedOrder = 1;
-        let pool = match self.runtime {
-            Runtime::Current => None,
-            Runtime::Older => Some(self.pool(&mut param, shape)?),
-        };
         // SAFETY: the parameters the header filled, no extension buffer
         // attached.
         unsafe { self.session.init(&mut param) }.map_err(built_error)?;
@@ -612,7 +505,6 @@ impl<'a> Backend<'a> {
             views: [const { None }; VIEWS],
             next_view: 0,
             staging: None,
-            pool,
         });
         // A stream whose sets travelled ahead of this picture gives them to
         // the decoder first.
@@ -623,50 +515,6 @@ impl<'a> Backend<'a> {
             submitted?;
         }
         Ok(true)
-    }
-
-    /// The older runtime's surfaces for a decoder of `param`: what it asks
-    /// for and the readers' spare, in one block.
-    fn pool(&self, param: &mut mfxVideoParam, shape: Shape) -> Result<Pool> {
-        // SAFETY: the parameters the header filled, no extension buffer
-        // attached.
-        let request = unsafe { self.session.surfaces(param) }?;
-        let count = usize::from(request.NumFrameSuggested) + SPARE_SURFACES;
-        // SAFETY: the decoder's half of the union, which the header filled.
-        let info = unsafe { param.__bindgen_anon_1.mfx.FrameInfo };
-        // SAFETY: the size half of the union, which the header filled.
-        let (width, height) = unsafe {
-            (
-                usize::from(info.__bindgen_anon_1.__bindgen_anon_1.Width),
-                usize::from(info.__bindgen_anon_1.__bindgen_anon_1.Height),
-            )
-        };
-        let sample = shape.format().sample();
-        let pitch = (width * sample).next_multiple_of(64);
-        let frame = pitch * (height + height / 2);
-        let pitch16 = u16::try_from(pitch).map_err(|_| Error::TooLarge)?;
-        let memory = NonNull::from(Box::leak(vec![0u8; frame * count].into_boxed_slice()));
-        let mut surfaces: Box<[mfxFrameSurface1]> = (0..count).map(|_| zeroed()).collect();
-        let block = memory.as_ptr().cast::<u8>();
-        for (i, surface) in surfaces.iter_mut().enumerate() {
-            let y = block.wrapping_add(i * frame);
-            surface.Info = info;
-            surface.Data.__bindgen_anon_2.Pitch = pitch16;
-            surface.Data.__bindgen_anon_3.Y = y;
-            // The chroma rows follow the luma rows in the frame's part of the
-            // block, which holds both.
-            surface.Data.__bindgen_anon_4.UV = y.wrapping_add(pitch * height);
-        }
-        // No reference to either is made again: the runtime holds pointers
-        // into both from here on.
-        let surfaces = NonNull::from(Box::leak(surfaces));
-        Ok(Pool {
-            surfaces,
-            memory,
-            frame,
-            pitch,
-            rows: height,
-        })
     }
 
     fn decode(&mut self, unit: &[u8]) -> Result<Fed> {
@@ -801,15 +649,9 @@ impl<'a> Backend<'a> {
         let mut bitstream = bitstream(unit, mark)?;
         let mut out = false;
         for _ in 0..BUSY_TRIES {
-            let work = match &built.pool {
-                Some(pool) => free_surface(pool, &built.held).ok_or(Error::Stream)?,
-                None => core::ptr::null_mut(),
-            };
-            // SAFETY: the work surface is null or one of the pool's, which
-            // lives, unmoved, as long as the decoder does and is dropped only
-            // after it is closed; it is neither locked by the runtime nor
-            // held here.
-            match unsafe { session.decode(&mut bitstream, work) }? {
+            // SAFETY: the bitstream's bytes are `unit`'s, borrowed for the
+            // call.
+            match unsafe { session.decode(&mut bitstream) }? {
                 Decoded::Picture(picture) => {
                     place(built, device, picture, mark)?;
                     out = true;
@@ -925,9 +767,9 @@ impl<'a> Backend<'a> {
             return Ok(None);
         };
         let started = lowlat_common::clock::Time::now();
-        let timed = match (self.split.as_mut(), self.device) {
-            (Some(split), Some(device)) => split.take(device, &mut self.decode_us),
-            _ => false,
+        let timed = match self.split.as_mut() {
+            Some(split) => split.take(self.device, &mut self.decode_us),
+            None => false,
         };
         let split = self.split_picture(slot, planes, timed);
         self.taken(slot);
@@ -955,7 +797,7 @@ impl<'a> Backend<'a> {
         timed: bool,
     ) -> Result<u64> {
         let visible = self.visible_and_range().0;
-        let device = self.device.ok_or(Error::NoProfile)?;
+        let device = self.device;
         let built = self.built.as_mut().ok_or(Error::NoProfile)?;
         let split = self.split.as_mut().ok_or(Error::NoProfile)?;
         let format = built.shape.format();
@@ -983,13 +825,11 @@ impl<'a> Backend<'a> {
         Ok(value)
     }
 
-    /// Read `slot`'s picture into the planes: from the current runtime's
-    /// texture through a staging copy queued behind its decode, the
-    /// mapping's wait sleeping on the device's progress; from the older
-    /// runtime's surface once the runtime says it is decoded.
+    /// Read `slot`'s picture into the planes, from the runtime's texture
+    /// through a staging copy queued behind its decode, the mapping's wait
+    /// sleeping on the device's progress.
     fn read_back(&mut self, slot: usize, out: &mut Planes<'_>) -> Result<()> {
         let visible = self.visible_and_range().0;
-        let session = self.session;
         let device = self.device;
         let built = self.built.as_mut().ok_or(Error::NoProfile)?;
         let format = built.shape.format();
@@ -998,21 +838,6 @@ impl<'a> Backend<'a> {
             .get_mut(slot)
             .and_then(Option::take)
             .ok_or(Error::Stream)?;
-        let Some(device) = device else {
-            let started = lowlat_common::clock::Time::now();
-            if !session.sync(&picture, SYNC_WAIT_MS)? {
-                return Err(Error::Stream);
-            }
-            let synced = lowlat_common::clock::Time::now();
-            let result = match &built.pool {
-                Some(pool) => copy_surface(&picture, pool, format, visible, out),
-                None => Err(Error::NoProfile),
-            };
-            let done = lowlat_common::clock::Time::now();
-            self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
-            self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
-            return result;
-        };
         let texture = picture.texture().cast::<ID3D11Texture2D>();
         if texture.is_null() {
             return Err(Error::Stream);
@@ -1066,8 +891,7 @@ impl<'a> Backend<'a> {
     }
 
     /// Drop the decoder: the pictures held go back to the runtime first,
-    /// then the decoder is closed, and only then the older runtime's
-    /// surfaces, which it reads until it is closed.
+    /// then the decoder is closed.
     fn teardown(&mut self) {
         if let Some(mut built) = self.built.take() {
             built.held = [const { None }; SURFACES];
@@ -1083,41 +907,12 @@ impl Drop for Backend<'_> {
     }
 }
 
-/// A surface of the pool's the runtime may decode into: neither locked by
-/// it nor held here for its turn. Its lock count is read as the atomic it
-/// is to the runtime's threads, which write it.
-fn free_surface(pool: &Pool, held: &[Option<Held<'_>>]) -> Option<*mut mfxFrameSurface1> {
-    (0..pool.surfaces.len())
-        .filter_map(|i| pool.surface(i))
-        .find(|&surface| {
-            // SAFETY: a surface of the pool's, live and in place as long as
-            // the pool; the count is a sixteen-bit field, aligned for one,
-            // which the runtime changes only atomically.
-            let locked =
-                unsafe { core::sync::atomic::AtomicU16::from_ptr(&raw mut (*surface).Data.Locked) }
-                    .load(core::sync::atomic::Ordering::Acquire);
-            locked == 0
-                && !held
-                    .iter()
-                    .flatten()
-                    .any(|h| core::ptr::eq(h.surface(), surface))
-        })
-}
-
 /// Put a picture the runtime handed out of the call that submitted the unit
 /// marked `own` in the slot of the unit it completes ([`slot_for`]); one no
-/// unit waits for is let go. The first picture of a decoder on a device is
-/// checked to be that device's: a runtime that fell back to a device of its
-/// own is refused.
-fn place<'a>(
-    built: &mut Built<'a>,
-    device: Option<&Device>,
-    picture: Held<'a>,
-    own: i64,
-) -> Result<()> {
-    if let Some(device) = device
-        && !built.checked
-    {
+/// unit waits for is let go. The first picture of a decoder is checked to be
+/// the device's: a runtime that fell back to a device of its own is refused.
+fn place<'a>(built: &mut Built<'a>, device: &Device, picture: Held<'a>, own: i64) -> Result<()> {
+    if !built.checked {
         if !is_ours(device, picture.texture().cast()) {
             return Err(Error::NotOurs);
         }
@@ -1144,40 +939,6 @@ fn is_ours(device: &Device, texture: *mut ID3D11Texture2D) -> bool {
     // SAFETY: the reference the call handed over, released on drop.
     let owner = unsafe { Com::from_raw(owner) };
     owner.is_some_and(|o| o.as_ptr() == device.device())
-}
-
-/// The older runtime's picture, from its surface's planes into `out`: the
-/// planes as the pool laid them out, whatever the surface's description
-/// says by now.
-fn copy_surface(
-    picture: &Held<'_>,
-    pool: &Pool,
-    format: Format,
-    (width, height): (u32, u32),
-    out: &mut Planes<'_>,
-) -> Result<()> {
-    if format.full_chroma() {
-        return Err(Error::NoProfile);
-    }
-    let index = pool.index_of(picture.surface()).ok_or(Error::Stream)?;
-    // SAFETY: the runtime has said the picture is decoded, and holds it as a
-    // reference at most, which it reads and does not write.
-    let (luma, chroma) = unsafe { pool.planes(index) }.ok_or(Error::TooLarge)?;
-    let pitch = pool.pitch;
-    let width = usize::try_from(width).map_err(|_| Error::TooLarge)?;
-    let height = usize::try_from(height).map_err(|_| Error::TooLarge)?;
-    let row_bytes = width * format.sample();
-    copy_rows(luma, 0, pitch, out.y, out.y_pitch, row_bytes, height)?;
-    copy_rows(
-        chroma,
-        0,
-        pitch,
-        out.uv,
-        out.uv_pitch,
-        row_bytes,
-        height.div_ceil(2),
-    )?;
-    Ok(())
 }
 
 /// The views the split reads `texture` through, made the first time the
@@ -1322,8 +1083,7 @@ mod tests {
     }
 
     /// **A device lost at a build is the lost device's, not a stream no
-    /// decoder takes**: the older runtime has no device to ask, so only the
-    /// runtime's word says so.
+    /// decoder takes**, on the runtime's word alone.
     #[test]
     fn a_device_lost_at_a_build_is_not_a_refused_stream() {
         for status in [MFX_ERR_DEVICE_LOST, MFX_ERR_DEVICE_FAILED, MFX_ERR_GPU_HANG] {

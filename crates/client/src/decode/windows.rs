@@ -29,7 +29,7 @@ use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::lavc::Lavc;
-use lowlat_drivers::vpl::{Runtime, Vpl};
+use lowlat_drivers::vpl::Vpl;
 
 use super::{Backend, Next, Shared, drive};
 use crate::UNIT_BYTES;
@@ -346,10 +346,9 @@ fn amd_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next
 }
 
 /// Intel's decoder on the adapter `luid`, in a session of the runtime its
-/// driver installs -- on a device of the library's own there for the
-/// current runtime, into memory of the backend's own for the older one --
-/// driven until it returns; a device lost on the way is found again on the
-/// same GPU and a session made again there.
+/// driver installs on a device of the library's own there, driven until it
+/// returns; a device lost on the way is found again on the same GPU and a
+/// session made again there.
 fn intel_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next {
     let Ok(d3d11) = D3d11::load() else {
         return Next::Failed;
@@ -365,32 +364,21 @@ fn intel_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Ne
             return Next::Failed;
         };
         let device = Arc::new(device);
-        let kind = runtime.runtime();
-        let session = match kind {
-            Runtime::Current => runtime.session(&device, index),
-            Runtime::Older => runtime.system_session(index),
-        };
-        let session = match session {
+        let session = match runtime.session(&device, index) {
             Ok(session) => session,
             Err(e) => {
                 lowlat_common::log_warn!("client: intel decoder not made, error={e}");
                 return Next::Failed;
             }
         };
-        let decodes_on = (kind == Runtime::Current).then_some(&*device);
-        let backend = match vpl::Backend::new(
-            &session,
-            kind,
-            decodes_on,
-            shared.frames.ceiling(),
-            UNIT_BYTES,
-        ) {
-            Ok(backend) => backend,
-            Err(e) => {
-                lowlat_common::log_warn!("client: intel decoder not made, error={e}");
-                return Next::Failed;
-            }
-        };
+        let backend =
+            match vpl::Backend::new(&session, &device, shared.frames.ceiling(), UNIT_BYTES) {
+                Ok(backend) => backend,
+                Err(e) => {
+                    lowlat_common::log_warn!("client: intel decoder not made, error={e}");
+                    return Next::Failed;
+                }
+            };
         // A device that splits takes the session's device slots, whatever
         // kind the session asks for now, so a switch to handles has them.
         if let Some(fence) = backend.fence() {
