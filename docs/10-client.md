@@ -694,15 +694,16 @@ and freed as ever. So: each wait on the device is woken by a function the runtim
 the picture's work, with a bound of 500 ms; past it the take fails as a lost device, and nothing
 of that decoder is waited on or destroyed again -- it is leaked. The decoder runs in a context
 kept for its device, never destroyed; a wedged one is retired, never destroyed either, and the
-decoder is built again in a fresh one with a keyframe asked: live, the picture held for 725 ms,
-then the stream went on at 120 a second. Two wedges in a row with no picture between end the
-stream as a lost device does, and past four retired contexts in the process, each keeping about
-220 MiB at 2560x1440 (114 of it the context's own), no more are made and the vendor's decoder
-fails to open. The primary context, which the probes and the listing retain and release, is held
-once for the process's life. Before this the decode thread waited forever: the stream froze,
-ending the connection never returned, since it joins that thread, and a new attempt on the
-handle was refused as one still hosting. The mapped mode, taken for full chroma and by drivers
-without the newer entry points, still waits in the decoder's own map, with no bound.
+decoder is built again in a fresh one with a keyframe asked: live, the picture held for 725 to
+800 ms, then the stream went on at 120 a second, three times in 21 minutes before a fourth wedge
+reached the cap below. Two wedges in a row with no picture between end the stream as a lost
+device does, and past four retired contexts in the process, each keeping about 220 MiB at
+2560x1440 (114 of it the context's own), no more are made and the vendor's decoder fails to
+open. The primary context, which the probes and the listing retain and release, is held once for
+the process's life. Before this the decode thread waited forever: the stream froze, ending the
+connection never returned, since it joins that thread, and a new attempt on the handle was
+refused as one still hosting. The mapped mode, taken for full chroma and by drivers without the
+newer entry points, still waits in the decoder's own map, with no bound.
 
 **Software decode is the machine's own libavcodec, and only an LGPL one** (*decided
 2026-09-21*, [impl-plan-client.md](impl-plan-client.md) C8). Nothing is shipped or built:

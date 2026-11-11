@@ -31,9 +31,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   measured, and why no context is destroyed.
 - The bounded wait against the old, per picture at 2560x1440 and 120 a second, two rounds a
   route: the median within 16 us, the 95th percentile the same or lower.
-- Live against an established host by handle through GL, 120 pictures a second: a decode that
-  never finished at 124 s was given up after 500 ms and the decoder built again in a fresh
-  context 212 ms later, at the keyframe; the picture held for 725 ms, then 120 a second again.
+- Live against an established host by handle through GL, 120 pictures a second: four decodes
+  that never finished in 21 minutes, at 124, 391, 1112 and 1245 s. The first three were each
+  given up after 500 ms and the decoder built again in a fresh context 212 to 279 ms later, at
+  the keyframe, the picture holding 725 to 800 ms before 120 a second again; the fourth reached
+  the cap, the stream ended as a decoder failure, and the demo exited at once, four stuck
+  contexts in its process.
 
 ### Known
 - The mapped mode, taken for full chroma and by drivers without the newer entry points, still
