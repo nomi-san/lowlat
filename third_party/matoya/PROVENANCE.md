@@ -144,6 +144,14 @@ extension alone, on the first device that presents.
 | `src/gfx/vk/vk.c` | `mty_vk_valid_hardware_frame` answers whether the device imports the frame's kind and, for a buffer, its modifier for both planes' formats; `mty_vk_render` with `hardware` imports a frame once per allocation number, up to 24 -- every surface a decoder lending its own hands out at once, which is 22 -- the oldest replaced: an opaque descriptor as a buffer, copied into the plane images at each plane's offset and pitch; a buffer a plane at a time as an image in its layout, each import told the whole buffer -- a driver reads a plane past the start only through an import of the whole of it, and lost its device on one told less -- acquired from the foreign queue family with its content kept, copied into the plane images and given back. A repeat that names no format draws the plane images as they are |
 | `src/gfx/gl/gl.c` | a kernel buffer descriptor is refused, at the check and at the draw: the GL context, GLX, imports none |
 
+A window made at the default frame opens on the primary monitor on Linux. Upstream centres it
+on the X screen, which spans every monitor, so on two side by side it straddled both.
+
+| file | change |
+|---|---|
+| `src/unix/linux/x11/dl/libx11.h`, `libx11.c` | the screen's monitors (`XRRGetMonitors`, `XRRFreeMonitors`, RandR 1.5), resolved where the library is and left null otherwise |
+| `src/unix/linux/x11/app.c` | `MTY_MakeDefaultFrame` centres the frame on the primary monitor, or the first where none is primary, and on the whole screen as before where the monitors cannot be asked |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 

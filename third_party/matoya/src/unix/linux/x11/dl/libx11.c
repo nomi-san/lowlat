@@ -95,6 +95,12 @@ static Bool (*XFixesQueryExtension)(Display *dpy, int *event_base_return, int *e
 static void (*XFixesSelectSelectionInput)(Display *dpy, Window win, Atom selection, unsigned long eventMask);
 
 
+// Xrandr interface, where the library is: the screen's monitors
+
+static XRRMonitorInfo *(*XRRGetMonitors)(Display *dpy, Window window, Bool get_active, int *nmonitors);
+static void (*XRRFreeMonitors)(XRRMonitorInfo *monitors);
+
+
 // XKB interface (part of libX11 in modern times)
 
 static Bool (*XkbSetDetectableAutoRepeat)(Display *dpy, Bool detectable, Bool *supported);
@@ -131,12 +137,14 @@ static MTY_SO *LIBX11_SO;
 static MTY_SO *LIBXFIXES_SO;
 static MTY_SO *LIBXI_SO;
 static MTY_SO *LIBXCURSOR_SO;
+static MTY_SO *LIBXRANDR_SO;
 static MTY_SO *LIBGL_SO;
 static bool LIBX11_INIT;
 
 static void libX11_global_destroy_lockfree(void)
 {
 	MTY_SOUnload(&LIBGL_SO);
+	MTY_SOUnload(&LIBXRANDR_SO);
 	MTY_SOUnload(&LIBXCURSOR_SO);
 	MTY_SOUnload(&LIBXI_SO);
 	MTY_SOUnload(&LIBXFIXES_SO);
@@ -164,6 +172,7 @@ static bool libX11_global_init(void)
 		LIBXFIXES_SO = MTY_SOLoad("libXfixes.so.3");
 		LIBXI_SO = MTY_SOLoad("libXi.so.6");
 		LIBXCURSOR_SO = MTY_SOLoad("libXcursor.so.1");
+		LIBXRANDR_SO = MTY_SOLoad("libXrandr.so.2");
 		LIBGL_SO = MTY_SOLoad("libGL.so.1");
 
 		if (!LIBX11_SO || !LIBGL_SO || !LIBXI_SO || !LIBXCURSOR_SO) {
@@ -239,6 +248,11 @@ static bool libX11_global_init(void)
 		}
 
 		LOAD_SYM_OPT(LIBX11_SO, XkbSetDetectableAutoRepeat);
+
+		if (LIBXRANDR_SO) {
+			LOAD_SYM_OPT(LIBXRANDR_SO, XRRGetMonitors);
+			LOAD_SYM_OPT(LIBXRANDR_SO, XRRFreeMonitors);
+		}
 
 		LOAD_SYM(LIBXI_SO, XISelectEvents);
 

@@ -532,6 +532,21 @@ typedef struct _XcursorImage {
 
 typedef struct _XRRScreenConfiguration XRRScreenConfiguration;
 
+// A monitor of the screen (RandR 1.5), at its place on the screen.
+typedef struct {
+	Atom name;
+	Bool primary;
+	Bool automatic;
+	int noutput;
+	int x;
+	int y;
+	int width;
+	int height;
+	int mwidth;
+	int mheight;
+	XID *outputs;
+} XRRMonitorInfo;
+
 
 // GLX interface
 

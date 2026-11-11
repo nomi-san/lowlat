@@ -1532,9 +1532,41 @@ MTY_Frame MTY_MakeDefaultFrame(int32_t x, int32_t y, uint32_t w, uint32_t h, flo
 	uint32_t screen_h = XHeightOfScreen(screen);
 	uint32_t screen_w = XWidthOfScreen(screen);
 
+	// The primary monitor, or the first, where the screen spans several: a
+	// window centred on the whole screen would straddle two of them.
+	int32_t monitor_x = 0;
+	int32_t monitor_y = 0;
+
+	if (XRRGetMonitors && XRRFreeMonitors) {
+		int n = 0;
+		XRRMonitorInfo *monitors = XRRGetMonitors(display, XRootWindowOfScreen(screen), True, &n);
+		XRRMonitorInfo *pick = NULL;
+
+		for (int i = 0; monitors && i < n && !pick; i++)
+			if (monitors[i].primary)
+				pick = &monitors[i];
+
+		if (!pick && monitors && n > 0)
+			pick = &monitors[0];
+
+		if (pick && pick->width > 0 && pick->height > 0) {
+			monitor_x = pick->x;
+			monitor_y = pick->y;
+			screen_w = pick->width;
+			screen_h = pick->height;
+		}
+
+		if (monitors)
+			XRRFreeMonitors(monitors);
+	}
+
 	XCloseDisplay(display);
 
-	return mty_window_adjust(screen_w, screen_h, scale, maxHeight, x, y, w, h);
+	MTY_Frame frame = mty_window_adjust(screen_w, screen_h, scale, maxHeight, x, y, w, h);
+	frame.x += monitor_x;
+	frame.y += monitor_y;
+
+	return frame;
 }
 
 static void app_hotkey_init(void)
