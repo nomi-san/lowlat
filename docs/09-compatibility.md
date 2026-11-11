@@ -137,7 +137,7 @@ version, not only the part. *From the driver.*
 | Generation | Capture | Conversion | Encode | Hosts? |
 |---|---|---|---|---|
 | Sandy Bridge, Ivy Bridge, Bay Trail | yes | **none** | VAAPI, H.264 | **no** |
-| Haswell, Broadwell | yes | Vulkan or GL | VAAPI, H.264 | **yes** |
+| Haswell, Broadwell | yes | Vulkan or GL | VAAPI, H.264, through the media driver's full build | **yes**; Broadwell **measured** |
 | Skylake through Tiger Lake | yes | Vulkan or GL | VAAPI, H.264 and HEVC | **yes** |
 | Arc, and Xe discrete | yes | Vulkan or GL | VAAPI through the **low-power** entry point; **no Vulkan Video** | **yes, measured** |
 | Meteor Lake and newer | yes | Vulkan or GL | VAAPI | **yes** |
@@ -154,6 +154,25 @@ version floors.*
 So on old Intel the answer is not "the encoder is too old". It is that we cannot get the
 picture to an encoder that would happily take it. **Closing that would mean a third conversion
 tier written against an older interface**, and it is not planned.
+
+**Which build of Intel's media driver is installed decides whether these parts encode, and
+how** (*measured 2026-11-11, an i3-5005U, Broadwell GT2*). The driver ships in two builds, one
+without the shader kernels that are not freely licensed. On Broadwell that build lists no
+encoder at all -- it decodes and nothing else -- so a host there has nothing to encode with; the
+older Intel driver, as one distribution packages it without its shaders, lists an encoder and
+ends the process at the first context; the full build encodes, and streamed this desktop at
+2560x1440. On the generations after Broadwell the reduced build encodes through the low-power
+entry point alone, and that path reads a picture in the driver's own Y tiling and nothing else:
+the copy that turns plain rows into tiles is one of the kernels left out, so plain rows are read
+as tiles and coded as noise, with no error anywhere (reported on a Skylake part with the reduced
+build, 2026-11-04). **So for this driver the conversion writes the Y tiling** wherever the GPU
+writes it for both planes ([05 §3](05-host.md)); a part without the tiling, Arc and later, keeps
+plain rows, which its low-power path reads as they are. On the Broadwell part, with the full
+build, the same desktop came out byte for byte the same through tiled and plain targets, and
+the tiled path was the cheaper one: the conversion 7.1 to 3.9 ms at 2560x1440, the encode 7.6
+to 6.6 ms at the median and 21.8 to 13.7 at the 99th percentile, the driver's per-picture copy
+gone, the loop 44 to 57 pictures a second. *The Skylake fault itself is not reproduced here: no
+such part.*
 
 **Discrete Arc needs the low-power entry point.** VAAPI names two ways to reach an encoder, and
 the shader-driven one was removed from Intel's discrete parts. Asking for it by name reported
@@ -345,7 +364,7 @@ the distribution's 7.1 pair too.
 |---|---|---|---|---|---|---|---|
 | AMD RDNA 2 (discrete) | VA-API, open stack 25.0.7 | yes | yes | yes | no | no | **measured**: twenty-one clips from four encoders, every picture the reference decoder's; a 2560x1440 stream at 120 pictures a second decodes in about 2 ms and reads back in about 2 ms |
 | Other AMD from Fiji (GCN 3) | VA-API | yes | yes | Polaris and later | no | no | from the driver's published profile tables; the same code path, not run here |
-| Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | not asked for | no | from the driver's published profile tables; not run here |
+| Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | not asked for | the media driver's, yes | **measured on Broadwell** (*2026-11-11*, an i3-5005U, the media driver 25.2.3 in both builds and the older driver 2.4.1): every committed H.264 clip bit-exact on all three, the media driver's surfaces lent and held without a picture written into one; no HEVC offered, as the tables say; the later columns from the tables, not run here |
 | Intel Arc A380 (DG2, discrete) | VA-API, the vendor's media driver 25.2.3 | yes | yes | yes | yes, both depths | no | **measured** (*2026-09-22*): every committed clip bit-exact, the second codec's ten-bit and full-chroma ones included -- the four full-chroma clips through the range-extension structures and the driver's packed layouts unpacked in the read-back, the first open-stack part to verify that path. The card sat on a PCIe link one lane wide, and the read-back is the link: at 2560x1440 a picture costs 8 ms to read back as NV12 and 16 ms as P010, the decode itself 0.9 to 1.5 ms, and from 60 pictures a second up the driver serialises the next decode behind the read-back, so the reader manages 58 a second of H.264 and 31 of HEVC ten-bit whatever the host sends; asked for 30 it keeps pace with the reader at most one message behind, asked for more it falls behind by the difference until the receive ring is full, which is the design's stated limit for a decoder slower than its stream ([10 §4.1](10-client.md)) |
 | NVIDIA RTX 5060 | the vendor's decode interface, driver 615 | yes | yes | yes | yes | yes, an opaque descriptor | **measured** (*2026-09-19*): every clip bit for bit, full chroma at both depths included; a 2560x1440 stream at 120 pictures a second decodes in 0.6 ms and reads back in 0.5-0.9 ms, or is copied on the device in 0.09 ms when handed out as a handle; (*2026-09-24*) full chroma from an established host handed out as a handle for ten minutes at each depth, the device copy 0.10 ms at eight bits and 0.15 at ten |
 | Other NVIDIA | the vendor's decode interface | from the interface's capability query | from the query | from the query | probed by building a decoder | yes | the creation-time probe builds a real decoder per combination, so a part that lacks one says so at creation; not run here |

@@ -258,6 +258,19 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   faster and has no packed render targets. Intel's encoder takes this conversion as NVIDIA's
   does: its runtime's own conversion of the captured picture added 0.8 to 2.8 ms inside the
   encode and took its matrix from the stated colour description the wrong way round.
+- **Targets in plain rows, except for the one encoder that reads its own tiling**
+  (*2026-11-11*). Every encoder here takes the two planes as plain rows but Intel's media
+  driver, whose encoders read a picture natively in its Y tiling and take anything else through
+  a copy pass that one build of the driver leaves out -- and that build then reads the rows as
+  tiles and codes noise, refusing nothing ([09 §4](09-compatibility.md)). For that driver the
+  targets are Y-tiled wherever the conversion's GPU writes the tiling for both planes: the
+  colour plane starts past the luma plane's last row of tiles and the descriptor says where,
+  and how many bytes the planes span, rather than an importer working either out. A GPU
+  without the tiling and every other encoder keep plain rows. Written tiled, the conversion
+  itself was cheaper on the one part measured: 3.9 ms against 7.1 in plain rows, at 2560x1440
+  on Broadwell.
+  The other interface still hands that encoder plain rows: its targets are regions the display
+  device allocates, which have no tiling to give.
 - **One conversion target per in-flight slot.** A ring of four. Frames in flight must not share
   a destination, or the encoder reads a surface that the next iteration is already
   overwriting.

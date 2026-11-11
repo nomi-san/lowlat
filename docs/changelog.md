@@ -3,6 +3,50 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-11 - Intel's media driver is handed its own tiling (#8)
+
+### Fixed
+- **Intel's media driver in its reduced build no longer codes noise** ([05 §3](05-host.md),
+  [09 §4](09-compatibility.md)): that build encodes Skylake-era parts through the low-power entry
+  point alone, which reads a picture in the driver's Y tiling and nothing else, so the plain rows
+  the conversion wrote were read as tiles -- a corrupted stream, with no error anywhere. For that
+  driver the conversion now writes Y-tiled targets wherever its GPU writes the tiling for both
+  planes, the colour plane past the luma plane's last row of tiles and the descriptor saying so;
+  every other encoder, and a GPU without the tiling (Arc and later), keeps plain rows.
+- **The decoder table no longer claims any size on the older Intel driver**: a size attribute the
+  driver does not implement comes back as the interface's unsupported marker, the top bit alone,
+  and was read as a size -- 2147483648 by 2147483648. Such a row now says zero, as documented.
+- **The open stack's suites skip what a device does not code** rather than failing on it: on
+  Broadwell, which has no HEVC, the lent-surface, full-chroma and no-allocation decode tests and
+  three encode tests failed for want of the codec. A device with no encoder at all still fails
+  the two that ask for one.
+
+### Changed
+- An exported picture states how many bytes its planes span, and the open encoder's import takes
+  that figure rather than working it out from the picture.
+
+### Checked
+- An i3-5005U (Broadwell GT2, Debian 13, Mesa 25.0.7), the media driver 25.2.3 in its full build:
+  a round trip -- converted, imported without a copy, encoded, decoded by the open decoder -- of
+  30 moving pictures at 1920x1080 came back at 55.0 dB at worst through plain rows and 54.5
+  through the tiling; the tiled target described as plain rows came back at 8.1 dB, its colour
+  placed one picture-height in at 11.0, and both failed the test. Tiled and plain targets hold the
+  same converted picture byte for byte at both depths.
+- The live desktop at 2560x1440 on the same part, twice: the stream from tiled targets byte for
+  byte the stream from plain ones; the conversion 7.1 to 3.9 ms, the encode 7.6 to 6.6 ms at the
+  median and 21.8 to 13.7 at the 99th percentile, the loop 44 to 57 pictures a second.
+- On this part the reduced build lists no encoder at all, and the older Intel driver as one
+  distribution packages it lists one and ends the process at the first context; both are said
+  in 09 §4.
+- The Arc A380 and an AMD integrated GPU, the round trip through plain rows: 81.9 and 38.2 dB at
+  worst, the Arc offering no Y tiling and so unchanged.
+- Not checked: the Skylake part the fault was reported on; none here.
+
+### Known
+- The GL interface still hands this driver plain rows: its targets are regions the display device
+  allocates. On the reduced build that path still codes noise; the Vulkan interface, the default,
+  is fixed.
+
 ## 2026-11-11 - The vendor's decoder on Linux comes back from a decode that never finishes
 
 ### Fixed
