@@ -122,7 +122,7 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
             };
             let cuda = Arc::new(cuda);
             let mut replacing = replacing;
-            let mut fruitless = false;
+            let mut wedged = false;
             loop {
                 let Ok(context) = cuda.decoding_context(&device) else {
                     return Next::Failed;
@@ -147,11 +147,13 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
                     return next;
                 }
                 cuda.retire(context);
+                // A fresh context wedging before its first picture is no
+                // chance: wedges come one in many thousand pictures.
                 let progressed = shared.telemetry.decoded.load(Ordering::Relaxed) != before;
-                if fruitless && !progressed {
+                if wedged && !progressed {
                     return Next::Lost;
                 }
-                fruitless = !progressed;
+                wedged = true;
                 lowlat_common::log_warn!(
                     "client: the vendor's decoder wedged, built again in a fresh context"
                 );
