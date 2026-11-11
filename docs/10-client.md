@@ -687,23 +687,27 @@ anywhere from a thousand to 170,000 pictures, in both of the decoder's modes: it
 picture in progress and staying so, its engine idle, nothing failing, nothing in the kernel's
 log. Nothing else in that context finished from then on -- a new decoder in it decoded nothing
 -- while a decoder in another context of the same process, or another process, decoded on;
-offline the same streams, the one that hung included, never stopped in 252,000 pictures. And
-while one context is stuck, **destroying any context in the process never returns**, releasing
-the primary context's last reference included, though memory, decoders and new contexts are made
-and freed as ever. So: each wait on the device is woken by a function the runtime calls behind
-the picture's work, with a bound of 500 ms; past it the take fails as a lost device, and nothing
-of that decoder is waited on or destroyed again -- it is leaked. The decoder runs in a context
-kept for its device, never destroyed; a wedged one is retired, never destroyed either, and the
-decoder is built again in a fresh one with a keyframe asked: live, the picture held for 725 to
-800 ms, then the stream went on at 120 a second, three times in 21 minutes before a fourth wedge
-reached the cap below. Two wedges in a row with no picture between end the stream as a lost
-device does, and past four retired contexts in the process, each keeping about 220 MiB at
-2560x1440 (114 of it the context's own), no more are made and the vendor's decoder fails to
-open. The primary context, which the probes and the listing retain and release, is held once for
-the process's life. Before this the decode thread waited forever: the stream froze, ending the
-connection never returned, since it joins that thread, and a new attempt on the handle was
-refused as one still hosting. The mapped mode, taken for full chroma and by drivers without the
-newer entry points, still waits in the decoder's own map, with no bound.
+offline the same streams, the one that hung included, never stopped in 252,000 pictures. On
+driver 620.70 none stopped in 326,000 pictures of every codec from a second host -- H.264 for 25
+minutes, HEVC at eight and ten bits and full chroma at eight and ten -- where on 615.71 one in
+about 66,000 had, so the driver likely carries the fault and the bound is for the drivers that
+still do. And while one context is stuck, **destroying any context in the process never
+returns**, releasing the primary context's last reference included, though memory, decoders and
+new contexts are made and freed as ever. So: each wait on the device is woken by a function the
+runtime calls behind the picture's work, with a bound of 500 ms; past it the take fails as a
+lost device, and nothing of that decoder is waited on or destroyed again -- it is leaked. The
+decoder runs in a context kept for its device, never destroyed; a wedged one is retired, never
+destroyed either, and the decoder is built again in a fresh one with a keyframe asked: live, the
+picture held for 725 to 800 ms, then the stream went on at 120 a second, three times in 21
+minutes before a fourth wedge reached the cap below. Two wedges in a row with no picture between
+end the stream as a lost device does, and past four retired contexts in the process, each
+keeping about 220 MiB at 2560x1440 (114 of it the context's own), no more are made and the
+vendor's decoder fails to open. The primary context, which the probes and the listing retain and
+release, is held once for the process's life. Before this the decode thread waited forever: the
+stream froze, ending the connection never returned, since it joins that thread, and a new
+attempt on the handle was refused as one still hosting. The mapped mode, taken for full chroma
+and by drivers without the newer entry points, still waits in the decoder's own map, with no
+bound.
 
 **Software decode is the machine's own libavcodec, and only an LGPL one** (*decided
 2026-09-21*, [impl-plan-client.md](impl-plan-client.md) C8). Nothing is shipped or built:

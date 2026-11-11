@@ -37,10 +37,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the keyframe, the picture holding 725 to 800 ms before 120 a second again; the fourth reached
   the cap, the stream ended as a decoder failure, and the demo exited at once, four stuck
   contexts in its process.
+- On driver 620.70, against a second host, by handle: H.264 for 25 minutes and HEVC at eight
+  and ten bits and at full chroma at eight and ten for five minutes each, 326,000 pictures at 120
+  a second, not one decode left unfinished, where on 615.71 the same day one in about 66,000
+  was. Every committed clip still decodes bit for bit in both modes, and the stall test passes.
 
 ### Known
 - The mapped mode, taken for full chroma and by drivers without the newer entry points, still
-  waits in the decoder's own map with no bound.
+  waits in the decoder's own map with no bound; on 620.70 its 70,000 pictures of full chroma
+  never stopped.
 - On Windows the decoder runs in the primary context, and a wedge there is reported as a lost
   device to the platform's own path; none has been seen there.
 
