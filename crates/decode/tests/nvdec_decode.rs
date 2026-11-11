@@ -364,6 +364,202 @@ fn the_device_route_produces_the_same_pictures() {
     }
 }
 
+/// **A decode that never finishes gives its decoder up within the bound,
+/// and a decoder in a fresh decoding context decodes on.** The stream is
+/// held at a word nothing writes, as a driver has been seen to hold one: the
+/// take fails as a lost device once the bound has passed and soon after, the
+/// teardown waits on nothing, the context is retired, and the whole clip
+/// then decodes bit for bit in a fresh one, by planes and to a device
+/// allocation alike -- the allocation the stuck copy was to write freed in
+/// the new context, as the queue frees its slots. Nothing waits in all of
+/// it, though the stuck context is never destroyed.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the vendor's decode interface"]
+fn a_stalled_decode_gives_its_decoder_up_and_a_fresh_context_decodes_on() {
+    use std::time::{Duration, Instant};
+
+    use lowlat_decode::nvdec::{DevicePlanes, WEDGED_AFTER};
+    use lowlat_decode::{Fault, Planes};
+
+    let cuda = Cuda::load().expect("compute runtime");
+    let device = cuda.any_device().expect("a device");
+    cuda.hold_primary(&device)
+        .expect("the primary context held");
+    let cuvid = Cuvid::load().expect("decode interface");
+    if !(cuvid.asynchronous() && cuda.has_host_functions()) {
+        println!("the driver decodes into no surfaces of the backend's own: nothing waits");
+        return;
+    }
+    let clip = "synthetic-720p-h264.bin";
+    let units = common::units(clip);
+    let theirs = common::sums("synthetic-720p-h264.sums");
+    let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &theirs {
+        *expected.entry((s.y, s.uv)).or_default() += 1;
+    }
+    let pitch = 1280 * 2 + 64;
+    let plane = u64::try_from(pitch * 720).unwrap();
+    let target = |base: u64| DevicePlanes {
+        y: base,
+        y_pitch: pitch,
+        uv: base + plane,
+        uv_pitch: pitch,
+        v: base + 2 * plane,
+        v_pitch: pitch,
+    };
+    let (mut y, mut uv, mut v) = (
+        vec![0u8; pitch * 720],
+        vec![0u8; pitch * 720],
+        vec![0u8; pitch * 720],
+    );
+    for device_route in [false, true] {
+        let route = if device_route { "device" } else { "planes" };
+        let context = cuda.decoding_context(&device).expect("a context");
+        context.make_current().expect("current");
+        let slot = cuda
+            .alloc_exportable(&device, pitch * 720 * 3)
+            .expect("an allocation");
+        let mut backend = Backend::new(&cuda, &cuvid, (4096, 4096), MAX_UNIT);
+        backend.build(&header(Codec::H264, false)).expect("build");
+        let mut take = |b: &mut Backend<'_>| {
+            if device_route {
+                b.take_to_device(&target(slot.ptr()))
+            } else {
+                let mut planes = Planes {
+                    y: &mut y,
+                    y_pitch: pitch,
+                    uv: &mut uv,
+                    uv_pitch: pitch,
+                    v: &mut v,
+                    v_pitch: pitch,
+                };
+                b.take(&mut planes)
+            }
+        };
+        let mut out = 0;
+        for unit in &units[..30] {
+            backend.feed(unit).expect("feed");
+            while take(&mut backend).expect("take").is_some() {
+                out += 1;
+            }
+        }
+        assert!(
+            backend.decodes_into_own_surfaces() && out >= 20,
+            "{route}: {out} pictures before the stall"
+        );
+        backend.stall().expect("the stall");
+        let started = Instant::now();
+        let mut lost = false;
+        for unit in &units[30..] {
+            match backend.feed(unit) {
+                Err(Fault::DeviceLost) => lost = true,
+                Err(e) => panic!("{route}: feed: {e:?}"),
+                Ok(_) => match take(&mut backend) {
+                    Err(Fault::DeviceLost) => lost = true,
+                    Err(e) => panic!("{route}: take: {e:?}"),
+                    Ok(_) => {}
+                },
+            }
+            if lost {
+                break;
+            }
+        }
+        let waited = started.elapsed();
+        assert!(
+            lost && backend.wedged(),
+            "{route}: the stalled decoder was kept"
+        );
+        assert!(
+            waited >= WEDGED_AFTER && waited < WEDGED_AFTER + Duration::from_millis(250),
+            "{route}: given up after {waited:?}"
+        );
+        let started = Instant::now();
+        backend.destroy();
+        drop(backend);
+        let teardown = started.elapsed();
+        assert!(
+            teardown < Duration::from_millis(50),
+            "{route}: the teardown took {teardown:?}"
+        );
+        context.release_current().expect("off the thread");
+        cuda.retire(context);
+
+        let fresh = cuda.decoding_context(&device).expect("a fresh context");
+        assert_ne!(
+            fresh.raw(),
+            context.raw(),
+            "{route}: the retired context came back"
+        );
+        fresh.make_current().expect("current");
+        let started = Instant::now();
+        drop(slot);
+        let freed = started.elapsed();
+        let slot = cuda
+            .alloc_exportable(&device, pitch * 720 * 3)
+            .expect("an allocation");
+        let mut backend = Backend::new(&cuda, &cuvid, (4096, 4096), MAX_UNIT);
+        backend.build(&header(Codec::H264, false)).expect("build");
+        let timed = |b: &Backend<'_>| (b.decode_us, b.readback_us);
+        let (ours, _) = if device_route {
+            common::decode_clip_with(
+                &mut backend,
+                clip,
+                |b| b.drain(),
+                timed,
+                |b, planes| {
+                    let picture = b.take_to_device(&target(slot.ptr()))?;
+                    if let Some(p) = picture {
+                        let rows = p.height as usize;
+                        let row_bytes = p.width as usize * p.format.sample();
+                        let base = slot.ptr();
+                        // SAFETY: the allocation covers three planes of `pitch`
+                        // x 720 and the pictures are no larger.
+                        unsafe {
+                            cuda.read_rows(base, pitch, planes.y, pitch, row_bytes, rows)
+                                .expect("luma");
+                            cuda.read_rows(
+                                base + plane,
+                                pitch,
+                                planes.uv,
+                                pitch,
+                                row_bytes,
+                                p.format.chroma_rows(rows),
+                            )
+                            .expect("chroma");
+                        }
+                    }
+                    Ok(picture)
+                },
+            )
+        } else {
+            common::decode_clip(&mut backend, clip, |b| b.drain(), timed)
+        };
+        assert!(backend.decodes_into_own_surfaces());
+        let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for s in &ours {
+            *got.entry(*s).or_default() += 1;
+        }
+        println!(
+            "{route}: given up after {waited:?}, torn down in {teardown:?}, the stuck copy's allocation freed in {freed:?}; then {} pictures in a fresh context",
+            ours.len()
+        );
+        assert_eq!(
+            got, expected,
+            "{route}: the pictures after the stall differ"
+        );
+        let started = Instant::now();
+        drop(slot);
+        drop(backend);
+        fresh.release_current().expect("off the thread");
+        let ended = started.elapsed();
+        assert!(
+            ended < Duration::from_secs(1),
+            "{route}: the healthy end took {ended:?}"
+        );
+    }
+}
+
 /// One clip through textures of a device of the library's own on the
 /// adapter `luid`, read back on a second device once the fence has passed,
 /// compared with the reference; `mapped` makes the decoder map its own

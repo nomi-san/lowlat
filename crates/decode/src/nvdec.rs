@@ -23,13 +23,27 @@
 //! its own surfaces and each picture is mapped to be read, the map waiting
 //! for the decode.
 //!
+//! **A wait on the device in that first mode has a bound.** A picture's
+//! decode has been seen never to finish -- the decoder's status for it in
+//! progress forever, its engine idle, nothing failing -- and after it no
+//! other decode in the same context finished either, while one in another
+//! context of the same process did. So each wait is woken by a function the
+//! runtime calls behind the picture's work, and once [`WEDGED_AFTER`] has
+//! passed the decoder is given up: the take fails as a lost device, and
+//! nothing of the decoder -- its surfaces, its stream -- is waited on or
+//! destroyed again. It is leaked: destroying the decoder waited on the work
+//! that never finishes. The context it ran in is the caller's to retire
+//! (`cuda::DecodingContext`): no other decoder finishes there either.
+//!
 //! On Windows a picture can also be copied into textures of the graphics
 //! interface, with a fence saying when it is there.
 
-use core::ffi::{c_int, c_uint};
+use core::ffi::{c_int, c_uint, c_void};
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::cuda::{self, Array, ArrayPlane, Cuda, Event, Stream, surface};
+use lowlat_drivers::cuda::{self, Array, ArrayPlane, Cuda, DeviceBuffer, Event, Stream, surface};
 use lowlat_drivers::cuvid::{self, Cuvid, opaque};
 use lowlat_drivers::ffi::cuda::{
     CU_MEMORYTYPE_ARRAY, CU_MEMORYTYPE_DEVICE, CU_MEMORYTYPE_HOST, CUDA_MEMCPY2D,
@@ -56,6 +70,10 @@ const SURFACES: usize = h264::dpb::MAX_FRAMES;
 const MAX_SLICES: usize = h264::MAX_SLICES;
 /// The start code put ahead of every slice in the buffer the device reads.
 const START_CODE: [u8; 3] = [0, 0, 1];
+/// How long a picture's work on the device may take before its decoder is
+/// taken to be wedged: hundreds of times a picture's decode and copies,
+/// which take about a millisecond at 2560x1440.
+pub const WEDGED_AFTER: Duration = Duration::from_millis(500);
 
 /// Why a decoder could not be built or a picture could not be decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +88,9 @@ pub enum Error {
     /// A picture larger than the surfaces, or a unit larger than the
     /// bitstream buffer.
     TooLarge,
+    /// A picture's work on the device did not finish within
+    /// [`WEDGED_AFTER`]: the decoder is given up.
+    Wedged,
 }
 
 impl core::fmt::Display for Error {
@@ -79,6 +100,7 @@ impl core::fmt::Display for Error {
             Self::NoProfile => f.write_str("device decodes no profile this stream needs"),
             Self::Status(s) => write!(f, "decode interface returned status {s}"),
             Self::TooLarge => f.write_str("picture larger than the surfaces"),
+            Self::Wedged => f.write_str("a picture's decode did not finish in time"),
         }
     }
 }
@@ -287,6 +309,16 @@ pub struct Backend<'a> {
     /// stream's event recorded behind them: unmapped once they have passed,
     /// before anything is mapped again or the decoder goes.
     left_mapped: Option<u64>,
+    /// Counted up by a function the runtime calls behind each picture's
+    /// work that is waited for, and waited on with a bound: boxed, so the
+    /// address the runtime is handed stays put, and leaked, never freed, by
+    /// a wedged backend, whose stream may yet reach such a function.
+    passed: Box<AtomicU32>,
+    /// A picture's work did not finish within the bound: nothing of the
+    /// decoder is waited on or destroyed here again.
+    wedged: bool,
+    /// A word nothing writes, which the stream is held at: a test's stall.
+    stall: Option<DeviceBuffer>,
     /// Where pictures are copied into textures, once attached.
     #[cfg(windows)]
     textures: Option<windows::Textures>,
@@ -329,11 +361,51 @@ impl<'a> Backend<'a> {
             offsets: Box::new([0; MAX_SLICES]),
             stream: None,
             left_mapped: None,
+            passed: Box::new(AtomicU32::new(0)),
+            wedged: false,
+            stall: None,
             #[cfg(windows)]
             textures: None,
             decode_us: 0,
             readback_us: 0,
         }
+    }
+
+    /// Hold the backend's stream at a word nothing writes, so the next
+    /// picture's work never finishes: the stall a driver has been seen to
+    /// make, on demand. A test's need.
+    pub fn stall(&mut self) -> Result<()> {
+        self.ensure_stream()?;
+        let word = self.cuda.alloc_pitch(4, 1)?;
+        self.cuda.fill(&word, 0, 4)?;
+        let (stream, _) = self.stream.as_ref().ok_or(Error::NoProfile)?;
+        // SAFETY: the word is this context's, kept with the stream below
+        // for as long as the stream may wait on it.
+        unsafe { self.cuda.stream_wait_value(stream, word.ptr(), 1) }?;
+        self.stall = Some(word);
+        Ok(())
+    }
+
+    /// Whether a picture's work did not finish in time, so the decoder was
+    /// given up.
+    pub fn wedged(&self) -> bool {
+        self.wedged
+    }
+
+    /// Give a wedged decoder up without waiting on anything of it: the
+    /// decoder, its surfaces, the stream and the stall's word are leaked,
+    /// never destroyed, since destroying the decoder waits on the work that
+    /// never finishes. A leak costs memory, and nothing waits.
+    fn abandon(&mut self) {
+        leak(self.decoder.take());
+        leak(self.registered.take());
+        leak(self.stream.take());
+        leak(self.stall.take());
+        // A function behind the stuck work may yet count this word up.
+        let word = core::mem::replace(&mut self.passed, Box::new(AtomicU32::new(0)));
+        let _ = Box::leak(word);
+        self.left_mapped = None;
+        self.shape = None;
     }
 
     /// Unmap the picture left mapped behind its copies, once they have
@@ -970,8 +1042,7 @@ impl<'a> Backend<'a> {
         // CPU. So the decode is waited for first, asleep, and timed apart.
         let host = matches!(out, Out::Host(_));
         if host {
-            copied.record(stream)?;
-            copied.wait()?;
+            wait_behind(self.cuda, stream, copied, &self.passed)?;
         }
         let synced = lowlat_common::clock::Time::now();
         let planes = registered.planes.get(slot).ok_or(Error::TooLarge)?;
@@ -1025,8 +1096,7 @@ impl<'a> Backend<'a> {
             unsafe { self.cuda.copy_2d_async(&copy, stream) }?;
         }
         let queued = lowlat_common::clock::Time::now();
-        copied.record(stream)?;
-        copied.wait()?;
+        wait_behind(self.cuda, stream, copied, &self.passed)?;
         let done = lowlat_common::clock::Time::now();
         if host {
             self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
@@ -1189,6 +1259,57 @@ impl<'a> Backend<'a> {
     }
 }
 
+/// Called by the runtime, on a thread of its own, once a stream has passed
+/// the work queued ahead of it: counts the backend's word up and wakes the
+/// thread waiting on it.
+unsafe extern "C" fn passed(data: *mut c_void) {
+    // SAFETY: `data` is a backend's `passed` word, which lives for as long
+    // as any function queued behind its stream may run (`wait_behind`).
+    let word = unsafe { &*data.cast::<AtomicU32>() };
+    // Release, paired with the waiter's Acquire: the stream's work is done
+    // before the count says so.
+    word.fetch_add(1, Ordering::Release);
+    lowlat_common::wait::notify_all(word);
+}
+
+/// Wait, asleep, until `stream` has passed everything queued on it so far:
+/// woken by a function the runtime calls behind that work, and given up as
+/// [`Error::Wedged`] once [`WEDGED_AFTER`] has passed. Without the runtime's
+/// host functions the event is waited on, with no bound.
+fn wait_behind(cuda: &Cuda, stream: &Stream, event: &Event, word: &AtomicU32) -> Result<()> {
+    if !cuda.has_host_functions() {
+        event.record(stream)?;
+        return Ok(event.wait()?);
+    }
+    let before = word.load(Ordering::Acquire);
+    // SAFETY: the word is the backend's boxed one, which a wedged backend
+    // leaks rather than frees, so it outlives the function however late the
+    // stream reaches it; the function only counts and wakes.
+    unsafe { cuda.launch_host_func(stream, passed, core::ptr::from_ref(word).cast_mut().cast()) }?;
+    let started = lowlat_common::clock::Time::now();
+    let bound = WEDGED_AFTER.as_secs_f64() * 1000.0;
+    loop {
+        if word.load(Ordering::Acquire) != before {
+            return Ok(());
+        }
+        let waited = lowlat_common::clock::elapsed_ms(started);
+        if waited >= bound {
+            return Err(Error::Wedged);
+        }
+        lowlat_common::wait::wait(
+            word,
+            before,
+            Duration::from_secs_f64((bound - waited) / 1000.0),
+        );
+    }
+}
+
+/// Keep `value` from ever being destroyed: what cannot be destroyed
+/// without waiting on work that never finishes is leaked instead.
+fn leak<T>(value: T) {
+    let _never_destroyed = core::mem::ManuallyDrop::new(value);
+}
+
 /// Whole microseconds from a millisecond figure, saturated.
 fn micros(ms: f64) -> u32 {
     #[allow(
@@ -1212,6 +1333,10 @@ impl Decoder for Backend<'_> {
     }
 
     fn feed(&mut self, unit: &[u8]) -> core::result::Result<Fed, Fault> {
+        // Nothing more is queued behind work that never finishes.
+        if self.wedged {
+            return Err(Fault::DeviceLost);
+        }
         let result = match self.codec {
             Codec::H264 => self.decode_h264(unit),
             Codec::H265 => self.decode_hevc(unit),
@@ -1220,6 +1345,7 @@ impl Decoder for Backend<'_> {
             Ok(fed) => Ok(fed),
             Err(Error::NoProfile | Error::Runtime(_) | Error::TooLarge) => Err(Fault::Fatal),
             Err(Error::Status(_)) => Err(Fault::Unrecoverable),
+            Err(Error::Wedged) => Err(Fault::DeviceLost),
         }
     }
 
@@ -1228,6 +1354,10 @@ impl Decoder for Backend<'_> {
     }
 
     fn destroy(&mut self) {
+        if self.wedged {
+            self.abandon();
+            return;
+        }
         // A picture left mapped is unmapped by the decoder it came from.
         let _ = self.settle();
         // The decoder before the surfaces it decodes into.
@@ -1239,7 +1369,11 @@ impl Decoder for Backend<'_> {
 
 impl Drop for Backend<'_> {
     fn drop(&mut self) {
-        let _ = self.settle();
+        if self.wedged {
+            self.abandon();
+        } else {
+            let _ = self.settle();
+        }
     }
 }
 
@@ -1260,6 +1394,9 @@ impl Backend<'_> {
         &mut self,
         copy: impl FnOnce(&mut Self, usize) -> Result<()>,
     ) -> core::result::Result<Option<Picture>, Fault> {
+        if self.wedged {
+            return Err(Fault::DeviceLost);
+        }
         let (slot, order) = match self.codec {
             Codec::H264 => match self.h264.next_output() {
                 Some(o) => (o.slot, o.poc),
@@ -1274,6 +1411,14 @@ impl Backend<'_> {
         match self.codec {
             Codec::H264 => self.h264.dpb.taken(slot),
             Codec::H265 => self.hevc.dpb.taken(slot),
+        }
+        if copied == Err(Error::Wedged) {
+            self.wedged = true;
+            lowlat_common::log_warn!(
+                "decode: a picture's decode did not finish in time, the decoder given up, waited_ms={} slot={slot}",
+                WEDGED_AFTER.as_millis()
+            );
+            return Err(Fault::DeviceLost);
         }
         copied.map_err(|_| Fault::Unrecoverable)?;
         let ((width, height), full_range) = match self.codec {

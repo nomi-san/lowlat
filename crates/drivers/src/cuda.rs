@@ -114,6 +114,15 @@ type Array3DCreate = unsafe extern "C" fn(*mut CUarray, *const CUDA_ARRAY3D_DESC
 type ArrayDestroy = unsafe extern "C" fn(CUarray) -> CUresult;
 type Array3DGetDescriptor = unsafe extern "C" fn(*mut CUDA_ARRAY3D_DESCRIPTOR, CUarray) -> CUresult;
 type ArrayGetPlane = unsafe extern "C" fn(*mut CUarray, CUarray, c_uint) -> CUresult;
+type CtxCreate = unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUresult;
+/// A function the runtime calls, on a thread of its own, once a stream has
+/// passed everything queued on it ahead of the function.
+pub type HostFn = unsafe extern "C" fn(*mut c_void);
+type LaunchHostFunc = unsafe extern "C" fn(CUstream, HostFn, *mut c_void) -> CUresult;
+type StreamWaitValue32 = unsafe extern "C" fn(CUstream, CUdeviceptr, u32, c_uint) -> CUresult;
+
+/// A stream waits until the word is at least the value.
+const STREAM_WAIT_VALUE_GEQ: c_uint = 0;
 
 /// The array layouts a decoder's own surfaces take, and the flags such an
 /// array is made with: declared here because the vendored header predates
@@ -206,6 +215,8 @@ pub enum Error {
     /// No device is the graphics adapter with this identity. **Never
     /// substituted**, as an address is not.
     NoSuchAdapter(u64),
+    /// As many decoding contexts as a process keeps have wedged.
+    TooManyRetired,
     /// A copy was asked for more rows than the source holds. Ours to get
     /// right, so it is refused rather than clamped: a clamp would upload a
     /// partial picture and the fault would show as torn output rather than
@@ -224,6 +235,7 @@ impl core::fmt::Display for Error {
             }
             Self::NoDevices => f.write_str("compute runtime reports no devices"),
             Self::NoSuchAdapter(luid) => write!(f, "no compute device is adapter {luid:#018x}"),
+            Self::TooManyRetired => f.write_str("too many decoding contexts have wedged"),
             Self::SourceTooSmall => f.write_str("source holds fewer rows than the copy needs"),
         }
     }
@@ -370,6 +382,65 @@ impl Drop for Context {
     }
 }
 
+/// The context decoders run in on one device: made the first time it is
+/// asked for and **never destroyed**, as no context a decoder ran in is.
+///
+/// A picture whose decode never finished left the context it ran in unable
+/// to finish any other decode, while a decoder in another context of the
+/// same process decoded on. And while one context has work that never
+/// finishes, destroying any context in the process never returns --
+/// releasing the primary context's last reference included -- though
+/// memory, decoders and new contexts are made and freed as ever. So a
+/// wedged context is retired, kept and never asked for again, the next ask
+/// makes a fresh one, and no context here is ever destroyed. Each retired
+/// one keeps what was made in it, a context's own 114 MiB on the RTX 5060
+/// besides; past [`MAX_RETIRED`] in the process no more are made.
+#[derive(Debug, Clone, Copy)]
+pub struct DecodingContext {
+    raw: CUcontext,
+    push_current: CtxPushCurrent,
+    pop_current: CtxPopCurrent,
+}
+
+// SAFETY: a context is usable from any thread, and this one is never
+// destroyed, so its handle stays valid wherever it is copied to.
+unsafe impl Send for DecodingContext {}
+// SAFETY: as above; `&self` reaches the calls that push and pop it on the
+// calling thread, which the runtime allows on any.
+unsafe impl Sync for DecodingContext {}
+
+impl DecodingContext {
+    pub fn raw(&self) -> CUcontext {
+        self.raw
+    }
+
+    /// Make this context current on the calling thread, pushed.
+    pub fn make_current(&self) -> Result<()> {
+        // SAFETY: the handle is valid for the process's life.
+        check(unsafe { (self.push_current)(self.raw) })
+    }
+
+    /// Take the context on top of the calling thread's stack off it: this
+    /// one, where the thread pushed it and nothing since.
+    pub fn release_current(&self) -> Result<()> {
+        let mut popped: CUcontext = core::ptr::null_mut();
+        // SAFETY: the out pointer is to a live local.
+        check(unsafe { (self.pop_current)(&raw mut popped) })
+    }
+}
+
+/// Wedged decoding contexts a process keeps before it makes no more.
+pub const MAX_RETIRED: usize = 4;
+
+/// The decoding context of each device, by its ordinal, and how many have
+/// been retired; touched when a decoder is opened or wedges, never per
+/// picture.
+static DECODING: std::sync::Mutex<(Vec<(CUdevice, usize)>, usize)> =
+    std::sync::Mutex::new((Vec::new(), 0));
+
+/// Devices whose primary context is held for the process's life.
+static HELD: std::sync::Mutex<Vec<CUdevice>> = std::sync::Mutex::new(Vec::new());
+
 /// The loaded compute runtime.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug)]
@@ -412,6 +483,11 @@ pub struct Cuda {
     /// A multi-plane array's planes: from the 11.2 runtime on, so a driver
     /// without it has no decoder-owned surfaces.
     array_get_plane: Option<ArrayGetPlane>,
+    ctx_create: CtxCreate,
+    /// From the 10.0 runtime on; a wait without it has no bound.
+    launch_host_func: Option<LaunchHostFunc>,
+    /// A stream held at a word, from the 11.7 runtime on.
+    stream_wait_value_32: Option<StreamWaitValue32>,
     /// The graphics interfaces' side of the runtime, where the platform has
     /// one.
     #[cfg(windows)]
@@ -530,6 +606,11 @@ impl Cuda {
                     .symbol(c"cuArray3DGetDescriptor_v2")
                     .ok_or(Error::MissingSymbol)?,
                 array_get_plane: library.symbol(c"cuArrayGetPlane"),
+                ctx_create: library
+                    .symbol(c"cuCtxCreate_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                launch_host_func: library.symbol(c"cuLaunchHostFunc"),
+                stream_wait_value_32: library.symbol(c"cuStreamWaitValue32_v2"),
                 // SAFETY: the compute runtime's own library.
                 #[cfg(windows)]
                 interop: windows::Interop::load(&library),
@@ -641,6 +722,67 @@ impl Cuda {
             push_current: self.ctx_push_current,
             pop_current: self.ctx_pop_current,
         })
+    }
+
+    /// The context decoders run in on `device`, made now if there is none
+    /// or the last was retired; not current anywhere until made so. Refused
+    /// once [`MAX_RETIRED`] have been retired.
+    pub fn decoding_context(&self, device: &Device) -> Result<DecodingContext> {
+        let mut registry = DECODING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let raw = match registry.0.iter().find(|(d, _)| *d == device.handle) {
+            Some(&(_, raw)) => raw as CUcontext,
+            None => {
+                if registry.1 >= MAX_RETIRED {
+                    return Err(Error::TooManyRetired);
+                }
+                let mut raw: CUcontext = core::ptr::null_mut();
+                // SAFETY: the out pointer is to a live local; no flags, the
+                // runtime's own scheduling. The new context is pushed on
+                // this thread, and taken off again below.
+                check(unsafe { (self.ctx_create)(&raw mut raw, 0, device.handle) })?;
+                let mut popped: CUcontext = core::ptr::null_mut();
+                // SAFETY: the out pointer is to a live local; the context on
+                // top is the one just pushed.
+                let _ = unsafe { (self.ctx_pop_current)(&raw mut popped) };
+                registry.0.push((device.handle, raw as usize));
+                raw
+            }
+        };
+        Ok(DecodingContext {
+            raw,
+            push_current: self.ctx_push_current,
+            pop_current: self.ctx_pop_current,
+        })
+    }
+
+    /// `context` wedged: it is never handed out again, and the next ask
+    /// for its device makes a fresh one. It is kept, not destroyed.
+    pub fn retire(&self, context: DecodingContext) {
+        let mut registry = DECODING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = registry.0.len();
+        registry.0.retain(|&(_, raw)| raw != context.raw as usize);
+        if registry.0.len() < before {
+            registry.1 += 1;
+        }
+    }
+
+    /// Hold `device`'s primary context for the process's life, so no
+    /// release of it is its last: its destroy would never return once a
+    /// decoding context has wedged.
+    pub fn hold_primary(&self, device: &Device) -> Result<()> {
+        let mut held = HELD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !held.contains(&device.handle) {
+            // Never released.
+            let _held = core::mem::ManuallyDrop::new(self.retain_primary(device)?);
+            held.push(device.handle);
+        }
+        Ok(())
     }
 }
 
@@ -1087,6 +1229,51 @@ impl Cuda {
         // and keeping it costs a synchronisation the query would otherwise
         // not need.
         self.event(CU_EVENT_DISABLE_TIMING)
+    }
+
+    /// Whether the runtime calls a function behind a stream's work, which is
+    /// what lets a wait on that work have a bound.
+    pub fn has_host_functions(&self) -> bool {
+        self.launch_host_func.is_some()
+    }
+
+    /// Queue `f` behind everything submitted to `stream` so far: the
+    /// runtime calls it with `data`, on a thread of its own, once the stream
+    /// has passed all of that.
+    ///
+    /// # Safety
+    ///
+    /// `data` stays valid until `f` has run, which for a stream that may
+    /// never get there means for the process's life; `f` makes no call
+    /// into the runtime.
+    pub unsafe fn launch_host_func(
+        &self,
+        stream: &Stream,
+        f: HostFn,
+        data: *mut c_void,
+    ) -> Result<()> {
+        let launch = self.launch_host_func.ok_or(Error::MissingSymbol)?;
+        // SAFETY: the stream is live; what `data` points at is the caller's
+        // contract.
+        check(unsafe { launch(stream.raw, f, data) })
+    }
+
+    /// Hold `stream` until the word at `address` is at least `value`:
+    /// everything queued behind this waits for it.
+    ///
+    /// # Safety
+    ///
+    /// `address` is a device word of this context, alive for as long as the
+    /// stream may wait on it.
+    pub unsafe fn stream_wait_value(
+        &self,
+        stream: &Stream,
+        address: CUdeviceptr,
+        value: u32,
+    ) -> Result<()> {
+        let wait = self.stream_wait_value_32.ok_or(Error::MissingSymbol)?;
+        // SAFETY: the stream is live; the word is the caller's contract.
+        check(unsafe { wait(stream.raw, address, value, STREAM_WAIT_VALUE_GEQ) })
     }
 
     /// An event for completion only, whose wait sleeps until the device

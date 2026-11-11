@@ -3,6 +3,7 @@
 //! library.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use lowlat_decode::vaapi::{self, Vaapi};
 use lowlat_decode::{Fault, Format, Lease, Picture, nvdec, software};
@@ -81,6 +82,12 @@ impl Backend for nvdec::Backend<'_> {
 /// runtimes are opened here, on the decode thread, and live as long as the
 /// decoder built on them does; the vendor's context is made current here,
 /// where every call against it is made.
+///
+/// **The vendor's decoder is built again in a fresh context when it
+/// wedges**: a picture whose decode never finished leaves nothing in its
+/// context able to finish, so that context is retired, never destroyed, and
+/// the next is fresh, a keyframe asked for it. Two wedges in a row with no
+/// picture between end the stream, as a lost device does.
 pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next {
     match opened {
         Opened::Vaapi { node, .. } => {
@@ -104,23 +111,52 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
             let Ok(device) = device else {
                 return Next::Failed;
             };
-            let Ok(context) = cuda.retain_primary(&device) else {
-                return Next::Failed;
-            };
-            if context.make_current().is_err() {
+            // The probes and the listing retain and release the primary
+            // context; once a decoding context has wedged, a release that
+            // is its last never returns, so one reference is kept.
+            if cuda.hold_primary(&device).is_err() {
                 return Next::Failed;
             }
             let Ok(cuvid) = Cuvid::load() else {
                 return Next::Failed;
             };
-            // The queue's device slots are made through this runtime, and
-            // may outlive this thread while the application holds one, so
-            // the queue keeps its own reference to it. Attached whatever
-            // kind the session asks for now, so a switch to handles has it.
             let cuda = Arc::new(cuda);
-            shared.frames.open_device(Arc::clone(&cuda), device);
-            let backend = nvdec::Backend::new(&cuda, &cuvid, shared.frames.ceiling(), UNIT_BYTES);
-            drive(backend, shared, replacing)
+            let mut replacing = replacing;
+            let mut fruitless = false;
+            loop {
+                let Ok(context) = cuda.decoding_context(&device) else {
+                    return Next::Failed;
+                };
+                if context.make_current().is_err() {
+                    return Next::Failed;
+                }
+                // The queue's device slots are made through this runtime,
+                // and may outlive this thread while the application holds
+                // one, so the queue keeps its own reference to it. Attached
+                // whatever kind the session asks for now, so a switch to
+                // handles has it; a fresh context is a new backing, and the
+                // slots are made again in it.
+                shared.frames.open_device(Arc::clone(&cuda), device);
+                let backend =
+                    nvdec::Backend::new(&cuda, &cuvid, shared.frames.ceiling(), UNIT_BYTES);
+                let before = shared.telemetry.decoded.load(Ordering::Relaxed);
+                let next = drive(backend, shared, replacing);
+                let _ = context.release_current();
+                // The vendor's backend loses its device only by wedging.
+                if next != Next::Lost {
+                    return next;
+                }
+                cuda.retire(context);
+                let progressed = shared.telemetry.decoded.load(Ordering::Relaxed) != before;
+                if fruitless && !progressed {
+                    return Next::Lost;
+                }
+                fruitless = !progressed;
+                lowlat_common::log_warn!(
+                    "client: the vendor's decoder wedged, built again in a fresh context"
+                );
+                replacing = true;
+            }
         }
         Opened::Software(dir) => {
             // The same search creation ran, landing on the same pair.
