@@ -161,6 +161,16 @@ fn check_lent(clip: &str, sums_name: &str, codec: Codec, ten_bit: bool) -> usize
         println!("{clip}: the display lends no surface, skipped");
         return 0;
     }
+    let caps = caps(&display).expect("caps");
+    let able = match (codec, ten_bit) {
+        (Codec::H264, _) => caps.h264,
+        (Codec::H265, false) => caps.hevc,
+        (Codec::H265, true) => caps.hevc_10,
+    };
+    if !able {
+        println!("{clip}: the device does not decode this profile, skipped");
+        return 0;
+    }
     let mut backend = Backend::new(&display, (4096, 4096));
     backend.build(&header(codec, ten_bit)).expect("build");
     let pitch = 1280 * 2 + 64;
@@ -349,6 +359,12 @@ fn the_full_chroma_fixtures_decode_where_the_display_takes_them() {
         };
         if able {
             check(&clip, &sums, Codec::H265, ten_bit);
+            continue;
+        }
+        // A device with no HEVC at all refuses the stream at the build, which
+        // is the refusal; there is no first unit to refuse after it.
+        if !caps.hevc {
+            println!("{clip}: the device decodes no HEVC, skipped");
             continue;
         }
         let mut backend = Backend::new(&display, (4096, 4096));

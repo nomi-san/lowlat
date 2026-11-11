@@ -15,7 +15,7 @@ use std::ffi::CString;
 
 use lowlat_common::alloc_counter::{Counting, assert_no_alloc};
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::vaapi::{Backend, Lent, exports_surfaces};
+use lowlat_decode::vaapi::{Backend, Lent, caps, exports_surfaces};
 use lowlat_decode::{Decoder, Fed, Planes};
 use lowlat_drivers::va::Vaapi;
 
@@ -48,6 +48,10 @@ fn the_decode_allocates_nothing_per_unit_either_way() {
             ("synthetic-720p-h264.bin", Codec::H264),
             ("synthetic-720p-hevc.bin", Codec::H265),
         ] {
+            if !decodes(&display, codec) {
+                println!("{clip}: the device does not decode this codec, skipped");
+                continue;
+            }
             let units = common::units(clip);
             let mut backend = Backend::new(&display, (4096, 4096));
             backend
@@ -125,5 +129,14 @@ fn the_decode_allocates_nothing_per_unit_either_way() {
             }
             backend.destroy();
         }
+    }
+}
+
+/// Whether the display decodes a codec's eight-bit profile at all.
+fn decodes(display: &lowlat_drivers::va::Display<'_>, codec: Codec) -> bool {
+    let caps = caps(display).expect("caps");
+    match codec {
+        Codec::H264 => caps.h264,
+        Codec::H265 => caps.hevc,
     }
 }

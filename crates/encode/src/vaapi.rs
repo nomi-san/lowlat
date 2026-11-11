@@ -574,8 +574,16 @@ mod tests {
         let va = Vaapi::load().expect("runtime");
         let display = Display::open(&va, &node()).expect("render node");
 
+        let mut encoders = 0;
         for codec in [Codec::H264, Codec::H265] {
-            let caps = display.caps(codec).expect("caps");
+            let caps = match display.caps(codec) {
+                Err(Error::NoEncoder) => {
+                    println!("{codec:?}: the device offers no encoder, skipped");
+                    continue;
+                }
+                caps => caps.expect("caps"),
+            };
+            encoders += 1;
             println!(
                 "{codec:?}: profile {} rate-control {:#x} packed-headers {:#x} \
                  (variable rate {}, accepts our headers {})",
@@ -619,6 +627,10 @@ mod tests {
             );
             println!("  context built with {} surfaces", context.surfaces().len());
         }
+        assert!(
+            encoders > 0,
+            "the device offers no encoder for either codec"
+        );
     }
 
     /// Encode real pictures, and answer three things at once: whether this
@@ -891,7 +903,13 @@ mod tests {
     fn a_set_never_declares_a_deeper_transform_tree_than_the_device_codes() {
         let va = Vaapi::load().expect("runtime");
         let display = Display::open(&va, &node()).expect("render node");
-        let caps = display.caps(Codec::H265).expect("caps");
+        let caps = match display.caps(Codec::H265) {
+            Err(Error::NoEncoder) => {
+                println!("  this device offers no HEVC encoder; no set to check");
+                return;
+            }
+            caps => caps.expect("caps"),
+        };
         let Some(device) = display.transform_depth(caps) else {
             println!("  this device does not report a depth; nothing to clamp against");
             return;
@@ -1219,10 +1237,24 @@ mod tests {
         println!("display interface {major}.{minor}");
         assert!(major >= 1);
 
+        let mut encoders = 0;
         for codec in [Codec::H264, Codec::H265] {
-            let (profile, entrypoint) = display.encode_target(codec).expect("no encode profile");
-            println!("  {codec:?} encodes with profile {profile} through entry point {entrypoint}");
+            match display.encode_target(codec) {
+                Err(Error::NoEncoder) => println!("  {codec:?}: no encoder on this device"),
+                target => {
+                    encoders += 1;
+                    let (profile, entrypoint) = target.expect("no encode profile");
+                    println!(
+                        "  {codec:?} encodes with profile {profile} through entry point {entrypoint}"
+                    );
+                }
+            }
         }
+
+        assert!(
+            encoders > 0,
+            "the device offers no encoder for either codec"
+        );
 
         // A profile the driver does not encode must be refused rather than
         // substituted, which is what makes the answers above mean anything.
