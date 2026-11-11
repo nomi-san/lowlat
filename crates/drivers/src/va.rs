@@ -14,10 +14,10 @@ use lowlat_common::dynlib::Library;
 
 use crate::ffi::drm::{DRM_FORMAT_GR88, DRM_FORMAT_GR1616, DRM_FORMAT_R8, DRM_FORMAT_R16};
 use crate::ffi::va::{
-    VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_SEPARATE_LAYERS, VA_STATUS_SUCCESS,
-    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VABufferID, VABufferType, VAConfigAttrib, VAConfigID,
-    VAContextID, VADRMPRIMESurfaceDescriptor, VADisplay, VAEntrypoint, VAImage, VAImageFormat,
-    VAImageID, VAProfile, VAStatus, VASurfaceAttrib, VASurfaceID,
+    VA_ATTRIB_NOT_SUPPORTED, VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+    VA_STATUS_SUCCESS, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VABufferID, VABufferType,
+    VAConfigAttrib, VAConfigID, VAContextID, VADRMPRIMESurfaceDescriptor, VADisplay, VAEntrypoint,
+    VAImage, VAImageFormat, VAImageID, VAProfile, VAStatus, VASurfaceAttrib, VASurfaceID,
 };
 
 /// The core interface and its display binding, versioned.
@@ -631,9 +631,7 @@ impl<'a> Display<'a> {
         if self.va.check(status).is_err() {
             return (0, 0);
         }
-        // An attribute the driver does not support comes back as all ones.
-        let read = |value: u32| if value == u32::MAX { 0 } else { value };
-        (read(attribs[0].value), read(attribs[1].value))
+        (said(attribs[0].value), said(attribs[1].value))
     }
 
     /// The entry points the driver offers for one profile.
@@ -666,5 +664,35 @@ impl Drop for Display<'_> {
             (self.va.terminate)(self.raw);
             libc::close(self.fd);
         }
+    }
+}
+
+/// A size attribute as the driver answered it, or zero where it did not say.
+///
+/// **The interface's marker for an unsupported attribute is the top bit
+/// alone**, not all ones. A driver that implements neither size attribute
+/// answers that marker for both, and read as a size it claims pictures two
+/// billion pixels on a side.
+fn said(value: u32) -> u32 {
+    if value == VA_ATTRIB_NOT_SUPPORTED {
+        0
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unsupported_size_is_no_size() {
+        assert_eq!(
+            said(0x8000_0000),
+            0,
+            "the unsupported marker read as a size"
+        );
+        assert_eq!(said(4096), 4096);
+        assert_eq!(said(16384), 16384);
     }
 }
