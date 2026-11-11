@@ -293,6 +293,10 @@ static GLuint gl_import_buffer(struct gl *ctx, const MTY_HardwareFrame *frame)
 // device-side transfer at each plane's offset and pitch.
 static bool gl_refresh_hardware(struct gl *ctx, const MTY_HardwareFrame *frame, const MTY_RenderDesc *desc)
 {
+	// A kernel buffer descriptor is Vulkan's to import here, not GL's.
+	if (frame->dmabuf)
+		return false;
+
 	GLuint buffer = gl_import_buffer(ctx, frame);
 	if (!buffer)
 		return false;
@@ -329,6 +333,10 @@ static bool gl_refresh_hardware(struct gl *ctx, const MTY_HardwareFrame *frame, 
 bool mty_gl_valid_hardware_frame(MTY_Device *device, MTY_Context *context, const void *shared_resource)
 {
 	if (!glproc_global_init())
+		return false;
+
+	const MTY_HardwareFrame *frame = shared_resource;
+	if (frame && frame->dmabuf)
 		return false;
 
 	return gl_can_import();

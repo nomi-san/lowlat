@@ -521,19 +521,23 @@ typedef struct {
 	                          ///<   the one derived from `imageWidth`.
 } MTY_RenderDesc;
 
-/// @brief A picture in device memory another interface exported, drawn on GL, Direct3D 11 or
-///   Metal as a hardware frame: what MTY_WindowDrawQuad takes as the image when
+/// @brief A picture in device memory another interface exported, drawn on GL, Vulkan,
+///   Direct3D 11 or Metal as a hardware frame: what MTY_WindowDrawQuad takes as the image when
 ///   MTY_RenderDesc.hardware is set.
 /// @details What it names is imported once per `id` and the import kept while that `id`
 ///   keeps appearing, so a caller hands the same picture memory over on every draw at the
-///   cost of one import. On GL the descriptor's planes are laid out plainly at their offsets
-///   and pitches, in the order and sampling `MTY_RenderDesc.format` and `chroma` describe; on
-///   Direct3D 11 each plane is a texture of its own; on Metal each plane is one of the
-///   surface's, at the size the format and the chroma give it.
+///   cost of one import. On GL and Vulkan an opaque descriptor's planes are laid out plainly
+///   at their offsets and pitches, in the order and sampling `MTY_RenderDesc.format` and
+///   `chroma` describe; on Vulkan a kernel buffer descriptor (`dmabuf`) holds two planes at
+///   their offsets and pitches in the layout `modifier` names, each imported as an image of
+///   its own; on Direct3D 11 each plane is a texture of its own; on Metal each plane is one of
+///   the surface's, at the size the format and the chroma give it.
 typedef struct {
-	int32_t fd;         ///< An opaque descriptor the GL implementation's own vendor exports
-	                    ///<   (`GL_HANDLE_TYPE_OPAQUE_FD_EXT`). The import takes a duplicate;
-	                    ///<   the caller's stays the caller's.
+	int32_t fd;         ///< An opaque descriptor the GL or Vulkan implementation's own vendor
+	                    ///<   exports (`GL_HANDLE_TYPE_OPAQUE_FD_EXT`,
+	                    ///<   `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`), or a kernel
+	                    ///<   buffer descriptor where `dmabuf` is set. The import takes a
+	                    ///<   duplicate; the caller's stays the caller's.
 	uint32_t id;        ///< Which allocation the descriptor or the textures name. Descriptor
 	                    ///<   numbers and handles are reused once closed, so this is what
 	                    ///<   tells one from the next.
@@ -544,6 +548,13 @@ typedef struct {
 	                    ///<   renderer's device opens; null for a plane the layout has not.
 	void *surface;      ///< On Metal, the picture's `IOSurfaceRef`, each of whose planes the
 	                    ///<   renderer imports by its index; null elsewhere.
+	bool dmabuf;        ///< On Vulkan, `fd` is a kernel buffer descriptor (dma-buf) rather than
+	                    ///<   an opaque one: two planes in the layout `modifier` names, each
+	                    ///<   imported with `size`, the whole buffer, whatever the plane's own.
+	uint64_t modifier;  ///< The buffer's layout modifier, for a `dmabuf` frame.
+	MTY_ColorFormat format; ///< The planes' layout, for a `dmabuf` frame:
+	                        ///<   MTY_COLOR_FORMAT_2PLANES or MTY_COLOR_FORMAT_2PLANES_16, which
+	                        ///<   MTY_WindowIsValidHardwareFrame checks the modifier against.
 } MTY_HardwareFrame;
 
 /// @brief A point with an `x` and `y` coordinate.
@@ -1290,14 +1301,18 @@ MTY_WindowGetGFX(MTY_App *app, MTY_Window window);
 MTY_EXPORT bool
 MTY_WindowSetGFX(MTY_App *app, MTY_Window window, MTY_GFX api, bool vsync);
 
-/// @brief Set the GPU a Direct3D 11 context is made on, from the next MTY_WindowSetGFX on.
-/// @details The adapter is named by its locally unique identifier as one 64-bit value,
-///   the low part first, as `DXGI_ADAPTER_DESC.AdapterLuid` lays it out. Zero, or an
-///   identity no adapter has any longer, makes the context on the system's default adapter.
+/// @brief Set the GPU a Direct3D 11 context, or on Linux a Vulkan one, is made on, from the
+///   next MTY_WindowSetGFX on.
+/// @details On Windows the adapter is named by its locally unique identifier as one 64-bit
+///   value, the low part first, as `DXGI_ADAPTER_DESC.AdapterLuid` lays it out. On Linux the
+///   GPU is named by its render node's device number, the major in the high 32 bits and the
+///   minor in the low, as `VK_EXT_physical_device_drm` reports it; a device that cannot
+///   present to the window is passed over. Zero, or an identity no adapter has any longer,
+///   makes the context on the system's default adapter, or the first that presents.
 ///   A context already made keeps its adapter: set the new one and call MTY_WindowSetGFX
 ///   again to move to it.
 /// @param luid The adapter's identity, or zero.
-//- #support Windows
+//- #support Windows Linux
 MTY_EXPORT void
 MTY_SetGFXAdapter(uint64_t luid);
 

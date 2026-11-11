@@ -33,6 +33,9 @@ void walk(uint64_t seconds, bool established);
 void cycle_video();
 void cycle_decoder();
 void toggle_kind();
+// Planes from the next picture, the renderer importing no handle the decoder
+// hands out; on any thread.
+void planes_after_all();
 void ask_outputs();
 
 // A picture came: the rate the knob names is asked for once a session.

@@ -34,6 +34,14 @@ struct vk_ctx {
 	bool vsync;
 	MTY_VkDeviceObjects dobjs;
 
+	// The queue family drawn on, and what the device imports: a compute
+	// runtime's opaque descriptors, kernel buffer descriptors with a layout
+	// modifier.
+	uint32_t qi;
+	bool imports_opaque;
+	bool imports_dmabuf;
+	PFN_vkGetMemoryFdPropertiesKHR get_fd_props;
+
 	VkInstance instance;
 	VkDebugUtilsMessengerEXT debug;
 	VkSurfaceKHR surface;
@@ -52,6 +60,57 @@ struct vk_ctx {
 
 // Device
 
+#if defined(MTY_VK_XLIB)
+// The render node MTY_SetGFXAdapter names, as its device number, major in
+// the high half; zero for the first device that presents.
+static MTY_Atomic64 VK_CTX_ADAPTER;
+
+void MTY_SetGFXAdapter(uint64_t device)
+{
+	MTY_Atomic64Set(&VK_CTX_ADAPTER, (int64_t) device);
+}
+#endif
+
+static bool vk_ctx_has_extension(VkPhysicalDevice pdevice, const char *name)
+{
+	uint32_t count = 0;
+	if (vkEnumerateDeviceExtensionProperties(pdevice, NULL, &count, NULL) != VK_SUCCESS || count == 0)
+		return false;
+
+	VkExtensionProperties *exts = MTY_Alloc(count, sizeof(VkExtensionProperties));
+	bool found = false;
+
+	if (vkEnumerateDeviceExtensionProperties(pdevice, NULL, &count, exts) == VK_SUCCESS)
+		for (uint32_t x = 0; x < count && !found; x++)
+			found = strcmp(exts[x].extensionName, name) == 0;
+
+	MTY_Free(exts);
+
+	return found;
+}
+
+// Whether a physical device is the render node `device` names, by the
+// kernel's numbers for it.
+static bool vk_ctx_is_node(VkPhysicalDevice pdevice, uint64_t device)
+{
+	if (!vkGetPhysicalDeviceProperties2 || !vk_ctx_has_extension(pdevice, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME))
+		return false;
+
+	VkPhysicalDeviceDrmPropertiesEXT drm = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+	};
+
+	VkPhysicalDeviceProperties2 props = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+		.pNext = &drm,
+	};
+
+	vkGetPhysicalDeviceProperties2(pdevice, &props);
+
+	return drm.hasRender && (uint64_t) drm.renderMajor == device >> 32 &&
+		(uint64_t) drm.renderMinor == (device & 0xFFFFFFFF);
+}
+
 static bool vk_ctx_get_pdevice(VkInstance instance, VkSurfaceKHR surface, VkPhysicalDevice *pdevice, uint32_t *qi)
 {
 	uint32_t count = VK_CTX_ENUM_MAX;
@@ -63,6 +122,22 @@ static bool vk_ctx_get_pdevice(VkInstance instance, VkSurfaceKHR surface, VkPhys
 
 	if (count == 0)
 		return false;
+
+	// The device named first, where it presents to the surface; then the
+	// first that does.
+	#if defined(MTY_VK_XLIB)
+	uint64_t named = (uint64_t) MTY_Atomic64Get(&VK_CTX_ADAPTER);
+
+	for (uint32_t x = 0; named != 0 && x < count; x++) {
+		if (!vk_ctx_is_node(pdevices[x], named))
+			continue;
+
+		VkPhysicalDevice first = pdevices[0];
+		pdevices[0] = pdevices[x];
+		pdevices[x] = first;
+		break;
+	}
+	#endif
 
 	for (uint32_t x = 0; x < count; x++) {
 		uint32_t qfcount = VK_CTX_ENUM_MAX;
@@ -85,14 +160,44 @@ static bool vk_ctx_get_pdevice(VkInstance instance, VkSurfaceKHR surface, VkPhys
 	return false;
 }
 
-static bool vk_ctx_get_ldevice(VkPhysicalDevice pdevice, uint32_t qi, VkDevice *device)
+// The device, with what imports another device's pictures where it offers
+// it: a compute runtime's opaque descriptors, and kernel buffer descriptors
+// with a layout modifier from Vulkan 1.2, which the modifier's dependencies
+// are part of.
+static bool vk_ctx_get_ldevice(struct vk_ctx *ctx, VkPhysicalDevice pdevice, uint32_t qi, uint32_t api,
+	VkDevice *device)
 {
+	const char *exts[6] = {"VK_KHR_swapchain"};
+	uint32_t n = 1;
+
+	VkPhysicalDeviceProperties props = {0};
+	vkGetPhysicalDeviceProperties(pdevice, &props);
+
+	bool v11 = api >= VK_API_VERSION_1_1 && props.apiVersion >= VK_API_VERSION_1_1;
+	bool v12 = api >= VK_API_VERSION_1_2 && props.apiVersion >= VK_API_VERSION_1_2;
+
+	ctx->imports_opaque = v11 && vkGetImageMemoryRequirements2 &&
+		vk_ctx_has_extension(pdevice, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+
+	ctx->imports_dmabuf = ctx->imports_opaque && v12 && vkGetPhysicalDeviceFormatProperties2 &&
+		vkGetPhysicalDeviceImageFormatProperties2 &&
+		vk_ctx_has_extension(pdevice, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
+		vk_ctx_has_extension(pdevice, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) &&
+		vk_ctx_has_extension(pdevice, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+
+	if (ctx->imports_opaque)
+		exts[n++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+
+	if (ctx->imports_dmabuf) {
+		exts[n++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+		exts[n++] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
+		exts[n++] = VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
+	}
+
 	VkDeviceCreateInfo ci = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		.enabledExtensionCount = 1,
-		.ppEnabledExtensionNames = (const char * []) {
-			"VK_KHR_swapchain",
-		},
+		.enabledExtensionCount = n,
+		.ppEnabledExtensionNames = exts,
 		.queueCreateInfoCount = 1,
 		.pQueueCreateInfos = &(VkDeviceQueueCreateInfo) {
 			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -107,6 +212,15 @@ static bool vk_ctx_get_ldevice(VkPhysicalDevice pdevice, uint32_t qi, VkDevice *
 	VkResult e = vkCreateDevice(pdevice, &ci, NULL, device);
 	if (e != VK_SUCCESS)
 		return false;
+
+	ctx->get_fd_props = ctx->imports_opaque ? (PFN_vkGetMemoryFdPropertiesKHR)
+		vkGetDeviceProcAddr(*device, "vkGetMemoryFdPropertiesKHR") : NULL;
+
+	if (!ctx->get_fd_props)
+		ctx->imports_dmabuf = false;
+
+	MTY_Log("Vulkan device '%s', imports opaque %d, dma-buf %d", props.deviceName,
+		ctx->imports_opaque, ctx->imports_dmabuf);
 
 	return true;
 }
@@ -345,8 +459,23 @@ struct gfx_ctx *mty_vk_ctx_create(void *native_window, bool vsync)
 		#endif
 	};
 
+	// Vulkan 1.2 where the loader has it, which a picture imported from
+	// another device needs; the first version otherwise, drawing planes.
+	uint32_t api = VK_API_VERSION_1_0;
+	if (vkEnumerateInstanceVersion && vkEnumerateInstanceVersion(&api) != VK_SUCCESS)
+		api = VK_API_VERSION_1_0;
+
+	if (api > VK_API_VERSION_1_2)
+		api = VK_API_VERSION_1_2;
+
+	VkApplicationInfo ai = {
+		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+		.apiVersion = api,
+	};
+
 	VkInstanceCreateInfo ici = {
 		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+		.pApplicationInfo = &ai,
 		.enabledExtensionCount = sizeof(exts) / sizeof(const char *),
 		.ppEnabledExtensionNames = exts,
 		#if defined(MTY_VK_DEBUG)
@@ -438,11 +567,12 @@ struct gfx_ctx *mty_vk_ctx_create(void *native_window, bool vsync)
 	vkGetPhysicalDeviceMemoryProperties(ctx->pdevice, &ctx->pdprops);
 
 	// Logical device
-	if (!vk_ctx_get_ldevice(ctx->pdevice, qi, &ctx->device)) {
+	if (!vk_ctx_get_ldevice(ctx, ctx->pdevice, qi, api, &ctx->device)) {
 		r = false;
 		goto except;
 	}
 
+	ctx->qi = qi;
 	vkGetDeviceQueue(ctx->device, qi, 0, &ctx->q);
 
 	// Create command pool
@@ -597,6 +727,11 @@ MTY_Device *mty_vk_ctx_get_device(struct gfx_ctx *gfx_ctx)
 
 	ctx->dobjs.device = ctx->device;
 	ctx->dobjs.physicalDeviceMemoryProperties = &ctx->pdprops;
+	ctx->dobjs.physicalDevice = ctx->pdevice;
+	ctx->dobjs.queueFamily = ctx->qi;
+	ctx->dobjs.importsOpaque = ctx->imports_opaque;
+	ctx->dobjs.importsDmaBuf = ctx->imports_dmabuf;
+	ctx->dobjs.getMemoryFdProperties = (void *) ctx->get_fd_props;
 
 	return (MTY_Device *) &ctx->dobjs;
 }

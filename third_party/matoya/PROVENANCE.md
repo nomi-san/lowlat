@@ -128,6 +128,22 @@ the planes at every draw.
 |---|---|
 | `src/windows/gfx/d3d11-ctx.c` | the context's device is made with `D3D11_CREATE_DEVICE_SINGLETHREADED`, so a window's context is made, drawn from and freed on one thread |
 
+The Vulkan renderer draws a picture the library hands out as a device handle on Linux: the
+vendor decoder's opaque descriptor, as the GL renderer imports it, and the open decoder's own
+surface, a kernel buffer descriptor (dma-buf) whose planes lie in the layout a modifier names.
+Upstream's Vulkan renderer refuses every hardware frame (`mty_vk_valid_hardware_frame` returns
+false), and its context is made at the interface's first version with the swap chain's
+extension alone, on the first device that presents.
+
+| file | change |
+|---|---|
+| `src/matoya.h` | `MTY_HardwareFrame.dmabuf`, `modifier` and `format`: a kernel buffer descriptor rather than an opaque one, its layout, and its planes' format, which the import is checked against; `MTY_SetGFXAdapter` names on Linux the GPU the Vulkan context is made on, by its render node's device number |
+| `src/gfx/mod-common.h` | `MTY_VkDeviceObjects` carries the physical device, the queue family drawn on, what the device imports, and the entry point that says what memory a descriptor imports as |
+| `src/gfx/vk/vkproc.c` | the entry points an import and its checks need; those newer than the interface's first version are left null where the loader is older, which draws planes |
+| `src/gfx/vk/vk-ctx.c` | the instance at Vulkan 1.2 where the loader has it; the device `MTY_SetGFXAdapter` names first, matched through `VK_EXT_physical_device_drm`, where it presents, else the first that does; the external-memory, dma-buf, modifier and foreign-queue-family extensions enabled where the device offers them |
+| `src/gfx/vk/vk.c` | `mty_vk_valid_hardware_frame` answers whether the device imports the frame's kind and, for a buffer, its modifier for both planes' formats; `mty_vk_render` with `hardware` imports a frame once per allocation number, up to 24 -- every surface a decoder lending its own hands out at once, which is 22 -- the oldest replaced: an opaque descriptor as a buffer, copied into the plane images at each plane's offset and pitch; a buffer a plane at a time as an image in its layout, each import told the whole buffer -- a driver reads a plane past the start only through an import of the whole of it, and lost its device on one told less -- acquired from the foreign queue family with its content kept, copied into the plane images and given back. A repeat that names no format draws the plane images as they are |
+| `src/gfx/gl/gl.c` | a kernel buffer descriptor is refused, at the check and at the draw: the GL context, GLX, imports none |
+
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.
 

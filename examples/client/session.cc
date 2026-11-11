@@ -39,7 +39,9 @@ static unsigned _row;
 // The picture preferences, cycled by the chord; whether pictures are asked
 // for as device handles, at creation and switched by the chord since.
 static lowlat_client_video_config _video;
-static bool _handles;
+// Whether pictures are asked for as handles: the chord's on the main thread,
+// and the renderer's when it cannot import them, on the presenting thread.
+static std::atomic_bool _handles;
 // Switching the streamed output: the host's outputs and its current
 // configuration, both asked for on the chord and acted on together; the
 // host also sends both whenever its capture changes, which is no chord.
@@ -135,17 +137,28 @@ void cycle_decoder()
 // and nothing changes, as does a renderer that draws planes alone.
 void toggle_kind()
 {
-	if (!_handles && !config::draws_handles()) {
+	bool handles = _handles.load();
+	if (!handles && !config::draws_handles()) {
 		printf("demo: pictures as handles: %s draws planes only\n",
 			config::gfx_name(config::get().gfx));
 		return;
 	}
-	uint32_t kind = _handles ? LOWLAT_FRAME_PLANES : LOWLAT_FRAME_HANDLE;
+	uint32_t kind = handles ? LOWLAT_FRAME_PLANES : LOWLAT_FRAME_HANDLE;
 	lowlat_status s = lowlat_client_set_frame_kind(_client, kind);
 	printf("demo: pictures as %s: %s\n", kind == LOWLAT_FRAME_HANDLE ? "handles" : "planes",
 		lowlat_status_string(s));
 	if (s == LOWLAT_OK)
-		_handles = !_handles;
+		_handles = !handles;
+}
+
+// The renderer cannot import the decoder's handles on any GPU it can draw
+// on: planes from the next picture, as the chord would ask.
+void planes_after_all()
+{
+	if (!_handles.exchange(false))
+		return;
+	lowlat_status s = lowlat_client_set_frame_kind(_client, LOWLAT_FRAME_PLANES);
+	printf("demo: pictures as planes: %s\n", lowlat_status_string(s));
 }
 
 // The chord: ask the host what it can stream and what it streams now.

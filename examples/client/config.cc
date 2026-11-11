@@ -12,11 +12,17 @@
 #include <dxgi.h>
 #endif
 
+#if defined(__linux__)
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#endif
+
 namespace config {
 
 static Settings _settings;
 
-// The interface that imports the library's device handles.
+// The interface that imports the library's device handles; on Linux Vulkan
+// too, which imports both kinds where GL imports the vendor's.
 #if defined(_WIN32)
 static const MTY_GFX HANDLES_GFX = MTY_GFX_D3D11;
 #elif defined(__APPLE__)
@@ -51,8 +57,24 @@ const char *gfx_name(MTY_GFX gfx)
 
 bool draws_handles()
 {
+#if defined(__linux__)
+	if (_settings.gfx == MTY_GFX_VK)
+		return true;
+#endif
 	return _settings.gfx == HANDLES_GFX;
 }
+
+#if defined(__linux__)
+// A render node's device number, major in the high half as the toolkit
+// takes a GPU's; zero for a path that names no device.
+static uint64_t node_number(const char *path)
+{
+	struct stat st;
+	if (stat(path, &st) != 0 || !S_ISCHR(st.st_mode))
+		return 0;
+	return ((uint64_t) major(st.st_rdev) << 32) | minor(st.st_rdev);
+}
+#endif
 
 #if defined(_WIN32)
 // The system's first adapter, which the toolkit's device is made on when
@@ -155,10 +177,26 @@ int read()
 		return 2;
 	}
 	if (s.handles && !draws_handles()) {
+#if defined(__linux__)
+		fprintf(stderr, "demo: device handles are drawn through gl or vk only; LOWLAT_GFX=%s takes planes\n",
+			gfx);
+#else
 		fprintf(stderr, "demo: device handles are drawn through %s only; LOWLAT_GFX=%s takes planes\n",
 			gfx_name(HANDLES_GFX), gfx);
+#endif
 		return 2;
 	}
+#if defined(__linux__)
+	// The GPU Vulkan starts on, by its render node.
+	const char *gfx_device = getenv("LOWLAT_GFX_DEVICE");
+	if (gfx_device != NULL) {
+		s.gfx_adapter = node_number(gfx_device);
+		if (s.gfx_adapter == 0) {
+			fprintf(stderr, "demo: LOWLAT_GFX_DEVICE names no device node: %s\n", gfx_device);
+			return 2;
+		}
+	}
+#endif
 	// Without the refresh the capped loop, which does not wait for a
 	// picture, would be paced by nothing at all.
 	s.vsync = strcmp(env_or("LOWLAT_VSYNC", "1"), "0") != 0;

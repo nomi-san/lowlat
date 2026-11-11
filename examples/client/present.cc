@@ -43,6 +43,20 @@ static double _shown_at_ms;
 // picture of textures from another GPU remakes the context there, since a
 // shared texture opens only on its own GPU.
 static uint64_t _gfx_adapter;
+#elif defined(__linux__)
+// The GPU the Vulkan context is made on, by its render node's device number
+// as the pictures name it, zero for the first that presents. A picture of
+// the open decoder's buffer that this GPU cannot import remakes the context
+// on the GPU the picture names; a buffer this one imports is drawn here,
+// across GPUs or not.
+static uint64_t _gfx_adapter;
+// The last buffer layout asked about, so pictures of one layout from one GPU
+// are asked once: its modifier, the GPU, the format, and the answer.
+static bool _checked;
+static uint64_t _checked_modifier;
+static uint64_t _checked_adapter;
+static uint32_t _checked_format;
+static bool _checked_ok;
 #endif
 // Whether the picture on the screen is in the renderer's textures already,
 // and when it was last loaded into them. A repeat draws those again with no
@@ -105,6 +119,62 @@ static bool three_planes(uint32_t format)
 	return format == LOWLAT_FORMAT_YUV444 || format == LOWLAT_FORMAT_YUV444_16;
 }
 
+#if defined(__linux__)
+// A picture of the open decoder's buffer as the toolkit's frame, for the ask
+// before it is drawn and for the draw.
+static void dmabuf_fields(const lowlat_frame *f, MTY_HardwareFrame *hw)
+{
+	hw->dmabuf = f->handle_kind == LOWLAT_HANDLE_DMABUF;
+	hw->modifier = f->modifier;
+	hw->format = deep(f->format) ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES;
+}
+
+// Whether the renderer imports a picture of the open decoder's own buffer,
+// asked once a layout. Where it cannot, a Vulkan renderer moves to the GPU
+// the picture names and is asked again; where it cannot there either, the
+// pictures are asked for as planes.
+static bool imports(MTY_App *toolkit, MTY_Window window, const lowlat_frame *f)
+{
+	if (f->kind != LOWLAT_FRAME_HANDLE || f->handle_kind != LOWLAT_HANDLE_DMABUF)
+		return true;
+	if (_checked && _checked_modifier == f->modifier && _checked_adapter == f->adapter
+		&& _checked_format == (uint32_t) f->format)
+		return _checked_ok;
+	const config::Settings &knobs = config::get();
+	MTY_HardwareFrame hw;
+	memset(&hw, 0, sizeof hw);
+	dmabuf_fields(f, &hw);
+	bool ok = MTY_WindowIsValidHardwareFrame(toolkit, window, &hw, NULL);
+	if (!ok && knobs.gfx == MTY_GFX_VK && f->adapter != 0 && f->adapter != _gfx_adapter) {
+		uint64_t before = _gfx_adapter;
+		_gfx_adapter = f->adapter;
+		MTY_SetGFXAdapter(_gfx_adapter);
+		MTY_WindowSetGFX(toolkit, window, MTY_GFX_NONE, false);
+		bool made = MTY_WindowSetGFX(toolkit, window, knobs.gfx, knobs.vsync);
+		ok = made && MTY_WindowIsValidHardwareFrame(toolkit, window, &hw, NULL);
+		printf("demo: the renderer imports no buffer of modifier 0x%016" PRIx64 ", it follows them to render "
+			"node %u:%u: %s\n", f->modifier, (unsigned) (f->adapter >> 32), (unsigned) f->adapter,
+			ok ? "ok" : made ? "no import there either" : "no context there");
+		if (!made) {
+			_gfx_adapter = before;
+			MTY_SetGFXAdapter(_gfx_adapter);
+			MTY_WindowSetGFX(toolkit, window, knobs.gfx, knobs.vsync);
+		}
+	}
+	if (!ok) {
+		printf("demo: no renderer here imports the decoder's buffers, modifier=0x%016" PRIx64 "\n",
+			f->modifier);
+		session::planes_after_all();
+	}
+	_checked = true;
+	_checked_modifier = f->modifier;
+	_checked_adapter = f->adapter;
+	_checked_format = (uint32_t) f->format;
+	_checked_ok = ok;
+	return ok;
+}
+#endif
+
 // `LOWLAT_DUMP_FRAME=<path>` writes the tenth picture's planes, each row at
 // its own width with the pitch's padding left out, so the bytes a renderer
 // is handed can be looked at with another tool.
@@ -139,7 +209,7 @@ static void *present_loop(void *opaque) noexcept
 	lowlat_client *client = session::client();
 	MTY_App *toolkit = app::toolkit();
 	MTY_Window window = app::window();
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
 	_gfx_adapter = knobs.gfx_adapter;
 	MTY_SetGFXAdapter(_gfx_adapter);
 #endif
@@ -157,6 +227,10 @@ static void *present_loop(void *opaque) noexcept
 	else
 		printf("demo: drawing through %s on the system's default adapter\n",
 			config::gfx_name(knobs.gfx));
+#elif defined(__linux__)
+	if (knobs.gfx == MTY_GFX_VK && _gfx_adapter != 0)
+		printf("demo: drawing through vk on render node %u:%u where it presents\n",
+			(unsigned) (_gfx_adapter >> 32), (unsigned) _gfx_adapter);
 #endif
 #if defined(__linux__) || defined(__APPLE__)
 	// A handle is only drawable on a context that imports one: asked once,
@@ -234,6 +308,14 @@ static void *present_loop(void *opaque) noexcept
 						made ? "ok" : "no context there");
 				}
 #endif
+#if defined(__linux__)
+				// A buffer this renderer cannot import, on its GPU or the
+				// picture's, is given back undrawn; planes come next.
+				if (!imports(toolkit, window, &_shown)) {
+					lowlat_client_release_frame(client, &_shown, NULL);
+					_showing = false;
+				}
+#endif
 				_height.store(fresh.height);
 				_rotation.store(fresh.rotation);
 				_format.store(fresh.format);
@@ -292,6 +374,7 @@ static void *present_loop(void *opaque) noexcept
 					hw.offset[p] = f->planes[p].offset;
 					hw.pitch[p] = f->planes[p].pitch;
 				}
+				dmabuf_fields(f, &hw);
 #endif
 				desc.hardware = true;
 				desc.imageWidth = f->width;

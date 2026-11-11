@@ -130,7 +130,12 @@ room; unset, the demo asks nothing of the person's monitor. `LOWLAT_HANDLE`
 asks for pictures as device handles, which the
 toolkit's renderer imports and draws with nothing copied through this
 process; only a decoder whose row says "handles" opens that way, and only GL
-on Linux, Direct3D 11 on Windows and Metal on macOS draw them. A handle opens on its own GPU,
+or Vulkan on Linux, Direct3D 11 on Windows and Metal on macOS draw them -- on
+Linux GL the vendor decoder's descriptors, Vulkan those and the open decoder's
+own surfaces. Vulkan starts on the GPU `LOWLAT_GFX_DEVICE` names by its render
+node, else the first that presents; a surface whose layout it cannot import
+there moves it to the GPU the picture names, and where it cannot import it
+there either, or present from there, the demo asks for planes. A handle opens on its own GPU,
 so on Windows the decoder is created on the GPU the demo draws on when nothing
 names one -- by handle always, by planes too where a hardware decoder is
 listed there, so switching to handles moves nothing -- and pictures moved to

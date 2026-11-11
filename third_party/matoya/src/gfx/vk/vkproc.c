@@ -11,6 +11,11 @@
 	name = (PFN_##name) MTY_SOGetSymbol(VKPROC_SO, #name); \
 	if (!name) {r = false; goto except;}
 
+// An entry point newer than the interface's first version: left null where
+// the loader is older, and what needs it is not offered.
+#define VKPROC_LOAD_OPT(name) \
+	name = (PFN_##name) MTY_SOGetSymbol(VKPROC_SO, #name);
+
 #define VKPROC_LOAD_SYM_INST(instance, name) \
 	name = (PFN_##name) vkGetInstanceProcAddr(instance, #name); \
 	if (!name) {r = false; goto except;}
@@ -93,6 +98,15 @@ VKPROC_DEF(vkCmdSetViewport);
 VKPROC_DEF(vkCmdSetScissor);
 VKPROC_DEF(vkCreateSemaphore);
 VKPROC_DEF(vkDestroySemaphore);
+VKPROC_DEF(vkCmdCopyImage);
+VKPROC_DEF(vkGetPhysicalDeviceProperties);
+VKPROC_DEF(vkEnumerateDeviceExtensionProperties);
+VKPROC_DEF(vkGetDeviceProcAddr);
+VKPROC_DEF(vkEnumerateInstanceVersion);
+VKPROC_DEF(vkGetPhysicalDeviceProperties2);
+VKPROC_DEF(vkGetPhysicalDeviceFormatProperties2);
+VKPROC_DEF(vkGetPhysicalDeviceImageFormatProperties2);
+VKPROC_DEF(vkGetImageMemoryRequirements2);
 
 #if defined(MTY_VK_WIN32)
 	VKPROC_DEF(vkCreateWin32SurfaceKHR);
@@ -205,6 +219,18 @@ static bool vkproc_global_init(void)
 		VKPROC_LOAD_SYM(vkCmdSetScissor);
 		VKPROC_LOAD_SYM(vkCreateSemaphore);
 		VKPROC_LOAD_SYM(vkDestroySemaphore);
+		VKPROC_LOAD_SYM(vkCmdCopyImage);
+		VKPROC_LOAD_SYM(vkGetPhysicalDeviceProperties);
+		VKPROC_LOAD_SYM(vkEnumerateDeviceExtensionProperties);
+		VKPROC_LOAD_SYM(vkGetDeviceProcAddr);
+
+		// What a picture in another device's memory is imported with, from
+		// Vulkan 1.1 and 1.2.
+		VKPROC_LOAD_OPT(vkEnumerateInstanceVersion);
+		VKPROC_LOAD_OPT(vkGetPhysicalDeviceProperties2);
+		VKPROC_LOAD_OPT(vkGetPhysicalDeviceFormatProperties2);
+		VKPROC_LOAD_OPT(vkGetPhysicalDeviceImageFormatProperties2);
+		VKPROC_LOAD_OPT(vkGetImageMemoryRequirements2);
 
 		#if defined(MTY_VK_WIN32)
 			VKPROC_LOAD_SYM(vkCreateWin32SurfaceKHR);

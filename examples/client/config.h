@@ -11,9 +11,12 @@
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
 // `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
 // imports and draws with no copy through this process; only a decoder that
-// exports them (a row saying "handles") can be opened for that. On Linux
-// only GL draws them; `LOWLAT_GFX=vk` draws planes through Vulkan instead of
-// GL. On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by
+// exports them (a row saying "handles") can be opened for that. On Linux GL
+// draws the vendor decoder's descriptors and `LOWLAT_GFX=vk` both kinds, the
+// vendor's and the open decoder's own surfaces; Vulkan starts on the GPU
+// `LOWLAT_GFX_DEVICE` names by its render node, else the first that presents,
+// and moves to the GPU a picture names only where it cannot import it there,
+// asking for planes where it cannot anywhere. On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by
 // name (`d3d12`, `vk`), and handles through Direct3D 11 alone. Its device
 // is made on the GPU the decoder is named on, else on the system's first
 // adapter, and with nothing named the decoder is created there too -- by
@@ -104,14 +107,17 @@ struct Settings {
 	const char *port_seed;
 	bool port_mapping;
 
-	// The graphics interface drawn through: on Linux GL, the one that imports
-	// device handles, or Vulkan, for planes; on Windows Direct3D 11, which
-	// opens the library's shared textures, or 12 or Vulkan, for planes.
+	// The graphics interface drawn through: on Linux GL or Vulkan, each of
+	// which imports device handles, Vulkan both kinds; on Windows Direct3D
+	// 11, which opens the library's shared textures, or 12 or Vulkan, for
+	// planes.
 	MTY_GFX gfx;
 	// The GPU the Direct3D 11 context starts on (the adapter's identity, low
 	// part first): the one the decoder's device names, else the system's
 	// first adapter, which the toolkit's default device is made on; zero
-	// where neither is known.
+	// where neither is known. On Linux the GPU the Vulkan context starts on,
+	// by its render node's device number, major in the high half: the one
+	// `LOWLAT_GFX_DEVICE` names, zero for the first that presents.
 	uint64_t gfx_adapter;
 	// Whether a present waits for the display's refresh.
 	bool vsync;
