@@ -65,7 +65,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 37
+#define LOWLAT_ABI_MINOR 38
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// How many reflexive servers a seam may be given, and how long each may be.
@@ -662,8 +662,11 @@ typedef enum lowlat_frame_kind LOWLAT_ENUM_BASE(uint32_t) {
     LOWLAT_FRAME_PLANES = 0,
     /// A device-level handle the application imports into its own device:
     /// on Linux an opaque descriptor with the picture's planes at offsets
-    /// into it, which the vendor decoder alone exports, so asking for it
-    /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
+    /// into it, which the vendor decoder exports, or the open decoder's own
+    /// surface as a kernel buffer descriptor where its display exports one
+    /// (minor 38), so asking for it settles `LOWLAT_DECODER_AUTO` on the
+    /// vendor's, then on the first render node whose open decoder lends its
+    /// surfaces; on Windows one shared
     /// texture per plane, which the open decoder exports on a system with a
     /// fence (Windows 10 1703 on); on macOS the picture's surface, which the
     /// system's decoder exports where the hardware decodes it (minor 35). A
@@ -704,7 +707,33 @@ typedef enum lowlat_handle_kind LOWLAT_ENUM_BASE(uint32_t) {
     /// last hold on it is released; an import that takes ownership of the
     /// descriptor it is given (GL's does) is given a duplicate.
     LOWLAT_HANDLE_OPAQUE_FD = 1,
-    /// Reserved: a buffer descriptor with a layout modifier.
+    /// The open decoder's own surface, as a kernel buffer descriptor (minor
+    /// 38), which Vulkan imports as
+    /// `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT` and EGL as
+    /// `EGL_LINUX_DMA_BUF_EXT`: one buffer holding the luma at
+    /// `planes[0].offset`, which is zero, and the chroma at `planes[1].offset`,
+    /// each row `pitch` bytes from the next, laid out as
+    /// `lowlat_frame.modifier` says -- the luma as `DRM_FORMAT_R8` and the
+    /// chroma as `DRM_FORMAT_GR88` for `LOWLAT_FORMAT_NV12`, `DRM_FORMAT_R16`
+    /// and `DRM_FORMAT_GR1616` with ten bits in the high bits for
+    /// `LOWLAT_FORMAT_P010`; full chroma is never lent, and comes as planes.
+    /// **An import of a plane is told the whole buffer**,
+    /// `lowlat_frame.handle_size`, not the plane's own size: a plane past the
+    /// start read through an import told less faults the device on one
+    /// driver. The layout may be one only the decoder's own GPU reads, the
+    /// one `lowlat_frame.adapter` names; a renderer that cannot import it
+    /// asks for planes. The picture is decoded before the acquire hands it
+    /// out, so nothing is waited on, and the surface is not written again
+    /// until the picture has been released, so an application releases it
+    /// once its own device has finished reading it. The descriptor is **the
+    /// library's for the lease**; an import that takes ownership of the one
+    /// it is given is given a duplicate, and keeps the buffer alive by
+    /// itself. `lowlat_frame.allocation` stays the same for one surface for
+    /// as long as its decoder lives, so a surface is imported once. One
+    /// decoder lends 22 surfaces at most, a stream cycling through five to
+    /// nine of them, so a renderer that keeps its imports by `allocation`
+    /// keeps 22; one that keeps fewer than a stream cycles through imports
+    /// every picture again.
     LOWLAT_HANDLE_DMABUF = 2,
     /// One texture per plane, in the legacy shared form, which a device on
     /// the GPU `lowlat_frame.adapter` names opens by its handle
@@ -2230,8 +2259,8 @@ typedef struct lowlat_frame {
     uint32_t slot;
     /// None for a frame of the planes kind.
     lowlat_handle_kind handle_kind;
-    /// The descriptor, for `lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD`;
-    /// negative otherwise.
+    /// The descriptor, for `lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD` and
+    /// `lowlat_handle_kind::LOWLAT_HANDLE_DMABUF`; negative otherwise.
     int32_t fd;
     /// The allocation's ordinal since creation, from one, for a frame of
     /// the handle kind. Descriptor numbers are reused once closed, so this
@@ -2242,7 +2271,10 @@ typedef struct lowlat_frame {
     /// The whole allocation behind the descriptor in bytes, which is what
     /// an import is told; zero for a frame of the planes kind.
     uint64_t handle_size;
-    /// The layout modifier, for a kind that has one; zero otherwise.
+    /// The buffer's layout modifier, for
+    /// `lowlat_handle_kind::LOWLAT_HANDLE_DMABUF` (minor 38), as the kernel
+    /// names layouts: zero, the linear layout, rows laid out plainly; zero
+    /// for every other kind.
     uint64_t modifier;
     /// The samples span the whole range of their depth (0 to 255 at eight
     /// bits) rather than the video range (16 to 235 for luma, 16 to 240 for
@@ -2266,9 +2298,14 @@ typedef struct lowlat_frame {
     /// only when `size` reaches it.
     uint64_t textures[3];
     /// The GPU `textures` are on, memory-compatible with the system's `LUID`
-    /// (its low part first); zero for every other kind (minor 19). A renderer
-    /// opens the textures on a device of this GPU, and a picture from another
-    /// GPU than the last says the decoder has moved. Filled only when `size`
+    /// (its low part first) (minor 19); for
+    /// `lowlat_handle_kind::LOWLAT_HANDLE_DMABUF` the render node the
+    /// buffer's surface was decoded on, its device number with the major in
+    /// the high half and the minor in the low, as a Vulkan device reports
+    /// its own through `VK_EXT_physical_device_drm` (minor 38); zero for
+    /// every other kind. A renderer opens the textures or imports the buffer
+    /// on a device of this GPU where it can, and a picture from another GPU
+    /// than the last says the decoder has moved. Filled only when `size`
     /// reaches it.
     uint64_t adapter;
     /// The picture's `IOSurfaceRef`, for
@@ -2283,9 +2320,10 @@ typedef struct lowlat_frame {
 /// **None is the only kind in this version**: a picture of the planes kind
 /// was copied, or on macOS is the hardware decoder's own buffer, which nothing
 /// writes while it is held; one of the handle kind was finished on the device
-/// before the acquire returned. Either is reusable once released -- once the
-/// application's own device has finished reading it, for a picture of
-/// textures. The shape is fixed so a kind that needs one adds a kind rather
+/// before the acquire returned, and a lent surface is not written until it
+/// is released. Either is reusable once released -- once the application's
+/// own device has finished reading it, for a picture of textures or a
+/// surface. The shape is fixed so a kind that needs one adds a kind rather
 /// than a call.
 typedef struct lowlat_fence {
     /// One of `lowlat_fence_kind`.
@@ -3722,13 +3760,13 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device -- or on macOS lies in the hardware decoder's
-/// own buffer, which nothing writes while it is held -- and is reusable once
-/// released. For a picture
-/// of textures, or of a surface, a released slot may be written by the next
-/// picture at once, so null says the application's device has finished
-/// reading it -- as a renderer that waits on its swap chain's latency after
-/// each present has.
+/// the host or on the device -- or lies in its decoder's own buffer, the
+/// hardware decoder's on macOS or the open decoder's lent surface on Linux,
+/// which nothing writes while it is held -- and is reusable once released.
+/// For a picture of textures, or of a surface, a released slot may be
+/// written by the next picture at once, so null says the application's
+/// device has finished reading it -- as a renderer that waits on its swap
+/// chain's latency after each present has.
 /// @returns `LOWLAT_OK` or `LOWLAT_ERR_INVALID_ARGUMENT`.
 ///
 /// @attention `cl` came from `lowlat_client_create`; `frame` points to a

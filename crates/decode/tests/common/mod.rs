@@ -128,28 +128,34 @@ pub fn decode_clip_with<D: Decoder>(
                 "{clip}: picture {} is in the wrong range",
                 sums.len()
             );
-            let format = picture.format;
-            let w = picture.width as usize * format.sample();
-            let h = picture.height as usize;
-            let mut yb = Vec::with_capacity(w * h);
-            for row in 0..h {
-                yb.extend_from_slice(&y[row * pitch..row * pitch + w]);
-            }
-            let rows = format.chroma_rows(h);
-            let mut cb = Vec::with_capacity(w * rows * 2);
-            for row in 0..rows {
-                cb.extend_from_slice(&u[row * pitch..row * pitch + w]);
-            }
-            if format.full_chroma() {
-                for row in 0..rows {
-                    cb.extend_from_slice(&v[row * pitch..row * pitch + w]);
-                }
-            }
-            sums.push((crc32(&yb), crc32(&cb)));
+            sums.push(picture_sums(&picture, &y, &u, &v, pitch));
             times.push(timed(backend));
         }
     }
     (sums, times)
+}
+
+/// A picture's `(luma, chroma)` checksums, as the reference sums are taken:
+/// the visible rows of planes read back at `pitch`.
+pub fn picture_sums(picture: &Picture, y: &[u8], u: &[u8], v: &[u8], pitch: usize) -> (u32, u32) {
+    let format = picture.format;
+    let w = picture.width as usize * format.sample();
+    let h = picture.height as usize;
+    let mut yb = Vec::with_capacity(w * h);
+    for row in 0..h {
+        yb.extend_from_slice(&y[row * pitch..row * pitch + w]);
+    }
+    let rows = format.chroma_rows(h);
+    let mut cb = Vec::with_capacity(w * rows * 2);
+    for row in 0..rows {
+        cb.extend_from_slice(&u[row * pitch..row * pitch + w]);
+    }
+    if format.full_chroma() {
+        for row in 0..rows {
+            cb.extend_from_slice(&v[row * pitch..row * pitch + w]);
+        }
+    }
+    (crc32(&yb), crc32(&cb))
 }
 
 /// CRC-32 as the reference decoder's checksum tool computes it.

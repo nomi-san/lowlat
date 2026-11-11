@@ -1,11 +1,15 @@
 //! The open-stack backend: the device decodes what the readers read.
 //!
 //! One configuration and one context per decoder, a fixed pool of surfaces
-//! the picture buffers index by slot, and a read-back of each picture as it
-//! leaves the buffer. Every buffer the device is handed is staged in
-//! storage allocated with the backend; nothing is allocated per picture.
+//! the picture buffers index by slot, and each picture as it leaves the
+//! buffer either read back or lent: its surface exported to whoever holds
+//! the picture, and never decoded into while held. Every buffer the device
+//! is handed is staged in storage allocated with the backend; nothing is
+//! allocated per picture.
 
 use core::ffi::{CStr, c_int, c_uint, c_void};
+use core::sync::atomic::{AtomicU32, Ordering};
+use std::os::fd::OwnedFd;
 
 use lowlat_core::video::{Codec, VideoHeader};
 use lowlat_drivers::ffi::va::{
@@ -31,10 +35,19 @@ pub use lowlat_drivers::va::{Display, Error as RuntimeError, Vaapi};
 
 use crate::h264::dpb::{Parity, Structure};
 use crate::packed::{unpack_vuyx_row, unpack_y410_row};
-use crate::{Caps, Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc};
+use crate::{Caps, Decoder, Fault, Fed, Format, Lease, Picture, Planes, h264, hevc};
 
 /// Surfaces a context holds: what either picture buffer can index.
 const SURFACES: usize = h264::dpb::MAX_FRAMES;
+/// Surfaces made to stand in for lent ones, at most: one for each picture a
+/// holder may keep lent at once. Each is made the first time a slot whose
+/// surface is lent is decoded into again, and kept with the context, so a
+/// session of planes makes none.
+pub const SPARES: usize = 4;
+/// Every surface a context may come to hold.
+const POOL: usize = SURFACES + SPARES;
+/// Contexts made in this process, so a lease names the context it is of.
+static CONTEXTS: AtomicU32 = AtomicU32::new(0);
 /// Buffers one picture may hand the device: the parameters, the matrix,
 /// and a parameter and data buffer per slice.
 const BUFFERS: usize = 2 + 2 * h264::MAX_SLICES;
@@ -175,13 +188,164 @@ pub fn limits(display: &Display<'_>, codec: Codec) -> (u32, u32) {
     display.max_picture(shape.profile(codec), VAEntrypointVLD)
 }
 
-/// Open the runtime and a render node and ask what it decodes: the probe a
-/// client makes at creation, so a machine without a decoder is refused
-/// before anything connects.
-pub fn probe(node: &CStr) -> Result<Caps> {
+/// Open the runtime and a render node and ask what it decodes, and whether
+/// it lends its surfaces: the probe a client makes at creation, so a machine
+/// without a decoder is refused before anything connects.
+pub fn probe(node: &CStr) -> Result<(Caps, bool)> {
     let va = Vaapi::load()?;
     let display = va.open(node)?;
-    caps(&display)
+    Ok((caps(&display)?, exports_surfaces(&display)))
+}
+
+/// Whether a display exports a surface of the half-chroma layouts as one
+/// buffer, in the layout a lent picture is handed out in: one made, exported
+/// and destroyed to ask.
+pub fn exports_surfaces(display: &Display<'_>) -> bool {
+    let va = display.va();
+    let mut surface: VASurfaceID = VA_INVALID_SURFACE;
+    // SAFETY: the output is a live local, one surface; no attributes.
+    let status = unsafe {
+        (va.create_surfaces)(
+            display.raw(),
+            VA_RT_FORMAT_YUV420,
+            256,
+            256,
+            &raw mut surface,
+            1,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if va.check(status).is_err() {
+        return false;
+    }
+    let exported = display.export(surface).is_ok();
+    // SAFETY: made above, destroyed once; the export's descriptor, if any,
+    // is closed already and keeps nothing of it.
+    unsafe { (va.destroy_surfaces)(display.raw(), &raw mut surface, 1) };
+    exported
+}
+
+/// A picture lent in its surface: the surface's export, which the holder
+/// imports, for as long as it keeps the lease.
+#[derive(Debug)]
+pub struct Lent {
+    /// A duplicate of the export's descriptor, the holder's to close.
+    pub fd: OwnedFd,
+    /// The buffer's whole size, which is what an import is told.
+    pub size: u64,
+    pub modifier: u64,
+    /// The chroma's place in the buffer; the luma is at its start.
+    pub chroma_offset: u32,
+    /// Bytes a row: the luma's, then the chroma's.
+    pub pitches: [u32; 2],
+    /// The export's number, as the holder's counter gave it the first time
+    /// this surface was lent: the same surface keeps it for its context's
+    /// life, so a holder imports it once.
+    pub allocation: u32,
+    /// The render node's device number, major in the high half.
+    pub device: u64,
+    /// What the holder names back when it lets the surface go.
+    pub lease: Lease,
+}
+
+/// Which surface each picture-buffer slot decodes into, and which surfaces
+/// a holder keeps: the bookkeeping that keeps a lent surface from being
+/// decoded into, apart from the device calls. A slot decoded into while its
+/// own surface is lent is given another one; the picture buffers never see
+/// the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pool {
+    /// Each slot's surface, an index among the made ones.
+    map: [usize; SURFACES],
+    lent: [bool; POOL],
+    /// Surfaces made: the context's own, then the spares.
+    made: usize,
+    /// The context the surfaces belong to; zero for none.
+    context: u32,
+}
+
+/// What a slot about to be decoded into is given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cover {
+    /// Its own surface, which no holder keeps.
+    Keep,
+    /// A surface made already that nothing holds or decodes into.
+    Spare(usize),
+    /// A new surface, at this index.
+    Make(usize),
+}
+
+impl Pool {
+    /// `made` surfaces of `context`, each slot on its own one.
+    fn fresh(made: usize, context: u32) -> Self {
+        let mut map = [0; SURFACES];
+        for (slot, surface) in map.iter_mut().enumerate() {
+            *surface = slot;
+        }
+        Self {
+            map,
+            lent: [false; POOL],
+            made,
+            context,
+        }
+    }
+
+    fn surface(&self, slot: usize) -> Option<usize> {
+        self.map.get(slot).copied()
+    }
+
+    fn is_lent(&self, surface: usize) -> bool {
+        self.lent.get(surface).copied().unwrap_or(false)
+    }
+
+    /// What `slot` is decoded into next: its own surface unless a holder
+    /// keeps it, else one nothing holds or decodes into, made where none
+    /// is. `None` past the spares, which holders within their bound never
+    /// reach: a slot's surface is lent, so at most `SPARES - 1` others are,
+    /// and each spare made stands in for one.
+    fn cover(&self, slot: usize) -> Option<Cover> {
+        let own = self.surface(slot)?;
+        if !self.is_lent(own) {
+            return Some(Cover::Keep);
+        }
+        if let Some(free) = (0..self.made).find(|&s| !self.is_lent(s) && !self.map.contains(&s)) {
+            return Some(Cover::Spare(free));
+        }
+        (self.made < POOL).then_some(Cover::Make(self.made))
+    }
+
+    /// `slot` decodes into `surface` from now on.
+    fn assign(&mut self, slot: usize, surface: usize) {
+        if let Some(s) = self.map.get_mut(slot) {
+            *s = surface;
+        }
+        self.made = self.made.max(surface + 1);
+    }
+
+    /// A holder keeps `surface` from now on.
+    fn lend(&mut self, surface: usize) -> Option<Lease> {
+        let buffer = u32::try_from(surface).ok()?;
+        *self.lent.get_mut(surface)? = true;
+        Some(Lease {
+            context: self.context,
+            buffer,
+        })
+    }
+
+    /// A holder let go: the surface may be decoded into again. A lease of
+    /// another context frees nothing.
+    fn end(&mut self, lease: Lease) {
+        if self.context == 0 || lease.context != self.context {
+            return;
+        }
+        if let Some(lent) = usize::try_from(lease.buffer)
+            .ok()
+            .and_then(|b| self.lent.get_mut(b))
+        {
+            *lent = false;
+        }
+    }
 }
 
 /// The staged buffers for one picture.
@@ -212,7 +376,15 @@ pub struct Backend<'a> {
     fourcc: u32,
     config: Option<VAConfigID>,
     context: Option<VAContextID>,
-    surfaces: [VASurfaceID; SURFACES],
+    /// The context's surfaces, then any spares, as many as `pool` says.
+    surfaces: [VASurfaceID; POOL],
+    pool: Pool,
+    /// Each surface's export, made the first time it is lent and kept with
+    /// the context, with the number its first holder gave it.
+    exports: [Option<(va::Export, u32)>; POOL],
+    /// Whether this context's pictures can be lent: its surfaces export in
+    /// the layout handed out, which full chroma's packed ones do not.
+    lends: bool,
     coded_width: u32,
     coded_height: u32,
     /// The slot of the last picture taken, for the mapping hook.
@@ -255,7 +427,10 @@ impl<'a> Backend<'a> {
             fourcc: 0,
             config: None,
             context: None,
-            surfaces: [VA_INVALID_SURFACE; SURFACES],
+            surfaces: [VA_INVALID_SURFACE; POOL],
+            pool: Pool::fresh(0, 0),
+            exports: [const { None }; POOL],
+            lends: false,
             coded_width: 0,
             coded_height: 0,
             last_taken: None,
@@ -373,14 +548,12 @@ impl<'a> Backend<'a> {
         Ok(())
     }
 
-    /// The surfaces and the context, at the stream's coded size.
-    fn create_context(&mut self, width: u32, height: u32) -> Result<()> {
-        let Some(config) = self.config else {
-            return Err(Error::NoProfile);
-        };
-        if width > self.ceiling.0 || height > self.ceiling.1 {
-            return Err(Error::TooLarge);
-        }
+    /// `count` surfaces at `width` x `height` from index `from` on, in the
+    /// layout the configuration asked for.
+    fn make_surfaces(&mut self, from: usize, count: usize, width: u32, height: u32) -> Result<()> {
+        let va = self.va();
+        let raw = self.display.raw();
+        let rt_format = self.shape.rt_format();
         // The layout is named where one was chosen, so the read-back knows
         // what it will map; otherwise the driver's own choice.
         let mut attrib = VASurfaceAttrib {
@@ -394,26 +567,41 @@ impl<'a> Backend<'a> {
                 },
             },
         };
-        let (attribs, count): (*mut VASurfaceAttrib, c_uint) = if self.fourcc == 0 {
+        let (attribs, named): (*mut VASurfaceAttrib, c_uint) = if self.fourcc == 0 {
             (core::ptr::null_mut(), 0)
         } else {
             (&raw mut attrib, 1)
         };
-        // SAFETY: the array is writable for the count passed; the attribute
+        let out = self
+            .surfaces
+            .get_mut(from..from.saturating_add(count))
+            .ok_or(Error::TooLarge)?;
+        // SAFETY: the slice is writable for the count passed; the attribute
         // is a live local for the call.
         let status = unsafe {
-            (self.va().create_surfaces)(
-                self.display.raw(),
-                self.shape.rt_format(),
+            (va.create_surfaces)(
+                raw,
+                rt_format,
                 width,
                 height,
-                self.surfaces.as_mut_ptr(),
-                c_uint::try_from(SURFACES).unwrap_or(0),
+                out.as_mut_ptr(),
+                c_uint::try_from(count).unwrap_or(0),
                 attribs.cast(),
-                count,
+                named,
             )
         };
-        self.check(status)?;
+        self.check(status)
+    }
+
+    /// The surfaces and the context, at the stream's coded size.
+    fn create_context(&mut self, width: u32, height: u32) -> Result<()> {
+        let Some(config) = self.config else {
+            return Err(Error::NoProfile);
+        };
+        if width > self.ceiling.0 || height > self.ceiling.1 {
+            return Err(Error::TooLarge);
+        }
+        self.make_surfaces(0, SURFACES, width, height)?;
         let mut context: VAContextID = 0;
         // SAFETY: the surfaces were just created and the output is live.
         let status = unsafe {
@@ -429,26 +617,55 @@ impl<'a> Backend<'a> {
             )
         };
         if let Err(e) = self.check(status) {
+            self.pool = Pool::fresh(SURFACES, 0);
             self.destroy_surfaces();
             return Err(e);
         }
         self.context = Some(context);
         self.coded_width = width;
         self.coded_height = height;
+        // A number of its own, so a lease of an earlier context frees
+        // nothing of this one's. Relaxed: the count only has to be unique,
+        // and nothing else is published through it.
+        let number = CONTEXTS
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .max(1);
+        self.pool = Pool::fresh(SURFACES, number);
+        // Lent only where the surfaces export in the layout handed out,
+        // asked of the first, whose export is kept for its first lending.
+        self.lends = false;
+        if !self.shape.full_chroma {
+            let first = self.surface(0);
+            if let (Ok(export), Some(entry)) =
+                (self.display.export(first), self.exports.first_mut())
+            {
+                *entry = Some((export, 0));
+                self.lends = true;
+            }
+        }
         Ok(())
     }
 
     fn destroy_surfaces(&mut self) {
-        // SAFETY: the surfaces were created together and are destroyed
-        // together, once.
-        unsafe {
-            (self.va().destroy_surfaces)(
-                self.display.raw(),
-                self.surfaces.as_mut_ptr(),
-                c_int::try_from(SURFACES).unwrap_or(0),
-            );
+        let made = self.pool.made.min(POOL);
+        if made > 0 {
+            // SAFETY: the surfaces were created by this backend and are
+            // destroyed together, once.
+            unsafe {
+                (self.va().destroy_surfaces)(
+                    self.display.raw(),
+                    self.surfaces.as_mut_ptr(),
+                    c_int::try_from(made).unwrap_or(0),
+                );
+            }
         }
-        self.surfaces = [VA_INVALID_SURFACE; SURFACES];
+        self.surfaces = [VA_INVALID_SURFACE; POOL];
+        // The context's own descriptors close here; a holder's duplicate
+        // keeps its buffer alive until the holder lets it go.
+        self.exports = [const { None }; POOL];
+        self.pool = Pool::fresh(0, 0);
+        self.lends = false;
     }
 
     fn destroy_context(&mut self) {
@@ -468,11 +685,35 @@ impl<'a> Backend<'a> {
         }
     }
 
+    /// The surface `slot` decodes into now.
     fn surface(&self, slot: usize) -> VASurfaceID {
-        self.surfaces
-            .get(slot)
-            .copied()
+        self.pool
+            .surface(slot)
+            .and_then(|i| self.surfaces.get(i).copied())
             .unwrap_or(VA_INVALID_SURFACE)
+    }
+
+    /// Give `slot` a surface no holder keeps before a picture is decoded
+    /// into it: its own, or a spare in its place while a holder keeps that.
+    fn cover(&mut self, slot: usize) -> Result<()> {
+        match self.pool.cover(slot) {
+            Some(Cover::Keep) => Ok(()),
+            Some(Cover::Spare(surface)) => {
+                self.pool.assign(slot, surface);
+                Ok(())
+            }
+            Some(Cover::Make(surface)) => {
+                self.make_surfaces(surface, 1, self.coded_width, self.coded_height)?;
+                self.pool.assign(slot, surface);
+                lowlat_common::log_info!(
+                    "decode: spare surface made for a lent one, surfaces={}",
+                    self.pool.made
+                );
+                Ok(())
+            }
+            // More lent at once than the spares cover.
+            None => Err(Error::Status(-1)),
+        }
     }
 
     fn buffer(
@@ -557,12 +798,16 @@ impl<'a> Backend<'a> {
             self.h264.abandon();
             return Ok(Fed::FormatChanged);
         }
-        self.stage_h264(unit)?;
         let slot = self
             .h264
             .job()
             .map(|j| j.current.slot)
             .ok_or(Error::Status(-1))?;
+        if let Err(e) = self.cover(slot) {
+            self.h264.abandon();
+            return Err(e);
+        }
+        self.stage_h264(unit)?;
         let submitted = self.submit(slot);
         self.destroy_buffers();
         if let Err(e) = submitted {
@@ -582,8 +827,12 @@ impl<'a> Backend<'a> {
     }
 
     fn stage_h264(&mut self, unit: &[u8]) -> Result<()> {
-        let surfaces = self.surfaces;
-        let surface_of = |slot: usize| surfaces.get(slot).copied().unwrap_or(VA_INVALID_SURFACE);
+        let (surfaces, pool) = (self.surfaces, self.pool);
+        let surface_of = |slot: usize| {
+            pool.surface(slot)
+                .and_then(|i| surfaces.get(i).copied())
+                .unwrap_or(VA_INVALID_SURFACE)
+        };
         let job = self.h264.job().ok_or(Error::Status(-1))?;
         let sps = &job.sps;
         let pps = &job.pps;
@@ -788,12 +1037,16 @@ impl<'a> Backend<'a> {
             self.hevc.abandon();
             return Ok(Fed::FormatChanged);
         }
-        self.stage_hevc(unit)?;
         let slot = self
             .hevc
             .job()
             .map(|j| j.current.slot)
             .ok_or(Error::Status(-1))?;
+        if let Err(e) = self.cover(slot) {
+            self.hevc.abandon();
+            return Err(e);
+        }
+        self.stage_hevc(unit)?;
         let submitted = self.submit(slot);
         self.destroy_buffers();
         if let Err(e) = submitted {
@@ -813,8 +1066,12 @@ impl<'a> Backend<'a> {
     }
 
     fn stage_hevc(&mut self, unit: &[u8]) -> Result<()> {
-        let surfaces = self.surfaces;
-        let surface_of = |slot: usize| surfaces.get(slot).copied().unwrap_or(VA_INVALID_SURFACE);
+        let (surfaces, pool) = (self.surfaces, self.pool);
+        let surface_of = |slot: usize| {
+            pool.surface(slot)
+                .and_then(|i| surfaces.get(i).copied())
+                .unwrap_or(VA_INVALID_SURFACE)
+        };
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
         let sps = &job.sps;
         let pps = &job.pps;
@@ -1188,7 +1445,11 @@ impl<'a> Backend<'a> {
 
     /// Read `slot`'s picture into the planes.
     fn read_back(&mut self, slot: usize, out: &mut Planes<'_>) -> Result<()> {
-        let surface = self.surface(slot);
+        self.read_surface(self.surface(slot), out)
+    }
+
+    /// Read a surface's picture into the planes.
+    fn read_surface(&mut self, surface: VASurfaceID, out: &mut Planes<'_>) -> Result<()> {
         let started = lowlat_common::clock::Time::now();
         // SAFETY: the surface is this backend's; the wait returns when the
         // device has finished writing it.
@@ -1461,40 +1722,14 @@ impl Decoder for Backend<'_> {
     }
 
     fn take(&mut self, out: &mut Planes<'_>) -> core::result::Result<Option<Picture>, Fault> {
-        let (slot, order) = match self.codec {
-            Codec::H264 => match self.h264.next_output() {
-                Some(o) => (o.slot, o.poc),
-                None => return Ok(None),
-            },
-            Codec::H265 => match self.hevc.next_output() {
-                Some(o) => (o.slot, o.poc),
-                None => return Ok(None),
-            },
+        let Some((slot, order)) = self.next_output() else {
+            return Ok(None);
         };
         let read = self.read_back(slot, out);
         self.last_taken = Some(slot);
-        match self.codec {
-            Codec::H264 => self.h264.dpb.taken(slot),
-            Codec::H265 => self.hevc.dpb.taken(slot),
-        }
+        self.taken(slot);
         read.map_err(|_| Fault::Unrecoverable)?;
-        let ((width, height), full_range) = match self.codec {
-            Codec::H264 => self
-                .h264
-                .active_sps()
-                .map_or(((0, 0), false), |s| (s.visible(), s.vui.video_full_range)),
-            Codec::H265 => self
-                .hevc
-                .active_sps()
-                .map_or(((0, 0), false), |s| (s.visible(), s.video_full_range)),
-        };
-        Ok(Some(Picture {
-            format: self.format(),
-            width,
-            height,
-            order,
-            full_range,
-        }))
+        Ok(Some(self.picture(order)))
     }
 
     fn destroy(&mut self) {
@@ -1506,6 +1741,140 @@ impl Decoder for Backend<'_> {
 impl Drop for Backend<'_> {
     fn drop(&mut self) {
         self.destroy();
+    }
+}
+
+impl Backend<'_> {
+    /// Whether this context's pictures can be lent rather than read back.
+    pub fn lends(&self) -> bool {
+        self.lends && self.context.is_some()
+    }
+
+    /// The next picture in output order, lent rather than read back: its
+    /// decode waited for and its surface handed out as its export, which
+    /// is never decoded into until [`lease_ended`](Self::lease_ended) names
+    /// it. `allocation` numbers a surface's export the first time the
+    /// surface is lent.
+    pub fn take_lent(
+        &mut self,
+        allocation: impl FnOnce() -> u32,
+    ) -> core::result::Result<Option<(Picture, Lent)>, Fault> {
+        let Some((slot, order)) = self.next_output() else {
+            return Ok(None);
+        };
+        let lent = self.lend(slot, allocation);
+        self.last_taken = Some(slot);
+        self.taken(slot);
+        let lent = lent.map_err(|_| Fault::Unrecoverable)?;
+        Ok(Some((self.picture(order), lent)))
+    }
+
+    /// A holder let a lent surface go: it may be decoded into again. A
+    /// lease of an earlier context, or another decoder's, frees nothing.
+    pub fn lease_ended(&mut self, lease: Lease) {
+        self.pool.end(lease);
+    }
+
+    /// Read a lent surface back as its holder would see it; a test's need,
+    /// since a lent picture is read by its holder's own device.
+    pub fn read_lent(&mut self, lease: Lease, out: &mut Planes<'_>) -> Result<()> {
+        if lease.context != self.pool.context || !self.pool.is_lent(lease.buffer as usize) {
+            return Err(Error::Status(-1));
+        }
+        let surface = self
+            .surfaces
+            .get(lease.buffer as usize)
+            .copied()
+            .ok_or(Error::Status(-1))?;
+        self.read_surface(surface, out)
+    }
+
+    /// Spare surfaces made for the context, at most [`SPARES`].
+    pub fn spares(&self) -> usize {
+        self.pool.made.saturating_sub(SURFACES)
+    }
+
+    fn lend(&mut self, slot: usize, allocation: impl FnOnce() -> u32) -> Result<Lent> {
+        if !self.lends() {
+            return Err(Error::Status(-1));
+        }
+        let index = self.pool.surface(slot).ok_or(Error::Status(-1))?;
+        let surface = self.surface(slot);
+        let started = lowlat_common::clock::Time::now();
+        // SAFETY: the surface is this backend's; the wait returns when the
+        // device has finished writing it.
+        let status = unsafe { (self.va().sync_surface)(self.display.raw(), surface) };
+        self.check(status)?;
+        let synced = lowlat_common::clock::Time::now();
+        let display = self.display;
+        let entry = self.exports.get_mut(index).ok_or(Error::Status(-1))?;
+        if entry.is_none() {
+            *entry = Some((display.export(surface)?, 0));
+        }
+        let (export, number) = entry.as_mut().ok_or(Error::Status(-1))?;
+        if *number == 0 {
+            *number = allocation();
+        }
+        let fd = export.fd.try_clone().map_err(|_| Error::Status(-1))?;
+        let (size, modifier, chroma_offset, pitches, allocation) = (
+            export.size,
+            export.modifier,
+            export.chroma_offset,
+            export.pitches,
+            *number,
+        );
+        let lease = self.pool.lend(index).ok_or(Error::Status(-1))?;
+        let done = lowlat_common::clock::Time::now();
+        self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
+        self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
+        Ok(Lent {
+            fd,
+            size,
+            modifier,
+            chroma_offset,
+            pitches,
+            allocation,
+            device: display.device(),
+            lease,
+        })
+    }
+
+    /// The next picture to leave the picture buffer: its slot and order.
+    fn next_output(&mut self) -> Option<(usize, i32)> {
+        match self.codec {
+            Codec::H264 => self.h264.next_output().map(|o| (o.slot, o.poc)),
+            Codec::H265 => self.hevc.next_output().map(|o| (o.slot, o.poc)),
+        }
+    }
+
+    /// The picture on `slot` has left: the picture buffer may reuse the slot
+    /// once nothing references it.
+    fn taken(&mut self, slot: usize) {
+        match self.codec {
+            Codec::H264 => self.h264.dpb.taken(slot),
+            Codec::H265 => self.hevc.dpb.taken(slot),
+        }
+    }
+
+    /// What a picture leaving now is, from the active parameter set.
+    fn picture(&self, order: i32) -> Picture {
+        let ((width, height), full_range) = match self.codec {
+            Codec::H264 => self
+                .h264
+                .active_sps()
+                .map_or(((0, 0), false), |s| (s.visible(), s.vui.video_full_range)),
+            Codec::H265 => self
+                .hevc
+                .active_sps()
+                .map_or(((0, 0), false), |s| (s.visible(), s.video_full_range)),
+        };
+        Picture {
+            format: self.format(),
+            width,
+            height,
+            order,
+            full_range,
+        }
     }
 }
 
@@ -1557,5 +1926,84 @@ mod tests {
             assert_eq!(shape.rt_format(), rt);
             assert_eq!(shape.format(), format);
         }
+    }
+
+    /// A stream decoded into `slots` in turn, each picture lent as it leaves
+    /// and held by a ring of `holders`, each holder letting its last picture
+    /// go when it takes the next: every picture is decoded into a surface no
+    /// holder keeps. The surfaces made at the end, or `None` where a slot
+    /// could not be covered.
+    fn run(pool: &mut Pool, slots: &[usize], holders: usize, pictures: usize) -> Option<usize> {
+        let mut held: Vec<Option<Lease>> = vec![None; holders];
+        for n in 0..pictures {
+            let slot = slots[n % slots.len()];
+            match pool.cover(slot)? {
+                Cover::Keep => {}
+                Cover::Spare(s) | Cover::Make(s) => pool.assign(slot, s),
+            }
+            let surface = pool.surface(slot).unwrap();
+            assert!(
+                !pool.is_lent(surface),
+                "picture {n} decoded into lent surface {surface}"
+            );
+            if let Some(old) = held[n % holders].take() {
+                pool.end(old);
+            }
+            held[n % holders] = pool.lend(surface);
+            assert!(held[n % holders].is_some());
+        }
+        Some(pool.made)
+    }
+
+    /// **A lent surface is never decoded into**, whatever order the picture
+    /// buffer reuses its slots in, and the spares stay within the pool: a
+    /// stream of one reference, of none (every picture on one slot, the most
+    /// spares it takes), of eight slots in turn, and of the whole buffer.
+    #[test]
+    fn a_lent_surface_is_never_decoded_into() {
+        let all: Vec<usize> = (0..SURFACES).collect();
+        for slots in [&[0, 1][..], &[0], &[0, 1, 2, 3, 4, 5, 6, 7], &all] {
+            let mut pool = Pool::fresh(SURFACES, 1);
+            let made = run(&mut pool, slots, SPARES, 1000).expect("every slot covered");
+            assert!(made <= POOL, "{slots:?}: {made} surfaces");
+        }
+        // One slot for every picture lends four at once and needs every
+        // spare; the whole buffer in turn reuses a slot after its holder let
+        // go, and needs none.
+        let mut pool = Pool::fresh(SURFACES, 1);
+        assert_eq!(run(&mut pool, &[0], SPARES, 1000), Some(POOL));
+        let mut pool = Pool::fresh(SURFACES, 1);
+        assert_eq!(run(&mut pool, &all, SPARES, 1000), Some(SURFACES));
+    }
+
+    /// The bound is the holders': one holder more than the spares cover
+    /// runs out of surfaces, and is refused rather than decoded into a lent
+    /// one.
+    #[test]
+    fn a_holder_past_the_spares_is_refused() {
+        let mut pool = Pool::fresh(SURFACES, 1);
+        assert_eq!(run(&mut pool, &[0], SPARES + 1, 100), None);
+    }
+
+    /// A lease names its context: one ended after the context was made
+    /// again frees nothing of the new one's, and one of the same context
+    /// frees its surface.
+    #[test]
+    fn a_lease_of_an_earlier_context_frees_nothing() {
+        let mut old = Pool::fresh(SURFACES, 7);
+        let lease = old.lend(3).unwrap();
+        let mut new = Pool::fresh(SURFACES, 8);
+        new.lend(3).unwrap();
+        new.end(lease);
+        assert!(new.is_lent(3), "an old context's lease freed a surface");
+        old.end(lease);
+        assert!(!old.is_lent(3));
+        // No context: nothing is lent and nothing is freed.
+        let mut none = Pool::fresh(0, 0);
+        none.end(Lease {
+            context: 0,
+            buffer: 0,
+        });
+        assert!(!none.is_lent(0));
     }
 }

@@ -1,6 +1,7 @@
 //! The queue's platform half on Linux: host slots in one zeroed allocation,
-//! and device slots made through the vendor's compute runtime, each exported
-//! as a descriptor the application imports.
+//! device slots made through the vendor's compute runtime, each exported as
+//! a descriptor the application imports, and the open stack's own surfaces,
+//! lent to the slot their picture is published in.
 //!
 //! **A device slot carries its own backing**: the allocation and the
 //! backing generation it was made in. The session's backing moves on when
@@ -8,14 +9,22 @@
 //! the next time the ring lends it to the producer, never while the
 //! application holds it. Every picture is finished when it is published --
 //! the device copy is waited for -- so nothing here is gated.
+//!
+//! **A lent surface is held by its slot** from its picture's publish until
+//! the slot is lent to the producer again -- never while the application
+//! holds it -- through a duplicate of its descriptor, so the buffer outlives
+//! a decoder torn down meanwhile. Its decode is waited for before it is
+//! published, and the decoder writes it again only after the slot lets it
+//! go, so nothing here is gated either.
 
 use core::time::Duration;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex};
 
 use lowlat_common::latest::{Latest, Taken};
-use lowlat_decode::Format;
 use lowlat_decode::nvdec::DevicePlanes;
+use lowlat_decode::vaapi::Lent;
+use lowlat_decode::{Format, Lease};
 use lowlat_drivers::cuda::{self, Cuda, Exportable};
 
 use super::{Filling, Frame, Frames, Layout, SLOTS};
@@ -23,12 +32,26 @@ use super::{Filling, Frame, Frames, Layout, SLOTS};
 /// Rows of a device slot are aligned as the device's own surfaces are.
 const DEVICE_ALIGN: usize = 256;
 
-/// The descriptor behind a device slot, as the application is told.
+/// What a handle's descriptor is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleKind {
+    /// A device slot of the vendor's compute runtime, its rows laid out
+    /// plainly at each plane's offset and pitch.
+    Opaque,
+    /// The open stack's own surface, a kernel buffer laid out as `modifier`
+    /// says.
+    DmaBuf,
+}
+
+/// The descriptor behind a device slot or a lent surface, as the
+/// application is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Handle {
+    pub kind: HandleKind,
     /// The library's for the lease: closed when the allocation is freed,
-    /// which is after the last hold on it is released. An import that
-    /// takes ownership of a descriptor is given a duplicate.
+    /// or when the slot lets its lent surface go, which is after the last
+    /// hold on it is released. An import that takes ownership of a
+    /// descriptor is given a duplicate.
     pub fd: RawFd,
     /// The whole allocation, which is what an import is told.
     pub size: usize,
@@ -37,6 +60,11 @@ pub struct Handle {
     /// allocation from the next: two frames with the same ordinal share an
     /// import, and a new ordinal is a new import.
     pub allocation: u32,
+    /// The buffer's layout, for a lent surface; zero otherwise.
+    pub modifier: u64,
+    /// The render node the lent surface is on, major in the high half; zero
+    /// otherwise.
+    pub device: u64,
 }
 
 /// The one host allocation, made on the decode thread.
@@ -104,10 +132,19 @@ struct Current {
     cuda: Arc<Cuda>,
 }
 
+/// A lent surface a slot holds: the duplicate that keeps its buffer alive,
+/// and what the decoder that lent it is told when the slot lets it go.
+struct Held {
+    _fd: OwnedFd,
+    lease: Lease,
+}
+
 /// The device slots and the backing they are made on.
 struct DeviceBacking {
     slots: [Option<DeviceSlot>; SLOTS],
-    /// Ordinals handed out so far.
+    /// The lent surface each slot holds, if any.
+    lent: [Option<Held>; SLOTS],
+    /// Ordinals handed out so far, to device slots and lent surfaces alike.
     allocations: u32,
     /// Backings attached so far.
     generations: u32,
@@ -153,6 +190,7 @@ impl DeviceSlots {
     pub(super) fn new() -> Self {
         Self(Mutex::new(DeviceBacking {
             slots: [const { None }; SLOTS],
+            lent: [const { None }; SLOTS],
             allocations: 0,
             generations: 0,
             current: None,
@@ -183,6 +221,14 @@ impl DeviceSlots {
 
     /// Nothing sleeps here but on the ring, which the close wakes itself.
     pub(super) fn wake(&self) {}
+
+    /// The lent surface slot `index` held, let go now that the ring has lent
+    /// the slot to the producer: its duplicate closed, and the lease for the
+    /// decoder that lent it.
+    pub(super) fn end_lease(&self, index: usize) -> Option<Lease> {
+        let held = self.0.lock().ok()?.lent.get_mut(index)?.take()?;
+        Some(held.lease)
+    }
 }
 
 impl Frames {
@@ -221,9 +267,12 @@ impl Filling<'_> {
         self.uv_offset = layout.uv_offset;
         self.v_offset = layout.v_offset;
         self.handle = Some(Handle {
+            kind: HandleKind::Opaque,
             fd: slot.memory.fd().as_raw_fd(),
             size: slot.memory.size(),
             allocation: slot.allocation,
+            modifier: 0,
+            device: 0,
         });
         let base = slot.memory.ptr();
         let at = |offset: usize| base + u64::try_from(offset).unwrap_or(0);
@@ -239,6 +288,42 @@ impl Filling<'_> {
             },
             v_pitch: layout.uv_pitch,
         })
+    }
+
+    /// An ordinal for an allocation made for the first time: device slots
+    /// and lent surfaces count together, so no two of either share one.
+    pub fn new_allocation(&self) -> u32 {
+        self.frames.device.0.lock().map_or(0, |mut backing| {
+            backing.allocations += 1;
+            backing.allocations
+        })
+    }
+
+    /// The picture is a lent surface, held by this slot until the ring
+    /// lends the slot to the producer again; published with the surface's
+    /// layout as its handle. A lease the slot still held, which the
+    /// producer's [`take_lease`](Self::take_lease) leaves none of, is
+    /// returned for its decoder.
+    pub fn lend_surface(&mut self, lent: Lent) -> Option<Lease> {
+        self.pitch = usize::try_from(lent.pitches[0]).unwrap_or(0);
+        self.uv_pitch = usize::try_from(lent.pitches[1]).unwrap_or(0);
+        self.uv_offset = usize::try_from(lent.chroma_offset).unwrap_or(0);
+        self.v_offset = 0;
+        self.handle = Some(Handle {
+            kind: HandleKind::DmaBuf,
+            fd: lent.fd.as_raw_fd(),
+            size: usize::try_from(lent.size).unwrap_or(0),
+            allocation: lent.allocation,
+            modifier: lent.modifier,
+            device: lent.device,
+        });
+        let held = Held {
+            _fd: lent.fd,
+            lease: lent.lease,
+        };
+        let mut backing = self.frames.device.0.lock().ok()?;
+        let slot = backing.lent.get_mut(self.index)?;
+        slot.replace(held).map(|old| old.lease)
     }
 }
 
@@ -411,6 +496,113 @@ mod tests {
             "the held slot's descriptor was closed under it"
         );
         frames.release(held.index);
+    }
+
+    /// A lent surface standing in for the decoder's: a descriptor of its
+    /// own, for the slot to hold.
+    fn lent(buffer: u32, allocation: u32) -> Lent {
+        Lent {
+            fd: std::fs::File::open("/dev/null").unwrap().into(),
+            size: 4096,
+            modifier: 0x0100_0000_0000_0009,
+            chroma_offset: 2048,
+            pitches: [64, 64],
+            allocation,
+            device: (226 << 32) | 129,
+            lease: Lease { context: 1, buffer },
+        }
+    }
+
+    /// **A lent surface is held by its slot** from its publish until the
+    /// slot is lent to the producer again: published with its layout as a
+    /// buffer handle, its descriptor open while the application holds the
+    /// picture, and its lease handed back -- to the producer that fills the
+    /// slot next, and to no other -- once the application let it go.
+    #[test]
+    fn a_lent_surface_is_held_until_its_slot_is_filled_again() {
+        let frames = Frames::new((4096, 4096), FrameKind::Handle);
+        let mut filling = frames.fill().unwrap();
+        assert!(filling.take_lease().is_none(), "a fresh slot held a lease");
+        let number = filling.new_allocation();
+        assert!(filling.lend_surface(lent(3, number)).is_none());
+        filling.publish(frame(1));
+        let held = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
+        let handle = held.handle.expect("a lent surface carries its handle");
+        assert_eq!(handle.kind, HandleKind::DmaBuf);
+        assert_eq!(
+            (
+                handle.size,
+                handle.allocation,
+                handle.modifier,
+                handle.device
+            ),
+            (4096, number, 0x0100_0000_0000_0009, (226 << 32) | 129)
+        );
+        assert_eq!(
+            (held.pitch, held.uv_pitch, held.frame.uv_offset),
+            (64, 64, 2048)
+        );
+        assert!(held.y.is_null() && held.uv.is_null());
+        assert!(descriptor_is_open(handle.fd));
+
+        // More pictures through the other slots: the held one is never lent
+        // to the producer, so its lease never comes back while it is held.
+        let mut ended = Vec::new();
+        let mut last = held.seq;
+        for n in 2..10 {
+            let mut filling = frames.fill().unwrap();
+            assert_ne!(filling.index, held.index, "the held slot was lent");
+            ended.extend(filling.take_lease());
+            assert!(
+                filling
+                    .lend_surface(lent(100 + n, filling.new_allocation()))
+                    .is_none()
+            );
+            filling.publish(frame(n as i32));
+            let h = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
+            last = h.seq;
+            frames.release(h.index);
+        }
+        assert!(
+            descriptor_is_open(handle.fd),
+            "closed under the application"
+        );
+        assert!(!ended.iter().any(|l| l.buffer == 3), "{ended:?}");
+        assert!(ended.iter().all(|l| l.context == 1));
+
+        // Let go: the slot's next filling hands its lease back, once.
+        frames.release(held.index);
+        let mut back = None;
+        for n in 10..20 {
+            let mut filling = frames.fill().unwrap();
+            let lease = filling.take_lease();
+            assert!(filling.take_lease().is_none(), "a lease handed back twice");
+            if filling.index == held.index {
+                back = lease;
+                break;
+            }
+            filling.publish(frame(n));
+            let h = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
+            last = h.seq;
+            frames.release(h.index);
+        }
+        assert_eq!(
+            back,
+            Some(Lease {
+                context: 1,
+                buffer: 3
+            })
+        );
+    }
+
+    /// Device slots and lent surfaces draw their numbers from one counter,
+    /// so no two of either share one.
+    #[test]
+    fn allocations_are_numbered_once_across_both_kinds() {
+        let frames = Frames::new((256, 256), FrameKind::Handle);
+        let filling = frames.fill().unwrap();
+        let numbers: Vec<u32> = (0..5).map(|_| filling.new_allocation()).collect();
+        assert_eq!(numbers, [1, 2, 3, 4, 5]);
     }
 
     /// The two-held rule is the ring's, whatever backs the slots.

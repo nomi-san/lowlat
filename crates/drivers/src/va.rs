@@ -8,13 +8,16 @@
 //! a configuration, a context or a buffer.
 
 use core::ffi::{CStr, c_char, c_int, c_uint};
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use lowlat_common::dynlib::Library;
 
+use crate::ffi::drm::{DRM_FORMAT_GR88, DRM_FORMAT_GR1616, DRM_FORMAT_R8, DRM_FORMAT_R16};
 use crate::ffi::va::{
-    VA_STATUS_SUCCESS, VABufferID, VABufferType, VAConfigAttrib, VAConfigID, VAContextID,
-    VADisplay, VAEntrypoint, VAImage, VAImageFormat, VAImageID, VAProfile, VAStatus,
-    VASurfaceAttrib, VASurfaceID,
+    VA_EXPORT_SURFACE_READ_ONLY, VA_EXPORT_SURFACE_SEPARATE_LAYERS, VA_STATUS_SUCCESS,
+    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, VABufferID, VABufferType, VAConfigAttrib, VAConfigID,
+    VAContextID, VADRMPRIMESurfaceDescriptor, VADisplay, VAEntrypoint, VAImage, VAImageFormat,
+    VAImageID, VAProfile, VAStatus, VASurfaceAttrib, VASurfaceID,
 };
 
 /// The core interface and its display binding, versioned.
@@ -124,6 +127,10 @@ pub type GetImage = unsafe extern "C" fn(
 pub type MaxNumImageFormats = unsafe extern "C" fn(VADisplay) -> c_int;
 pub type QueryImageFormats =
     unsafe extern "C" fn(VADisplay, *mut VAImageFormat, *mut c_int) -> VAStatus;
+/// A surface's storage as kernel buffer descriptors, which the caller owns
+/// and closes.
+pub type ExportSurfaceHandle =
+    unsafe extern "C" fn(VADisplay, VASurfaceID, u32, u32, *mut core::ffi::c_void) -> VAStatus;
 
 /// Why the runtime could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +145,10 @@ pub enum Error {
     NoDevice,
     /// A call failed, carrying its status.
     Status(VAStatus),
+    /// A surface cannot be exported, or comes out in a layout this library
+    /// does not hand out: anything but one object holding two single-plane
+    /// layers, the luma at its start.
+    NotExportable,
 }
 
 impl core::fmt::Display for Error {
@@ -147,6 +158,7 @@ impl core::fmt::Display for Error {
             Self::MissingSymbol => f.write_str("display runtime is missing an entry point"),
             Self::NoDevice => f.write_str("render node could not be opened"),
             Self::Status(status) => write!(f, "display runtime returned status {status}"),
+            Self::NotExportable => f.write_str("surface cannot be exported as one buffer"),
         }
     }
 }
@@ -206,6 +218,8 @@ pub struct Vaapi {
     /// on a runtime older than the ones that offer them, which then prints.
     set_error_callback: Option<SetMessageCallback>,
     set_info_callback: Option<SetMessageCallback>,
+    /// Absent on a runtime older than the ones that export a surface.
+    export_surface_handle: Option<ExportSurfaceHandle>,
     /// Last, so both outlive the addresses taken from them.
     _libva_drm: Library,
     _libva: Library,
@@ -220,6 +234,24 @@ pub struct Display<'a> {
     /// this descriptor for as long as the display lives.
     fd: c_int,
     version: (i32, i32),
+    /// The render node's device number, major in the high half.
+    device: u64,
+}
+
+/// A surface exported as a kernel buffer descriptor: one object holding the
+/// luma at its start and the chroma at `chroma_offset`, each a single-plane
+/// layer -- one eight-bit channel and two, or sixteen bits each, laid out
+/// as `modifier` says.
+#[derive(Debug)]
+pub struct Export {
+    /// The object's descriptor, this export's own.
+    pub fd: OwnedFd,
+    /// The object's whole size, which is what an import is told.
+    pub size: u64,
+    pub modifier: u64,
+    pub chroma_offset: u32,
+    /// Bytes from one row to the next: the luma's, then the chroma's.
+    pub pitches: [u32; 2],
 }
 
 impl Vaapi {
@@ -273,6 +305,7 @@ impl Vaapi {
                     .ok_or(Error::MissingSymbol)?,
                 set_error_callback: libva.symbol(c"vaSetErrorCallback"),
                 set_info_callback: libva.symbol(c"vaSetInfoCallback"),
+                export_surface_handle: libva.symbol(c"vaExportSurfaceHandle"),
                 _libva_drm: libva_drm,
                 _libva: libva,
             })
@@ -353,8 +386,21 @@ impl Vaapi {
             raw,
             fd,
             version: (major, minor),
+            device: device_number(fd),
         })
     }
+}
+
+/// A device node's number, major in the high half and minor in the low;
+/// zero where the descriptor says nothing.
+fn device_number(fd: c_int) -> u64 {
+    // SAFETY: a stat buffer is plain data, and zero a valid one.
+    let mut stat: libc::stat = unsafe { core::mem::zeroed() };
+    // SAFETY: the descriptor is open and the buffer a live local.
+    if unsafe { libc::fstat(fd, &raw mut stat) } != 0 {
+        return 0;
+    }
+    (u64::from(libc::major(stat.st_rdev)) << 32) | u64::from(libc::minor(stat.st_rdev))
 }
 
 /// A message the runtime calls an error, into the log as a warning: what it
@@ -393,6 +439,73 @@ impl<'a> Display<'a> {
     /// The raw handle, for the calls that take one.
     pub fn raw(&self) -> VADisplay {
         self.raw
+    }
+
+    /// The render node's device number, major in the high half and minor in
+    /// the low: what a graphics interface names the same device by.
+    pub fn device(&self) -> u64 {
+        self.device
+    }
+
+    /// Export a surface's storage for another device to read: one object,
+    /// the luma at its start and the chroma after it, each a single-plane
+    /// layer. Any other layout is refused, every descriptor it came with
+    /// closed. The surface's decode is not waited for here.
+    pub fn export(&self, surface: VASurfaceID) -> Result<Export> {
+        let export = self.va.export_surface_handle.ok_or(Error::NotExportable)?;
+        // SAFETY: the descriptor is plain data; zero is a valid starting one.
+        let mut descriptor: VADRMPRIMESurfaceDescriptor = unsafe { core::mem::zeroed() };
+        // SAFETY: the display and surface are live; the descriptor is the
+        // type this memory kind fills, a live local.
+        let status = unsafe {
+            export(
+                self.raw,
+                surface,
+                VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+                (&raw mut descriptor).cast(),
+            )
+        };
+        self.va.check(status)?;
+        // Every object's descriptor is owned from here on, so each is
+        // closed however the layout is judged.
+        let mut owned: [Option<OwnedFd>; 4] = [const { None }; 4];
+        let objects = usize::try_from(descriptor.num_objects).unwrap_or(0);
+        for (slot, object) in owned
+            .iter_mut()
+            .zip(descriptor.objects.iter())
+            .take(objects)
+        {
+            if object.fd >= 0 {
+                // SAFETY: the runtime handed this descriptor to the caller,
+                // and nothing else owns it.
+                *slot = Some(unsafe { OwnedFd::from_raw_fd(object.fd) });
+            }
+        }
+        let [luma, chroma, ..] = descriptor.layers;
+        let formats_pair = matches!(
+            (luma.drm_format, chroma.drm_format),
+            (DRM_FORMAT_R8, DRM_FORMAT_GR88) | (DRM_FORMAT_R16, DRM_FORMAT_GR1616)
+        );
+        let one_object = objects == 1
+            && descriptor.num_layers == 2
+            && luma.num_planes == 1
+            && chroma.num_planes == 1
+            && luma.object_index[0] == 0
+            && chroma.object_index[0] == 0
+            && luma.offset[0] == 0;
+        let [first, ..] = owned;
+        let [object, ..] = descriptor.objects;
+        match first {
+            Some(fd) if one_object && formats_pair => Ok(Export {
+                fd,
+                size: u64::from(object.size),
+                modifier: object.drm_format_modifier,
+                chroma_offset: chroma.offset[0],
+                pitches: [luma.pitch[0], chroma.pitch[0]],
+            }),
+            _ => Err(Error::NotExportable),
+        }
     }
 
     /// Every profile the driver offers, for any entry point.

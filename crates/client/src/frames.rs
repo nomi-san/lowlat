@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use lowlat_common::latest::{Latest, Taken};
 use lowlat_core::video::Rotation;
-use lowlat_decode::{Format, Planes};
+use lowlat_decode::{Format, Lease, Planes};
 
 use crate::config::FrameKind;
 
@@ -59,6 +59,8 @@ mod sys;
 mod sys;
 
 pub use sys::Handle;
+#[cfg(target_os = "linux")]
+pub use sys::HandleKind;
 #[cfg(windows)]
 pub use sys::Vendor;
 
@@ -444,6 +446,14 @@ impl Frames {
 }
 
 impl Filling<'_> {
+    /// What the slot held from its last picture, let go now the ring has
+    /// lent the slot to the producer: the lease of a surface its decoder
+    /// lent, to be ended by that decoder. Asked before anything is taken
+    /// into the slot, whatever the kind; none where no decoder lends.
+    pub fn take_lease(&mut self) -> Option<Lease> {
+        self.frames.device.end_lease(self.index)
+    }
+
     /// The planes to decode a `width` x `height` picture of `format` into:
     /// rows of the picture's own width, aligned to a cache line, the chroma
     /// planes straight after the luma rows. `None` if the picture does not

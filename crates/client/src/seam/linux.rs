@@ -15,8 +15,9 @@ use crate::config::{Backend, Caps, Decoding, FrameKind};
 /// The decoder settled at creation: which backend, on which device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
-    /// The open stack, on a render node.
-    Vaapi(CString),
+    /// The open stack, on a render node, `handles` where its display lends
+    /// its surfaces in the layout handed out.
+    Vaapi { node: CString, handles: bool },
     /// The vendor's interface, on the device at an address, or the first.
     Nvdec(Option<PciAddress>),
     /// The machine's own codec library, from the directory named or from
@@ -29,15 +30,17 @@ impl Opened {
     /// The backend this is, as a configuration names it.
     pub fn backend(&self) -> Backend {
         match self {
-            Self::Vaapi(_) => Backend::Vaapi,
+            Self::Vaapi { .. } => Backend::Vaapi,
             Self::Nvdec(_) => Backend::Nvdec,
             Self::Software(_) => Backend::Software,
         }
     }
 
-    /// Whether it hands pictures out as a handle: the vendor's decoder alone.
+    /// Whether it hands pictures out as a handle: the vendor's decoder, a
+    /// copy into a slot of its own; the open stack, its own surface lent,
+    /// where its display exports one.
     pub fn exports(&self) -> bool {
-        matches!(self, Self::Nvdec(_))
+        matches!(self, Self::Nvdec(_) | Self::Vaapi { handles: true, .. })
     }
 }
 
@@ -108,13 +111,27 @@ fn probe_nvdec(address: Option<PciAddress>) -> Result<Caps, DecoderStage> {
     }
 }
 
-/// Probe the open stack on one render node.
-fn probe_vaapi(node: &CString) -> Result<Caps, DecoderStage> {
-    let caps = vaapi::probe(node).map_err(|e| stage_of(&e))?;
+/// Probe the open stack on one render node: what it decodes, and the
+/// decoder settled on it.
+fn probe_vaapi(node: &CString) -> Result<(Opened, Caps), DecoderStage> {
+    let (caps, handles) = vaapi::probe(node).map_err(|e| stage_of(&e))?;
     if caps.any() {
-        Ok(caps)
+        let opened = Opened::Vaapi {
+            node: node.clone(),
+            handles,
+        };
+        Ok((opened, caps))
     } else {
         Err(DecoderStage::Profile)
+    }
+}
+
+/// As [`probe_vaapi`], for a session of handles: refused where the display
+/// lends none.
+fn probe_vaapi_handles(node: &CString) -> Result<(Opened, Caps), DecoderStage> {
+    match probe_vaapi(node)? {
+        (opened, caps) if opened.exports() => Ok((opened, caps)),
+        _ => Err(DecoderStage::Unsupported),
     }
 }
 
@@ -124,26 +141,40 @@ fn probe_vaapi(node: &CString) -> Result<Caps, DecoderStage> {
 /// stack on the node named or the first that decodes, then the vendor's
 /// interface on the card behind that node or any, then software -- so a
 /// machine with any hardware decoder never reaches software, and the stage
-/// reported is the most telling one the walk met.
+/// reported is the most telling one the walk met. **Handles, in the vendor's
+/// order**: the vendor's interface first, whose copy a renderer on its own
+/// GPU imports wherever the open stack's tiling would be refused, then the
+/// open stack's first node that lends its surfaces; software hands none out.
 pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Error> {
     let node = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
         // The system's own decoder is Windows' and macOS's; Linux has none.
         (_, Backend::System) => Err(Error::Decoder(DecoderStage::Unsupported)),
-        // Only the vendor backend exports a handle, so asking for one
-        // settles the choice on it: on the card behind the node named, or
-        // any, or nothing.
-        (FrameKind::Handle, Backend::Vaapi | Backend::Software) => {
-            Err(Error::Decoder(DecoderStage::Unsupported))
+        (FrameKind::Handle, Backend::Software) => Err(Error::Decoder(DecoderStage::Unsupported)),
+        (FrameKind::Handle, Backend::Vaapi) => {
+            let (opened, caps) = match node {
+                Some(node) => probe_vaapi_handles(&vaapi_path(node)?),
+                None => first_vaapi(probe_vaapi_handles),
+            }
+            .map_err(Error::Decoder)?;
+            Ok((Some(opened), caps))
         }
         (FrameKind::Handle, Backend::Auto) => {
+            // The vendor's on the card behind the node named, or any; then
+            // the open stack on that node, or its first that lends.
             let address = node
                 .map(|node| address_of(node).ok_or(Error::Decoder(DecoderStage::Device)))
                 .transpose()?;
-            let caps =
-                probe_nvdec(address).map_err(|_| Error::Decoder(DecoderStage::Unsupported))?;
-            Ok((Some(Opened::Nvdec(address)), caps))
+            if let Ok(caps) = probe_nvdec(address) {
+                return Ok((Some(Opened::Nvdec(address)), caps));
+            }
+            let open = match node {
+                Some(node) => probe_vaapi_handles(&vaapi_path(node)?),
+                None => first_vaapi(probe_vaapi_handles),
+            };
+            let (opened, caps) = open.map_err(|_| Error::Decoder(DecoderStage::Unsupported))?;
+            Ok((Some(opened), caps))
         }
         (_, Backend::Nvdec) => {
             // The device is named as a render node, as for the open stack;
@@ -155,16 +186,12 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
             Ok((Some(Opened::Nvdec(address)), caps))
         }
         (_, Backend::Vaapi) => {
-            let path = match node {
-                Some(node) => vaapi_path(node)?,
-                None => {
-                    return first_vaapi()
-                        .map(|(path, caps)| (Some(Opened::Vaapi(path)), caps))
-                        .map_err(Error::Decoder);
-                }
-            };
-            let caps = probe_vaapi(&path).map_err(Error::Decoder)?;
-            Ok((Some(Opened::Vaapi(path)), caps))
+            let (opened, caps) = match node {
+                Some(node) => probe_vaapi(&vaapi_path(node)?),
+                None => first_vaapi(probe_vaapi),
+            }
+            .map_err(Error::Decoder)?;
+            Ok((Some(opened), caps))
         }
         (_, Backend::Software) => {
             let dir = software_dir(&decoding.device);
@@ -175,15 +202,13 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
             // The open stack first, on the node named or the first node that
             // decodes.
             let open = match node {
-                Some(node) => vaapi_path(node).and_then(|path| {
-                    probe_vaapi(&path)
-                        .map(|caps| (path, caps))
-                        .map_err(Error::Decoder)
-                }),
-                None => first_vaapi().map_err(Error::Decoder),
+                Some(node) => {
+                    vaapi_path(node).and_then(|path| probe_vaapi(&path).map_err(Error::Decoder))
+                }
+                None => first_vaapi(probe_vaapi).map_err(Error::Decoder),
             };
             let mut last = match open {
-                Ok((path, caps)) => return Ok((Some(Opened::Vaapi(path)), caps)),
+                Ok((opened, caps)) => return Ok((Some(opened), caps)),
                 Err(Error::Decoder(stage)) => stage,
                 Err(other) => return Err(other),
             };
@@ -209,16 +234,18 @@ fn vaapi_path(node: &str) -> Result<CString, Error> {
     CString::new(node).map_err(|_| Error::Decoder(DecoderStage::Device))
 }
 
-/// The first render node the open stack decodes on, or the stage the walk
-/// met: the runtime absent, or every node refusing or decoding nothing.
-fn first_vaapi() -> Result<(CString, Caps), DecoderStage> {
+/// The first render node `probe` takes the open stack on, or the stage the
+/// walk met: the runtime absent, or every node refusing or decoding nothing.
+fn first_vaapi(
+    probe: fn(&CString) -> Result<(Opened, Caps), DecoderStage>,
+) -> Result<(Opened, Caps), DecoderStage> {
     let mut last = DecoderStage::Device;
     for candidate in RENDER_NODES {
         let Ok(path) = CString::new(candidate) else {
             continue;
         };
-        match probe_vaapi(&path) {
-            Ok(caps) => return Ok((path, caps)),
+        match probe(&path) {
+            Ok(found) => return Ok(found),
             Err(stage) => last = most_telling(last, stage),
         }
     }

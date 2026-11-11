@@ -57,7 +57,8 @@ fn open_stack(node: &str) -> Available {
         name,
         driver: display.vendor(),
         caps,
-        handle: false,
+        // Its own surfaces, lent, where the display exports them.
+        handle: vaapi::exports_surfaces(&display),
         max_h264: vaapi::limits(&display, Codec::H264),
         max_hevc: vaapi::limits(&display, Codec::H265),
     }
@@ -155,7 +156,14 @@ mod tests {
             );
             if row.available {
                 assert!(row.caps.any());
-                assert_eq!(row.handle, row.backend == Backend::Nvdec);
+                // The vendor's always hands a handle out, the codec
+                // library's never; the open stack's where its display
+                // exports a surface, which creation probes the same way.
+                match row.backend {
+                    Backend::Nvdec => assert!(row.handle),
+                    Backend::Software => assert!(!row.handle),
+                    _ => {}
+                }
                 if row.backend == Backend::Software {
                     // The licence follows the version in the driver's words,
                     // and it is one this build loads: LGPL always, GPL only

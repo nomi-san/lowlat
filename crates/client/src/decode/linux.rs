@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use lowlat_decode::vaapi::{self, Vaapi};
-use lowlat_decode::{Fault, Format, Picture, nvdec, software};
+use lowlat_decode::{Fault, Format, Lease, Picture, nvdec, software};
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::lavc::Lavc;
@@ -15,12 +15,40 @@ use crate::UNIT_BYTES;
 use crate::frames::Filling;
 use crate::seam::Opened;
 
+// A queue slot holds at most one lent surface, so the spares cover every
+// slot at once.
+const _: () = assert!(vaapi::SPARES >= crate::frames::SLOTS);
+
 impl Backend for vaapi::Backend<'_> {
     fn output(&self) -> Option<(u32, u32, Format)> {
         vaapi::Backend::output(self)
     }
     fn timings(&self) -> (u32, u32) {
         (self.decode_us, self.readback_us)
+    }
+    fn exports(&self) -> bool {
+        // Its context's surfaces export in the layout lent; the trait's own
+        // `lends` is the macOS kind, taken whatever is asked, which this is
+        // not: as planes it reads back.
+        vaapi::Backend::lends(self)
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        _layout: (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // The surface itself, lent to the slot: its decode is waited for
+        // before the take returns.
+        let Some((picture, lent)) = self.take_lent(|| filling.new_allocation())? else {
+            return Ok(None);
+        };
+        if let Some(replaced) = filling.lend_surface(lent) {
+            self.lease_ended(replaced);
+        }
+        Ok(Some((picture, 0)))
+    }
+    fn lease_ended(&mut self, lease: Lease) {
+        vaapi::Backend::lease_ended(self, lease);
     }
 }
 
@@ -55,7 +83,7 @@ impl Backend for nvdec::Backend<'_> {
 /// where every call against it is made.
 pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next {
     match opened {
-        Opened::Vaapi(node) => {
+        Opened::Vaapi { node, .. } => {
             let Ok(va) = Vaapi::load() else {
                 return Next::Failed;
             };

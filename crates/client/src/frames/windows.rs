@@ -323,6 +323,12 @@ impl DeviceSlots {
             event.set();
         }
     }
+
+    /// No decoder here lends a surface by lease: every picture of textures
+    /// is a copy into the slot's own.
+    pub(super) fn end_lease(&self, _index: usize) -> Option<lowlat_decode::Lease> {
+        None
+    }
 }
 
 impl Frames {

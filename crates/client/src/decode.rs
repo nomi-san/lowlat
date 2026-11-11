@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lowlat_core::video;
-use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, software};
+use lowlat_decode::{Decoder, Fault, Fed, Format, Lease, Picture, software};
 use lowlat_net::WakeHandle;
 
 use crate::config::FrameKind;
@@ -64,6 +64,11 @@ trait Backend: Decoder {
     ) -> Result<Option<(Picture, u64)>, Fault> {
         let _ = (filling, layout);
         Err(Fault::Fatal)
+    }
+    /// A queue slot let go of a surface this backend lent: it may be
+    /// decoded into again. Only a backend that lends by lease keeps any.
+    fn lease_ended(&mut self, lease: Lease) {
+        let _ = lease;
     }
 }
 
@@ -337,6 +342,11 @@ fn take_pictures<D: Backend>(
         // The layout before the take: the planes are the picture's own size.
         let (width, height, format) = feed.decoder().output()?;
         let mut filling = frames.fill()?;
+        // Whatever the slot held from its last picture goes first, so a
+        // surface lent with it may be decoded into again.
+        if let Some(lease) = filling.take_lease() {
+            feed.decoder_mut().lease_ended(lease);
+        }
         // By handle when the session asks for one and the decoder can hand
         // one out; as planes otherwise, whatever was asked. Decided per
         // picture, so the kind switches at the next one with no keyframe. A

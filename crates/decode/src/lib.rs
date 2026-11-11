@@ -231,6 +231,18 @@ pub struct Picture {
     pub full_range: bool,
 }
 
+/// A picture lent in its decoder's own buffer, as its holder names it back
+/// on letting go: the buffer may then be decoded into again. Numbered by the
+/// decoder that lent it, so a lease ended after that decoder was rebuilt or
+/// replaced frees nothing of the next one's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lease {
+    /// The decoder's context, numbered across the process from one.
+    pub context: u32,
+    /// The buffer, as that context numbers it.
+    pub buffer: u32,
+}
+
 /// A video decoder, as the client's feed drives one.
 ///
 /// **Built and destroyed by the feed, never by itself.** The feed owns the

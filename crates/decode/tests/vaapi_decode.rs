@@ -147,6 +147,179 @@ fn every_hevc_fixture_decodes_to_the_reference_pictures() {
     }
 }
 
+/// Decode a clip with every picture lent, held four deep -- the most a queue
+/// holds at once -- and each lent surface read back twice: when it is lent,
+/// and when its holder lets it go after four more pictures were decoded. The
+/// two readings agree, so nothing was decoded into a held surface; the
+/// pictures are the reference decoder's; a surface keeps its export's number
+/// for as long as its context lives, and two surfaces never share one.
+fn check_lent(clip: &str, sums_name: &str, codec: Codec, ten_bit: bool) -> usize {
+    use std::collections::VecDeque;
+    let va = Vaapi::load().expect("runtime");
+    let display = va.open(&node()).expect("render node");
+    if !lowlat_decode::vaapi::exports_surfaces(&display) {
+        println!("{clip}: the display lends no surface, skipped");
+        return 0;
+    }
+    let mut backend = Backend::new(&display, (4096, 4096));
+    backend.build(&header(codec, ten_bit)).expect("build");
+    let pitch = 1280 * 2 + 64;
+    let (mut y, mut u, mut v) = (
+        vec![0u8; pitch * 720],
+        vec![0u8; pitch * 720],
+        vec![0u8; pitch * 720],
+    );
+    let mut read = |backend: &mut Backend<'_>, lease, picture: &lowlat_decode::Picture| {
+        let mut planes = Planes {
+            y: &mut y,
+            y_pitch: pitch,
+            uv: &mut u,
+            uv_pitch: pitch,
+            v: &mut v,
+            v_pitch: pitch,
+        };
+        backend
+            .read_lent(lease, &mut planes)
+            .unwrap_or_else(|e| panic!("{clip}: read lent: {e:?}"));
+        common::picture_sums(picture, &y, &u, &v, pitch)
+    };
+    let mut held = VecDeque::new();
+    let mut ours = Vec::new();
+    let mut numbers = 0u32;
+    let mut by_surface: BTreeMap<u32, u32> = BTreeMap::new();
+    let all = common::units(clip);
+    for (n, unit) in all.iter().enumerate() {
+        backend
+            .feed(unit)
+            .unwrap_or_else(|e| panic!("{clip}: unit {n}: {e:?}"));
+        if n + 1 == all.len() {
+            backend.drain();
+        }
+        loop {
+            let taken = backend
+                .take_lent(|| {
+                    numbers += 1;
+                    numbers
+                })
+                .unwrap_or_else(|e| panic!("{clip}: take lent: {e:?}"));
+            let Some((picture, lent)) = taken else {
+                break;
+            };
+            assert!(lent.size > 0 && lent.chroma_offset > 0, "{clip}: {lent:?}");
+            let row = picture.width * u32::try_from(picture.format.sample()).unwrap();
+            assert!(
+                lent.pitches[0] >= row && lent.pitches[1] >= row,
+                "{clip}: pitches {:?} for rows of {row}",
+                lent.pitches
+            );
+            assert!(
+                u64::from(lent.chroma_offset)
+                    >= u64::from(lent.pitches[0]) * u64::from(picture.height),
+                "{clip}: chroma at {} inside the luma",
+                lent.chroma_offset
+            );
+            let number = *by_surface
+                .entry(lent.lease.buffer)
+                .or_insert(lent.allocation);
+            assert_eq!(number, lent.allocation, "{clip}: a surface's number moved");
+            let sums = read(&mut backend, lent.lease, &picture);
+            ours.push(sums);
+            held.push_back((lent, picture, sums));
+            if held.len() > 4 {
+                let (old, picture, sums) = held.pop_front().unwrap();
+                assert_eq!(
+                    read(&mut backend, old.lease, &picture),
+                    sums,
+                    "{clip}: a held surface was written"
+                );
+                backend.lease_ended(old.lease);
+            }
+        }
+    }
+    for (old, picture, sums) in held.drain(..) {
+        assert_eq!(
+            read(&mut backend, old.lease, &picture),
+            sums,
+            "{clip}: a held surface was written"
+        );
+        backend.lease_ended(old.lease);
+    }
+    let numbers_used: std::collections::BTreeSet<u32> = by_surface.values().copied().collect();
+    assert_eq!(
+        numbers_used.len(),
+        by_surface.len(),
+        "{clip}: two surfaces shared a number"
+    );
+    let spares = backend.spares();
+    assert!(
+        spares <= lowlat_decode::vaapi::SPARES,
+        "{clip}: {spares} spares"
+    );
+    backend.destroy();
+    let theirs = common::sums(sums_name);
+    let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &theirs {
+        *expected.entry((s.y, s.uv)).or_default() += 1;
+    }
+    let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &ours {
+        *got.entry(*s).or_default() += 1;
+    }
+    println!(
+        "{clip}: {} of {} pictures lent, {} surfaces, {spares} spares",
+        ours.len(),
+        theirs.len(),
+        by_surface.len()
+    );
+    assert_eq!(ours.len(), theirs.len(), "{clip}: picture count");
+    assert_eq!(
+        got, expected,
+        "{clip}: the lent pictures differ from the reference decoder's"
+    );
+    spares
+}
+
+/// **A lent picture is never decoded into while held**: every half-chroma
+/// fixture of both codecs, every picture lent and four held.
+#[test]
+#[ignore = "requires the open-stack driver"]
+fn every_fixture_lent_and_held_is_never_written() {
+    let mut spares = 0;
+    for (clip, sums) in common::fixtures("h264") {
+        spares = spares.max(check_lent(&clip, &sums, Codec::H264, false));
+    }
+    for (clip, sums) in common::fixtures("hevc") {
+        if clip.contains("444") {
+            continue;
+        }
+        let ten_bit = clip.contains("main10");
+        spares = spares.max(check_lent(&clip, &sums, Codec::H265, ten_bit));
+    }
+    for (clip, sums, codec, ten_bit) in [
+        (
+            "synthetic-720p-h264.bin",
+            "synthetic-720p-h264.sums",
+            Codec::H264,
+            false,
+        ),
+        (
+            "synthetic-720p-hevc.bin",
+            "synthetic-720p-hevc.sums",
+            Codec::H265,
+            false,
+        ),
+        (
+            "synthetic-720p-hevc10.bin",
+            "synthetic-720p-hevc10.sums",
+            Codec::H265,
+            true,
+        ),
+    ] {
+        spares = spares.max(check_lent(clip, sums, codec, ten_bit));
+    }
+    println!("most spares any clip took: {spares}");
+}
+
 /// **Full chroma is decoded where the driver hands out a layout the
 /// backend reads, and refused everywhere else -- never decoded wrongly.**
 /// Where the capability says so, every full-chroma clip comes back bit for

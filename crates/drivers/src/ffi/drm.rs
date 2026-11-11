@@ -35,3 +35,10 @@ pub const DRM_FORMAT_AYUV: u32 = 0x5655_5941;
 /// The packed ten-bit full-chroma layout the driver reads Y410 as:
 /// X, red difference, luma, blue difference at 2:10:10:10.
 pub const DRM_FORMAT_XVYU2101010: u32 = 0x3033_5658;
+/// The single-plane layers a two-plane surface exports as, a layer a plane:
+/// the luma as one eight-bit channel and the chroma as two, or sixteen bits
+/// each with ten in the high bits.
+pub const DRM_FORMAT_R8: u32 = 0x2020_3852;
+pub const DRM_FORMAT_GR88: u32 = 0x3838_5247;
+pub const DRM_FORMAT_R16: u32 = 0x2036_3152;
+pub const DRM_FORMAT_GR1616: u32 = 0x3233_5247;

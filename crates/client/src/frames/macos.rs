@@ -130,6 +130,12 @@ impl DeviceSlots {
 
     /// Nothing sleeps here but on the ring, which the close wakes itself.
     pub(super) fn wake(&self) {}
+
+    /// No decoder here lends a surface by lease: a lent buffer goes when its
+    /// slot takes another.
+    pub(super) fn end_lease(&self, _index: usize) -> Option<lowlat_decode::Lease> {
+        None
+    }
 }
 
 impl Filling<'_> {
