@@ -201,9 +201,50 @@ most runs where the sleeping wait held 1.6-1.8 ms in all. The context's own flag
 they are: the application shares that context, and a context-wide sleep slows the planes
 route's read-back, which the driver stages through its own buffer in chunks and waits on
 each. The descriptor is the kind NVIDIA's GL and Vulkan import as external memory; the
-second kind, a buffer descriptor with its layout modifier, is the open stack's, which can
-export the decoded surface itself with no copy at all but must then hold that surface out
-of the decoder's pool for the lease, which is the fence's job; it comes later.
+second kind is the open stack's, below.
+
+**The second kind is the open stack's own surface, lent** (*built 2026-11-10*, C12). That
+backend's decoded surface is exportable as it stands -- a kernel buffer descriptor, one buffer
+holding the luma at its start and the chroma after it, each plane in the layout a modifier
+names -- so nothing is copied at all: the export costs a microsecond, and the decode is waited
+for before the picture is published, as the read-back waited for it. What it costs instead is
+that **the decoder must not write the surface while it is lent**, and its picture buffer gives
+a surface back the moment the picture has left and nothing references it. So a lent surface
+is held by the queue slot its picture is published in, through a duplicate of its descriptor,
+from the publish until the ring lends that slot to the producer again -- the macOS lent
+buffer's rule, never while the application holds the picture -- and the slot tells the
+decoder when it lets go. Meanwhile, when the picture buffer reuses the slot of a lent surface,
+the backend gives that slot a **spare surface** in its place, made the first time one is
+needed and kept with the context: a queue slot holds at most one lent surface, so four spares
+cover the most that can be lent at once, a session of planes makes none, and a switch to
+handles mid-session works from the next picture. The picture buffers never see the
+substitution. Every committed half-chroma clip decodes bit for bit on both drivers here with
+every picture lent and four held, each held surface reading the same when let go as when lent
+(never written meanwhile), at most three spares made, one or two from a live stream; nothing
+is allocated per picture on this side. A surface keeps its export, and its number, for its
+context's life, so an application imports each surface once -- 22 of them at most, the
+context's 18 and the spares, a committed clip cycling through five to nine with four held, so
+an application keeping its imports by number keeps 22 (the demo's toolkit keeps 24; with
+fewer than a stream cycles through, its oldest-first eviction imports every picture again); a
+rebuilt or replaced decoder's leases free nothing of the next one's, and a buffer it lent stays alive through the slot's
+duplicate until the slot lets go. **Live against an established host** (H.264 at 120 pictures
+a second, the integrated AMD part decoding, the demo's Vulkan renderer importing on the NVIDIA
+GPU, ten minutes each way, the seconds compared where the stream ran at its full rate and the
+presents did not wait a refresh): from a message's arrival to its picture's acquire 2.29 ms at
+the median and 2.51 at the 99th percentile by the lent surface, against 4.11 and 4.63 by planes,
+whose read-back was 1.98 ms; to the present 3.03 and 4.03 against 4.70 and 5.25.
+
+**The layout is one the decoder's own GPU always reads and another vendor's may not.** On the
+development machine the integrated AMD part exports its surfaces linear and the discrete Intel
+part 4-tiled; each plane imported as an image of its own with the explicit layout -- the
+renderer's own way, measured -- reads back bit for bit on every GPU that offers the modifier:
+the linear buffer on all three vendors' Vulkan drivers, the tiled one on Intel's alone, the
+other two refusing it at the format query. **An import of a plane is told the whole buffer**,
+which the frame carries: one driver reads a plane past the buffer's start only through an
+import of the whole of it, and lost its device on a chroma plane whose import was told the
+plane's own size. The frame names the render node the surface is on, so a renderer that
+cannot import the layout where it draws can move to that GPU, or ask for planes; nothing in
+the library copies into a linear layout for it, which would be the copy this kind removes.
 
 **Device slots are sized at the stream's size, never at the ceiling.** Device memory is
 real where the host-memory slots' reserve is virtual: full chroma at sixteen bits is 200 MB a
@@ -609,15 +650,18 @@ with the stage named rather than asking the host for keyframes it would fail on 
 
 | backend | reached through | hands out |
 |---|---|---|
-| VA-API | the driver's own interface, loaded at runtime | planes by read-back, full chroma included where the driver decodes into a layout the library reads (*2026-09-22*, C9); the surface's own buffer descriptor, later |
+| VA-API | the driver's own interface, loaded at runtime | planes by read-back, full chroma included where the driver decodes into a layout the library reads (*2026-09-22*, C9); its own surface, lent as a buffer descriptor where the display exports one, at half chroma (*built 2026-11-10*, C12, §4) |
 | NVDEC | the vendor's decode interface, loaded at runtime | planes by a device-to-host copy; an exportable slot filled by a device copy (§4) |
 | software | the machine's own libavcodec, loaded at runtime and only when it is an LGPL build (*built 2026-09-21*, C8) | planes, converted from the decoder's own layout during the copy |
 
 The choice is the application's, by kind and render node, as the listing reports them;
 unset, the first render node the open stack decodes on, then the vendor interface on any of
 its devices, then software, so on a machine with both hardware interfaces the vendor
-backend is chosen by naming it -- or by asking for handles, which only the vendor backend
-exports -- and a machine with any hardware decoder never reaches software. With a render
+backend is chosen by naming it -- or by asking for handles, which settles on the vendor's
+first, then on the first node whose open stack lends its surfaces (*amended 2026-11-10*:
+only the vendor backend exported until C12; the vendor's stays first, since its renderer
+imports its descriptor where another vendor's tiling may be refused) -- and a machine with
+any hardware decoder never reaches software. With a render
 node named, the automatic order tries the open stack on that node, then the vendor's
 interface on the card behind it, then software (*corrected 2026-09-21: it stopped after the
 open stack, and the handle kind with a node named took any vendor device*). The device is

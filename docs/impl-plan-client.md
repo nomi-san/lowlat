@@ -1363,6 +1363,85 @@ host's machine carries UDP's rate at its round trip, at about ten times the reco
 the public service's costs its rate, its round trip's tail and two thousand timeout resends.
 Every segment the client sent to the relay carried the audio-video marking on the wire.
 
+## Phase C12 - The open stack's own surface by handle, and the toolkit's Vulkan import (planned and built 2026-11-10)
+
+**Planned and built 2026-11-10.** On Linux only the vendor's decoder handed pictures out by
+handle; the open stack read every picture back, a millisecond or more a picture on the parts
+measured here, while its decoded surface is exportable as it stands. This phase lends that
+surface itself -- the second handle kind [10 §4](10-client.md) reserved -- and gives the demo's
+toolkit a Vulkan renderer that imports both kinds, as an application's renderer would. The rules
+are [10 §4 and §5.1](10-client.md), the interface [06 §3b and §11](06-api.md).
+
+**The import was measured before anything was built**: surfaces made as the backend makes them,
+exported, each plane imported as an image with the export's layout on every Vulkan device here,
+copied out and compared -- bit for bit wherever the device offers the layout (the integrated
+AMD part's linear buffers on all three vendors' drivers, the discrete Intel part's tiled ones on
+Intel's alone), refused at the format query elsewhere. One driver lost its device reading a plane
+past the buffer's start through an import told only the plane's size, and read it bit for bit
+told the whole buffer, which is why the frame carries the whole buffer's size for every plane.
+
+- [x] **The export** (`lowlat-drivers`): the runtime's export entry point resolved where the
+  runtime has it; a surface exported as one buffer holding two single-plane layers, the luma at
+  its start, its descriptor owned; any other layout refused, every descriptor it came with closed.
+  *C12.1.*
+- [x] **The lent surface** (`lowlat-decode`): a picture taken by lending rather than read back,
+  its decode waited for, its surface's export made once and kept with the context under a number
+  the holder gives it; a slot of the picture buffer reused while its surface is lent decodes into
+  a spare instead, made the first time one is needed, at most four; a lease names its context, so
+  one ended after a rebuild frees nothing. Both drivers decode into a surface made after the
+  context, checked before the spares were built on it. *C12.2.*
+- [x] **The queue holds a lent surface** (`lowlat-client`): a slot holds a duplicate of the
+  surface's descriptor from the picture's publish until the ring lends the slot to the producer
+  again, and hands the lease back then, whatever is taken into it; one counter numbers device
+  slots and lent surfaces alike. The open stack accepted with handles where its display exports,
+  its listing row saying so; handles with no decoder named take the vendor's first, then the
+  first node that lends. *C12.3.*
+- [x] **The buffer kind through the boundary** (`lowlat-sdk`, minor 38): `LOWLAT_HANDLE_DMABUF`
+  with `fd`, `handle_size` the whole buffer, `modifier`, each plane's offset and pitch, and
+  `adapter` the render node's device number. *C12.4.*
+- [x] **The toolkit's Vulkan renderer imports both kinds**, and the demo draws handles through
+  it: an opaque descriptor as a buffer, a buffer a plane at a time as an image in its layout,
+  each import told the whole buffer, acquired from the foreign queue family; the context on the
+  GPU the demo names, moved to the GPU a picture names where it cannot import that picture, and
+  planes asked for where it cannot anywhere. GL refuses the buffer kind. *C12.5.*
+- [x] Documentation as built: 06 §3b and §11, 10 §4 and §5.1, the toolkit's provenance, the
+  demo's README, the changelog.
+
+**Gate:**
+
+1. [x] Every committed half-chroma clip on both open-stack drivers here, every picture lent and
+   four held: each held surface reads the same when let go as when lent, and every picture is
+   the reference decoder's, bit for bit; never more than four spares. Shown failing with the
+   spares taken out: a held surface written.
+2. [x] Nothing allocated per picture on this side, by planes and by lending, on both drivers;
+   shown failing with one allocation put in.
+3. [x] The toolkit draws both kinds through Vulkan to the colours the surface holds: the AMD
+   part's buffer and a vendor allocation, at eight and ten bits, read back from the window and
+   compared with the renderer's own conversion; the Intel part's tiled buffer refused by a device
+   that does not take its layout. Shown failing with a plane's offset moved.
+4. [x] **Live**, the demo against an established host by handle through Vulkan, ten minutes
+   each: the AMD part's buffer drawn on the NVIDIA GPU, the vendor's descriptor on the NVIDIA
+   GPU, against each one's planes; the hand-over per picture. The Intel part's tiled buffer has
+   no renderer on this machine: Mesa's Vulkan presents nothing in its desktop session, whose
+   compositor runs on the NVIDIA GPU, so the demo asks for planes there, as it did live.
+
+**The live gate, run 2026-11-10** against an established host (H.264; its rate moved with its
+screen, so each picture is compared in the seconds the stream ran at 120 and the presents did
+not wait a refresh; milliseconds from a message's arrival, p50 / p99):
+
+| decoder, route | to acquire | to present | hand-over |
+|---|---|---|---|
+| AMD part, lent surface, imported on the NVIDIA GPU | 2.29 / 2.51 | 3.03 / 4.03 | 0 us |
+| AMD part, planes | 4.11 / 4.63 | 4.70 / 5.25 | 1.98 ms |
+| vendor's decoder, descriptor through Vulkan | 0.78 / 0.86 | 1.07 / 1.21 | 17 us |
+| vendor's decoder, planes | 1.06 / 1.18 | 1.67 / 1.82 | 0.32 ms |
+
+Every leg ran its ten minutes with no skip and its memory flat, but the last: the vendor's decoder
+by planes stopped decoding after 40 s, its decode thread waiting on the decoder's own completion
+forever. That is not this phase's: the tree before it stops the same way through GL by handle,
+and the same decoder by handle through Vulkan ran its ten minutes clean.
+5. [x] The Linux bar.
+
 ## Later, and not in v1
 
 - **A Windows client**: the completion-port receive path in the shell ([02 §6](02-io-shell.md)),
@@ -1420,6 +1499,11 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-11-10: C12 planned and built: the open stack's own surface lent by handle (minor 38), a
+  slot map and up to four spares keeping a lent surface from being decoded into, the queue
+  holding the surface until its slot is filled again; the toolkit's Vulkan renderer imports the
+  vendor's descriptor and the open stack's buffer. The import measured on three GPUs before the
+  build; the live leg waits on the host.
 - 2026-10-17: C11 built: the stream to the relay in the core, the shell, the simulator, the
   client and the SDK (minor 29) and the demo, and its live gate run through two relays; the
   namespace fixture waits for a Linux machine.

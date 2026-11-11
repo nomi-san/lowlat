@@ -782,9 +782,10 @@ fence the application's device signals when it has finished reading, which is wh
 decoder write into shared memory without waiting on the application's CPU; a null fence
 means reusable now, and **it is the only fence**: a picture of the planes kind was copied --
 or on macOS lies in the hardware decoder's own buffer, which nothing writes while it is held -- and one
-of the handle kind was copied or finished on the device before the acquire returned
-(§4 of [10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other
-kind is refused. The rule 5 of §1 holds: no callback fires from inside the library.
+of the handle kind was copied or finished on the device before the acquire returned, or is the
+open decoder's own surface on Linux, which is not written again until it is released (§4 of
+[10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other kind is
+refused. The rule 5 of §1 holds: no callback fires from inside the library.
 
 **`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
 pitches and a format (`LOWLAT_FORMAT_NV12`, `LOWLAT_FORMAT_P010`) into memory valid for the
@@ -1769,6 +1770,21 @@ a caller built against minor 36 would have been taken, its quality ignored where
 and its padding read as one. With the second word, such a caller is refused at
 `lowlat_host_start` and at both video calls, as a shorter structure is: an application sets the
 two where they now are and builds again.
+
+**Minor 38** (2026-11-10) lends the open decoder's own surface on Linux ([10 §4](10-client.md)):
+`LOWLAT_HANDLE_DMABUF`, reserved since minor 8, is filled -- `fd` a kernel buffer descriptor,
+`handle_size` the whole buffer, which is what an import of any plane is told, `modifier` its
+layout, `planes[0]` and `planes[1]` each plane's offset and pitch, the luma at the start; the
+planes are `R8` and `GR88`, or `R16` and `GR1616` with ten bits in the high bits, by
+`LOWLAT_FORMAT_NV12` and `LOWLAT_FORMAT_P010`, and full chroma is never lent. `adapter` carries the
+render node the surface is on for this kind, its device number with the major in the high half,
+as `VK_EXT_physical_device_drm` reports a Vulkan device's. The open decoder is accepted with
+`LOWLAT_FRAME_HANDLE` at creation and at `lowlat_client_set_frame_kind` where its display exports
+a surface, its listing row saying so; asked for by handle, `LOWLAT_DECODER_AUTO` settles on the
+vendor's decoder first and then on the first render node whose open decoder lends. **An
+application that asks for handles on an open decoder's row gets frames of this kind from this
+minor on, where it got planes before**: a renderer that imports only the vendor's descriptor asks
+for planes when the kind is not its own.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

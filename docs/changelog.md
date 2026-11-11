@@ -3,6 +3,79 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-10 - The demo's window opens on the primary monitor
+
+### Fixed
+- **On Linux the demo's window opens centred on the primary monitor**, or the first where none is
+  primary: the toolkit centred it on the whole screen, so with two monitors side by side it opened
+  straddling both. Where the screen's monitors cannot be asked it centres on the screen as before.
+
+### Checked
+- Two monitors side by side, 2560x1440 primary at the left and 1920x1080 at its right: the
+  1280x720 default frame at 640,360, where it was at 1600,360.
+
+## 2026-11-10 - The open decoder lends its own surface by handle; the demo's Vulkan imports both kinds
+
+### Added
+- **The open decoder hands its decoded surface out by handle on Linux** ([10 §4](10-client.md),
+  [06 §11](06-api.md), minor 38): a kernel buffer descriptor with its layout modifier, the whole
+  buffer's size and each plane's offset and pitch, and the render node it is on -- nothing copied,
+  where the read-back cost a millisecond or more a picture. The surface is held by the queue slot
+  its picture is published in until that slot is filled again, and never decoded into meanwhile:
+  a picture-buffer slot reused while its surface is lent decodes into a spare, at most four made,
+  none for a session of planes. Half chroma; full chroma is still read back.
+- **The demo's toolkit draws handles through Vulkan** (`LOWLAT_GFX=vk`): the vendor decoder's
+  descriptor as a buffer and the open decoder's buffer a plane at a time as an image, each
+  import told the whole buffer; it starts on the GPU `LOWLAT_GFX_DEVICE` names, moves to the GPU a
+  picture names where it cannot import that picture, and asks for planes where it cannot anywhere.
+  It keeps 24 imports: one decoder lends 22 surfaces at most and a committed clip cycles through
+  five to nine with four held; with the eight its other renderers keep, a stream of nine would
+  import every picture again.
+
+### Changed
+- **Asking for handles with no decoder named takes the vendor's decoder first, then the first
+  render node whose open decoder lends** ([10 §5.1](10-client.md)); it took the vendor's or
+  nothing. The open decoder's listing rows say whether they hand out a handle.
+- **An application that asks for handles on an open decoder's row gets the buffer kind** from
+  this minor on, where it got planes before.
+
+### Checked
+- Before the build, on the three GPUs here: the integrated AMD part's linear buffers imported
+  into Vulkan a plane at a time bit for bit on all three vendors' drivers, the discrete Intel
+  part's tiled ones on Intel's alone, refused at the format query by the other two; one driver
+  lost its device on a chroma plane whose import was told the plane's own size, and read it bit
+  for bit told the whole buffer. Both decoders decode every committed clip bit for bit into
+  surfaces made after their context.
+- Every committed half-chroma clip on both decoders with every picture lent and four held:
+  bit for bit, no held surface written, at most three spares made; with the spares taken out the
+  check fails on a held surface written. Nothing allocated per picture by either route; shown
+  failing with one allocation put in. The queue's slot holds its lent surface's descriptor open
+  while the application holds the picture and hands the lease back once, at its next filling.
+- The toolkit's Vulkan renderer on the NVIDIA GPU draws the AMD part's buffer and a vendor
+  allocation, at eight and ten bits, to the colours its own conversion makes of them, read back
+  from the window (each quadrant within half a level); it refuses the Intel part's tiled buffer
+  at the check. With a plane's offset moved, the check fails.
+- The Linux bar: ASCII, formatting, the dependency policy, the workspace's lints and tests, the
+  header regenerated.
+
+- Live against an established host, ten minutes each way, H.264 at up to 120 pictures a second
+  ([impl-plan-client C12](impl-plan-client.md)): the AMD part's lent surface imported through the
+  demo's Vulkan on the NVIDIA GPU reached its acquire in 2.29 ms at the median and 2.51 at the 99th
+  percentile, against 4.11 and 4.63 by planes, whose read-back was 1.98 ms; to the present 3.03 and
+  4.03 against 4.70 and 5.25. The vendor's descriptor through Vulkan, new with this change: 0.78
+  and 0.86 to acquire, 1.07 and 1.21 to present. No skip, memory flat; the Intel part's buffer
+  followed to its GPU, found no context there, and the demo asked for planes, as designed.
+
+### Known
+- **The vendor's decoder stops after seconds to a minute, by planes and by handle, through GL and
+  Vulkan alike, on this machine's driver**: its decode thread waits forever on the decoder's own
+  completion in the mode that decodes into surfaces of its own, and the stream freezes. The tree
+  before this change does it too; one ten-minute leg by handle through Vulkan ran clean.
+
+### Not run
+- The Intel part's buffer drawn anywhere: Mesa's Vulkan drivers present nothing in this machine's
+  desktop session, whose compositor runs on the NVIDIA GPU, so the demo asks for planes there.
+
 ## 2026-11-09 - Intel's older video runtime is no longer opened
 
 ### Fixed
