@@ -680,6 +680,30 @@ without any of the three refuses with the stage named, exactly as a host without
 does. Nothing this library loads writes to the application's standard error: the open
 stack's own messages go to the library's log, per display.
 
+**A decode of the vendor's that never finishes is given up, and the decoder built again in a
+fresh context** (*built 2026-11-11*). On this machine's driver (615.71, an RTX 5060) a picture's
+decode stopped finishing in a client drawing a live stream at 120 pictures a second, after
+anywhere from a thousand to 170,000 pictures, in both of the decoder's modes: its status for the
+picture in progress and staying so, its engine idle, nothing failing, nothing in the kernel's
+log. Nothing else in that context finished from then on -- a new decoder in it decoded nothing
+-- while a decoder in another context of the same process, or another process, decoded on;
+offline the same streams, the one that hung included, never stopped in 252,000 pictures. And
+while one context is stuck, **destroying any context in the process never returns**, releasing
+the primary context's last reference included, though memory, decoders and new contexts are made
+and freed as ever. So: each wait on the device is woken by a function the runtime calls behind
+the picture's work, with a bound of 500 ms; past it the take fails as a lost device, and nothing
+of that decoder is waited on or destroyed again -- it is leaked. The decoder runs in a context
+kept for its device, never destroyed; a wedged one is retired, never destroyed either, and the
+decoder is built again in a fresh one with a keyframe asked: live, the picture held for 725 ms,
+then the stream went on at 120 a second. Two wedges in a row with no picture between end the
+stream as a lost device does, and past four retired contexts in the process, each keeping about
+220 MiB at 2560x1440 (114 of it the context's own), no more are made and the vendor's decoder
+fails to open. The primary context, which the probes and the listing retain and release, is held
+once for the process's life. Before this the decode thread waited forever: the stream froze,
+ending the connection never returned, since it joins that thread, and a new attempt on the
+handle was refused as one still hosting. The mapped mode, taken for full chroma and by drivers
+without the newer entry points, still waits in the decoder's own map, with no bound.
+
 **Software decode is the machine's own libavcodec, and only an LGPL one** (*decided
 2026-09-21*, [impl-plan-client.md](impl-plan-client.md) C8). Nothing is shipped or built:
 the pair (`libavutil`, `libavcodec`) is looked for in the environment (`LOWLAT_FFMPEG_DIR`,
@@ -934,7 +958,9 @@ decoded into one 128 rows tall with its chroma misplaced, without an error. Full
 maps, since the backend's own surfaces would hold its two chroma planes interleaved, which no
 copy splits. Every committed clip decodes bit for bit either way, on Windows and on Linux, and
 through the textures read back on a second device. It hands out planes and handles alike: how
-it decodes follows the driver, never the kind.
+it decodes follows the driver, never the kind. (*Amended 2026-11-11*: a wait on the device in
+the first mode has a bound, and a decoder whose picture never finished is given up, §5.1; on
+Windows its device is reported lost, the context it ran in the primary one.)
 
 **On an NVIDIA GPU it comes first.** Against the system's interface on the same GPU, in one
 session per codec and kind with the decoders alternating every twenty seconds, 2560x1440 at 30

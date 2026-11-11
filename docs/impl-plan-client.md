@@ -1439,7 +1439,8 @@ not wait a refresh; milliseconds from a message's arrival, p50 / p99):
 Every leg ran its ten minutes with no skip and its memory flat, but the last: the vendor's decoder
 by planes stopped decoding after 40 s, its decode thread waiting on the decoder's own completion
 forever. That is not this phase's: the tree before it stops the same way through GL by handle,
-and the same decoder by handle through Vulkan ran its ten minutes clean.
+and the same decoder by handle through Vulkan ran its ten minutes clean. (*Fixed 2026-11-11*: a
+wait has a bound and a wedged decoder is built again in a fresh context, [10 §5.1](10-client.md).)
 5. [x] The Linux bar.
 
 ## Later, and not in v1

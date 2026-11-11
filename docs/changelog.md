@@ -3,6 +3,44 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-11 - The vendor's decoder on Linux comes back from a decode that never finishes
+
+### Fixed
+- **A stream on the vendor's decoder no longer freezes for good on Linux** ([10 §5.1](10-client.md)):
+  a picture whose decode never finished -- the decoder's status for it in progress forever, its
+  engine idle, nothing failing, seen on driver 615.71 after a thousand to 170,000 pictures in
+  either of the decoder's modes -- left the decode thread waiting forever. Each wait now has a
+  bound of 500 ms; past it the decoder is given up and built again in a fresh context, a
+  keyframe asked: the picture holds for about three quarters of a second and the stream goes
+  on. This closes the 2026-11-10 entry's Known item.
+- **Ending such a connection returns, and a new attempt on the handle begins**: the end joined the
+  decode thread that waited forever, and a new attempt was refused as one still hosting.
+
+### Changed
+- On Linux the vendor's decoder runs in a context kept for its device, never destroyed, and the
+  primary context is held once for the process's life. A wedged context is retired and kept,
+  about 220 MiB at 2560x1440 each; past four in a process the vendor's decoder fails to open.
+
+### Checked
+- A stream held on purpose at a word nothing writes, by planes and to a device allocation: the
+  take fails as a lost device after 500 ms, the teardown takes microseconds, the allocation the
+  stuck copy was to write is freed in 75 us, and the clip then decodes bit for bit in a fresh
+  context. With the old wait the test never ends.
+- While one context is stuck, destroying any other context never returns, the primary context's
+  last reference included, while memory, decoders and new contexts are made and freed as ever:
+  measured, and why no context is destroyed.
+- The bounded wait against the old, per picture at 2560x1440 and 120 a second, two rounds a
+  route: the median within 16 us, the 95th percentile the same or lower.
+- Live against an established host by handle through GL, 120 pictures a second: a decode that
+  never finished at 124 s was given up after 500 ms and the decoder built again in a fresh
+  context 212 ms later, at the keyframe; the picture held for 725 ms, then 120 a second again.
+
+### Known
+- The mapped mode, taken for full chroma and by drivers without the newer entry points, still
+  waits in the decoder's own map with no bound.
+- On Windows the decoder runs in the primary context, and a wedge there is reported as a lost
+  device to the platform's own path; none has been seen there.
+
 ## 2026-11-10 - The demo's window opens on the primary monitor
 
 ### Fixed
