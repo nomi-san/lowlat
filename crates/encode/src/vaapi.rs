@@ -240,6 +240,19 @@ impl<'a> Display<'a> {
         self._bound.version()
     }
 
+    /// Whether this driver's encoders read a picture natively in Intel's
+    /// Y-tiled layout.
+    ///
+    /// **Intel's media driver, and only it.** Its encoders take a two-plane
+    /// picture in that layout as it is, and any other through a copy pass
+    /// that some builds of the driver leave out; without it an untiled picture
+    /// is read as though it were tiled and coded as noise, and nothing refuses
+    /// it. Named by the driver's own description of itself, because no
+    /// attribute says which layout an encoder reads.
+    pub fn wants_y_tiled(&self) -> bool {
+        self._bound.vendor().starts_with("Intel iHD driver")
+    }
+
     /// The raw handle, for the calls that take one.
     pub fn raw(&self) -> VADisplay {
         self.raw
@@ -1822,19 +1835,14 @@ impl Display<'_> {
         use lowlat_capture::convert::Layout;
         use std::os::fd::AsRawFd;
 
-        // **The descriptor names the layout, and the layout names the size.**
-        // The subsampled frame is luma plus half as much colour; the packed
-        // full-chroma frame is one word per pixel; the planar full-chroma one
-        // has no shape this interface takes and is refused rather than
-        // silently copied.
-        let (bytes, fourcc, drm_format, num_planes) = match frame.kind {
+        // **The descriptor names the layout, and the exporter names the
+        // size.** The subsampled frame is luma plus colour and the packed
+        // full-chroma frame one word per pixel, each spanning what its tiling
+        // laid out; the planar full-chroma one has no shape this interface
+        // takes and is refused rather than silently copied.
+        let bytes = u32::try_from(frame.size).map_err(|_| Error::UnsupportedLayout)?;
+        let (fourcc, drm_format, num_planes) = match frame.kind {
             Layout::SemiPlanar420 => {
-                let bytes = u64::from(frame.pitch)
-                    .checked_mul(u64::from(frame.height))
-                    .and_then(|luma| luma.checked_mul(3))
-                    .map(|both| both / 2)
-                    .and_then(|size| u32::try_from(size).ok())
-                    .ok_or(Error::UnsupportedLayout)?;
                 // **The depth is named, never inferred.** A ten-bit frame and
                 // an eight-bit one twice as wide describe identically here --
                 // same pitch, same plane split -- so a driver handed the wrong
@@ -1847,13 +1855,9 @@ impl Display<'_> {
                 } else {
                     (VA_FOURCC_NV12, crate::ffi::drm::DRM_FORMAT_NV12)
                 };
-                (bytes, fourcc, drm_format, 2)
+                (fourcc, drm_format, 2)
             }
             Layout::Packed444 => {
-                let bytes = u64::from(frame.pitch)
-                    .checked_mul(u64::from(frame.height))
-                    .and_then(|size| u32::try_from(size).ok())
-                    .ok_or(Error::UnsupportedLayout)?;
                 let (fourcc, drm_format) = if frame.depth.ten_bit() {
                     (
                         crate::ffi::va::VA_FOURCC_Y410,
@@ -1865,7 +1869,7 @@ impl Display<'_> {
                         crate::ffi::drm::DRM_FORMAT_AYUV,
                     )
                 };
-                (bytes, fourcc, drm_format, 1)
+                (fourcc, drm_format, 1)
             }
             Layout::Planar444 => return Err(Error::UnsupportedLayout),
         };

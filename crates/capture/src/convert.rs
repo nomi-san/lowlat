@@ -21,6 +21,31 @@ use crate::vulkan::{Device, Error, Imported, PlaneLayout, driver};
 /// The untiled arrangement, as the display interface numbers it.
 const LINEAR: u64 = 0;
 
+/// Intel's Y-major tiling, as the display interface numbers it.
+///
+/// **What Intel's media driver encodes from without a copy.** Its encoders
+/// read a two-plane picture in this layout natively and take any other
+/// through a copy pass that only some builds of the driver carry; a build
+/// without it reads an untiled picture as though it were tiled and codes
+/// noise, with no error anywhere.
+pub const Y_TILED: u64 = (1 << 56) | 2;
+
+/// What a subsampled target's planes are for: written by the conversion and
+/// copied out by the checks that read a picture back.
+const PLANE_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
+    vk::ImageUsageFlags::STORAGE.as_raw() | vk::ImageUsageFlags::TRANSFER_SRC.as_raw(),
+);
+
+/// The interface's tiling kind for a modifier: untiled is its own kind, and
+/// every other layout is named by its modifier alongside.
+fn tiling_of(modifier: u64) -> vk::ImageTiling {
+    if modifier == LINEAR {
+        vk::ImageTiling::LINEAR
+    } else {
+        vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT
+    }
+}
+
 /// Both ways a frame can be handed on, in the order they are asked about.
 ///
 /// **Wanted together so the choice of encoder is not made here**: one takes a
@@ -236,6 +261,11 @@ pub struct Exported {
     /// have the same pitch and the same plane split, and describing one as the
     /// other is accepted by the driver and decodes to noise.
     pub depth: Depth,
+    /// How many bytes of the allocation the planes span. **Stated by the side
+    /// that laid them out**: a tiled plane ends at a whole row of tiles, past
+    /// its last row of pixels, and an importer that worked the size out from
+    /// the picture would describe a shorter buffer than the encoder reads.
+    pub size: u64,
 }
 
 impl Exported {
@@ -258,6 +288,7 @@ impl Exported {
             depth,
             modifier: LINEAR,
             pitch,
+            size: u64::from(pitch) * u64::from(height) * 3 / 2,
             kind: Layout::SemiPlanar420,
             planes: [
                 PlaneLayout { offset: 0, pitch },
@@ -284,8 +315,8 @@ impl Exported {
 /// it put the colour plane 49152 bytes further on than that, which an encoder
 /// reading the computed position cannot see and cannot survive. Two images
 /// bound into one allocation at offsets of our choosing put it exactly where it
-/// is expected, and cost nothing: both are untiled, their row lengths come out
-/// equal, and the whole thing still leaves as one descriptor.
+/// is expected, and cost nothing: both share one tiling, their row lengths come
+/// out equal, and the whole thing still leaves as one descriptor.
 pub struct Nv12 {
     luma_image: vk::Image,
     chroma_image: vk::Image,
@@ -298,6 +329,13 @@ pub struct Nv12 {
     pub pitch: u32,
     /// How many bits each sample carries.
     pub depth: Depth,
+    /// The tiling both planes are laid out in, as the display interface
+    /// numbers it.
+    pub modifier: u64,
+    /// Where the colour plane begins, in bytes from the start.
+    colour_at: u64,
+    /// How many bytes the allocation spans.
+    size: u64,
 }
 
 /// What a conversion writes into, named by handles rather than ownership.
@@ -919,6 +957,18 @@ impl Device {
 
     /// The same, at a chosen depth.
     pub fn allocate_planar(&self, width: u32, height: u32, depth: Depth) -> Result<Nv12, Error> {
+        self.allocate_planar_tiled(width, height, depth, LINEAR)
+    }
+
+    /// The same, in the tiling `modifier` names, which [`Device::tiles`] has
+    /// said this device makes.
+    pub fn allocate_planar_tiled(
+        &self,
+        width: u32,
+        height: u32,
+        depth: Depth,
+        modifier: u64,
+    ) -> Result<Nv12, Error> {
         // Both dimensions round up to even. A plane at half resolution has no
         // meaning for an odd one, and the shader's last block would write
         // outside the colour plane.
@@ -930,21 +980,25 @@ impl Device {
         // a device that answered differently for the two would leave one plane
         // of a picture unexportable, so the narrower answer is what both are
         // built with.
-        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
-        let handle_types = self.exportable(depth.luma(), usage, vk::ImageTiling::LINEAR)
-            & self.exportable(depth.chroma(), usage, vk::ImageTiling::LINEAR);
-        let luma_image = self.plane_image(width, height, depth.luma(), handle_types)?;
-        let chroma_image =
-            match self.plane_image(width / 2, height / 2, depth.chroma(), handle_types) {
-                Ok(image) => image,
-                Err(error) => {
-                    // SAFETY: created just above and nothing refers to it.
-                    unsafe { self.device.destroy_image(luma_image, None) };
-                    return Err(error);
-                }
-            };
+        let handle_types = self.exportable(depth.luma(), PLANE_USAGE, modifier)
+            & self.exportable(depth.chroma(), PLANE_USAGE, modifier);
+        let luma_image = self.plane_image(width, height, depth.luma(), handle_types, modifier)?;
+        let chroma_image = match self.plane_image(
+            width / 2,
+            height / 2,
+            depth.chroma(),
+            handle_types,
+            modifier,
+        ) {
+            Ok(image) => image,
+            Err(error) => {
+                // SAFETY: created just above and nothing refers to it.
+                unsafe { self.device.destroy_image(luma_image, None) };
+                return Err(error);
+            }
+        };
 
-        match self.bind_planes(luma_image, chroma_image, width, height, depth) {
+        match self.bind_planes(luma_image, chroma_image, width, height, depth, modifier) {
             Ok(nv12) => Ok(nv12),
             Err(error) => {
                 // SAFETY: both created above; binding is what failed.
@@ -957,15 +1011,62 @@ impl Device {
         }
     }
 
-    /// One plane, untiled and shareable.
+    /// Whether this device makes a subsampled target of `depth` in the tiling
+    /// `modifier` names: both plane formats written by the conversion and
+    /// copied out, one memory plane each, and the result exportable as a
+    /// display-interface descriptor.
     ///
-    /// **Untiled because every encoder here reads untiled** without being
-    /// taught anything, and writing into what the device prefers and copying
-    /// into what the encoder accepts would move a whole frame per frame. Both
-    /// handle kinds are asked for at once so the same frame can go to an
-    /// encoder that wants a display-interface descriptor or one that wants this
-    /// interface's own; a device that refused the pair would fail here rather
-    /// than at the handover.
+    /// **Asked of the device, never assumed from its vendor.** A part that
+    /// offers a tiling for one format and not the other, or offers it without
+    /// write support, would build half a picture in it.
+    pub fn tiles(&self, depth: Depth, modifier: u64) -> bool {
+        [depth.luma(), depth.chroma()].into_iter().all(|format| {
+            let offered = self.modifiers(format).into_iter().any(|offer| {
+                offer.drm_format_modifier == modifier
+                    && offer.drm_format_modifier_plane_count == 1
+                    && offer.drm_format_modifier_tiling_features.contains(
+                        vk::FormatFeatureFlags::STORAGE_IMAGE
+                            | vk::FormatFeatureFlags::TRANSFER_SRC,
+                    )
+            });
+            offered
+                && self
+                    .exportable(format, PLANE_USAGE, modifier)
+                    .contains(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+        })
+    }
+
+    /// Every tiling the device lists for a format, with what each supports.
+    fn modifiers(&self, format: vk::Format) -> Vec<vk::DrmFormatModifierPropertiesEXT> {
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
+        let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+        // SAFETY: the chain outlives the call; the first call only counts.
+        unsafe {
+            self.instance.get_physical_device_format_properties2(
+                self.physical,
+                format,
+                &mut properties,
+            );
+        }
+        let count = usize::try_from(list.drm_format_modifier_count).unwrap_or(0);
+        let mut offers = vec![vk::DrmFormatModifierPropertiesEXT::default(); count];
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
+            .drm_format_modifier_properties(&mut offers);
+        let mut properties = vk::FormatProperties2::default().push_next(&mut list);
+        // SAFETY: the list points at `count` writable entries that outlive the
+        // call, and the driver writes at most that many.
+        unsafe {
+            self.instance.get_physical_device_format_properties2(
+                self.physical,
+                format,
+                &mut properties,
+            );
+        }
+        let written = usize::try_from(list.drm_format_modifier_count).unwrap_or(0);
+        offers.truncate(written);
+        offers
+    }
+
     /// Which of the two handle kinds this device will really export a plane
     /// as, for the exact image the conversion allocates.
     ///
@@ -987,20 +1088,30 @@ impl Device {
         &self,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
-        tiling: vk::ImageTiling,
+        modifier: u64,
     ) -> vk::ExternalMemoryHandleTypeFlags {
         let mut offered = vk::ExternalMemoryHandleTypeFlags::empty();
         let mut compatible = vk::ExternalMemoryHandleTypeFlags::from_raw(u32::MAX);
         for wanted in WANTED {
             let mut external =
                 vk::PhysicalDeviceExternalImageFormatInfo::default().handle_type(wanted);
+            // A tiled image is asked about with its tiling named; the
+            // interface has no answer for the tiling kind alone.
+            let mut tiled = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
+                .drm_format_modifier(modifier)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
             let info = vk::PhysicalDeviceImageFormatInfo2::default()
                 .format(format)
                 .ty(vk::ImageType::TYPE_2D)
-                .tiling(tiling)
+                .tiling(tiling_of(modifier))
                 .usage(usage)
                 .flags(vk::ImageCreateFlags::empty())
                 .push_next(&mut external);
+            let info = if modifier == LINEAR {
+                info
+            } else {
+                info.push_next(&mut tiled)
+            };
             let mut properties = vk::ExternalImageFormatProperties::default();
             let mut out = vk::ImageFormatProperties2::default().push_next(&mut properties);
             // SAFETY: both chains outlive the call.
@@ -1037,8 +1148,8 @@ impl Device {
     /// The image query says how an image may be backed by foreign memory; this
     /// says how memory may leave. One driver here refuses the image query for
     /// a display-interface descriptor on an untiled image -- that kind wants a
-    /// modifier-tiled image, which this pipeline deliberately does not make --
-    /// while exporting the allocation as one perfectly well. Asking the image
+    /// modifier-tiled image, which this pipeline makes only for an encoder that
+    /// reads one -- while exporting the allocation as one perfectly well. Asking the image
     /// question about the memory is how a working export gets refused, and
     /// asking neither is how both end up declared and neither checked.
     ///
@@ -1075,14 +1186,29 @@ impl Device {
         offered
     }
 
+    /// One plane, shareable, untiled unless `modifier` names a tiling.
+    ///
+    /// **Untiled by default because most encoders read untiled** without being
+    /// taught anything, and writing into what the device prefers and copying
+    /// into what the encoder accepts would move a whole frame per frame. A
+    /// tiling is asked for only where the encoder's own layout is one this
+    /// device writes. Both handle kinds are asked for at once so the same frame
+    /// can go to an encoder that wants a display-interface descriptor or one
+    /// that wants this interface's own; a device that refused the pair would
+    /// fail here rather than at the handover.
     fn plane_image(
         &self,
         width: u32,
         height: u32,
         format: vk::Format,
         handle_types: vk::ExternalMemoryHandleTypeFlags,
+        modifier: u64,
     ) -> Result<vk::Image, Error> {
         let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_types);
+        // One tiling offered, so the one the driver picks is that one.
+        let only = [modifier];
+        let mut tiled =
+            vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(&only);
         let create = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(format)
@@ -1094,8 +1220,8 @@ impl Device {
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::LINEAR)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC)
+            .tiling(tiling_of(modifier))
+            .usage(PLANE_USAGE)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         // **Declared only where there is something to declare.** An empty
@@ -1106,6 +1232,11 @@ impl Device {
             create
         } else {
             create.push_next(&mut external)
+        };
+        let create = if modifier == LINEAR {
+            create
+        } else {
+            create.push_next(&mut tiled)
         };
         // SAFETY: every borrowed structure outlives the call.
         unsafe { self.device.create_image(&create, None) }.map_err(driver)
@@ -1119,14 +1250,21 @@ impl Device {
         width: u32,
         height: u32,
         depth: Depth,
+        modifier: u64,
     ) -> Result<Nv12, Error> {
+        // A tiled image is asked about by its memory plane, an untiled one by
+        // its colour; neither answers the other's question.
         let subresource = vk::ImageSubresource {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
+            aspect_mask: if modifier == LINEAR {
+                vk::ImageAspectFlags::COLOR
+            } else {
+                vk::ImageAspectFlags::MEMORY_PLANE_0_EXT
+            },
             mip_level: 0,
             array_layer: 0,
         };
-        // SAFETY: both images are this device's and untiled, which is what
-        // makes this query answerable.
+        // SAFETY: both images are this device's, and the aspect is the one
+        // their tiling is answered for.
         let (luma_layout, chroma_layout) = unsafe {
             (
                 self.device
@@ -1144,7 +1282,15 @@ impl Device {
             return Err(Error::PlanesDisagree);
         }
         let pitch = u32::try_from(luma_layout.row_pitch).map_err(|_| Error::PlanesDisagree)?;
-        let colour_at = luma_layout.row_pitch * u64::from(height);
+        // **A tiled luma plane is taller than the picture.** It ends at a whole
+        // row of tiles, which is where the encoder's own layout puts the
+        // colour, so the plane's size as the driver laid it out is the offset;
+        // an untiled one ends at its last row.
+        let colour_at = if modifier == LINEAR {
+            luma_layout.row_pitch * u64::from(height)
+        } else {
+            luma_layout.size
+        };
 
         // SAFETY: both images are this device's.
         let (luma_needs, chroma_needs) = unsafe {
@@ -1240,6 +1386,9 @@ impl Device {
                 width,
                 height,
                 pitch,
+                modifier,
+                colour_at,
+                size: colour_at + chroma_needs.size,
             }),
             Err(error) => {
                 // SAFETY: nothing is bound to it any more.
@@ -1263,9 +1412,9 @@ impl Device {
         // Every plane is full resolution, so the only rounding left is the
         // dispatch grid's own.
         let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
-        let handle_types = self.exportable(depth.luma(), usage, vk::ImageTiling::LINEAR);
-        let luma_image = self.plane_image(width, height, depth.luma(), handle_types)?;
-        let cb_image = match self.plane_image(width, height, depth.luma(), handle_types) {
+        let handle_types = self.exportable(depth.luma(), usage, LINEAR);
+        let luma_image = self.plane_image(width, height, depth.luma(), handle_types, LINEAR)?;
+        let cb_image = match self.plane_image(width, height, depth.luma(), handle_types, LINEAR) {
             Ok(image) => image,
             Err(error) => {
                 // SAFETY: created just above and nothing refers to it.
@@ -1273,7 +1422,7 @@ impl Device {
                 return Err(error);
             }
         };
-        let cr_image = match self.plane_image(width, height, depth.luma(), handle_types) {
+        let cr_image = match self.plane_image(width, height, depth.luma(), handle_types, LINEAR) {
             Ok(image) => image,
             Err(error) => {
                 // SAFETY: both created above and nothing refers to either.
@@ -1446,8 +1595,8 @@ impl Device {
         // packed colour layouts this stands in for cannot be written directly
         // on the parts seen here; the shader composes the word and nothing
         // reads it as colour on this side.
-        let handle_types = self.exportable(vk::Format::R32_UINT, usage, vk::ImageTiling::LINEAR);
-        let image = self.plane_image(width, height, vk::Format::R32_UINT, handle_types)?;
+        let handle_types = self.exportable(vk::Format::R32_UINT, usage, LINEAR);
+        let image = self.plane_image(width, height, vk::Format::R32_UINT, handle_types, LINEAR)?;
 
         match self.bind_packed(image, width, height, depth) {
             Ok(target) => Ok(target),
@@ -1591,10 +1740,16 @@ impl Device {
 
         // **Not queried back.** The layout is the one this allocation was built
         // to, so reporting anything else would mean the two had drifted.
-        Ok((
-            fd,
-            Exported::packed_at(nv12.width, nv12.height, nv12.pitch, nv12.depth),
-        ))
+        let mut exported = Exported::packed_at(nv12.width, nv12.height, nv12.pitch, nv12.depth);
+        if nv12.modifier != LINEAR {
+            // A tiled picture's colour starts past the luma plane's last row
+            // of tiles, and its planes span whole rows of them.
+            exported.modifier = nv12.modifier;
+            exported.planes[1].offset =
+                u32::try_from(nv12.colour_at).map_err(|_| Error::PlanesDisagree)?;
+            exported.size = nv12.size;
+        }
+        Ok((fd, exported))
     }
 
     /// Hand a full-chroma frame out as a descriptor an encoder can take.
@@ -1632,6 +1787,7 @@ impl Device {
                 height: frame.height,
                 modifier: LINEAR,
                 pitch: frame.pitch,
+                size: plane_bytes * 3,
                 kind: Layout::Planar444,
                 depth: frame.depth,
                 planes: [
@@ -1717,6 +1873,7 @@ impl Device {
                 height: frame.height,
                 modifier: LINEAR,
                 pitch: frame.pitch,
+                size: u64::from(frame.pitch) * u64::from(frame.height),
                 kind: Layout::Packed444,
                 depth: frame.depth,
                 planes: [
@@ -3162,5 +3319,125 @@ mod tests {
         );
 
         device.release_nv12(target);
+    }
+
+    /// **A tiled target holds what an untiled one does**, byte for byte once
+    /// read back, and its descriptor says where the colour starts and how far
+    /// the planes run.
+    ///
+    /// The conversion writes through views, so the tiling changes nothing a
+    /// reader of the planes sees. What it changes is the layout an encoder is
+    /// handed: the luma plane ends at a whole row of tiles, past the picture's
+    /// last row, and a descriptor that put the colour one picture-height in, or
+    /// called the allocation untiled, would be read as noise with no refusal
+    /// anywhere. 1080 rows is not a whole number of tile rows, which is what
+    /// makes the padding show. Every display device that writes the tiling is
+    /// asked, at both depths.
+    ///
+    ///   cargo test -p lowlat-capture --lib -- --ignored a_tiled_target
+    #[test]
+    #[ignore = "needs a graphics device that writes Intel's Y tiling"]
+    fn a_tiled_target_holds_what_an_untiled_one_does() {
+        let (width, height) = (1920u32, 1080u32);
+        // Detail in both directions and in every channel, so a plane read at
+        // the wrong place or the wrong row length cannot agree by accident.
+        let pixels: Vec<u8> = (0..height)
+            .flat_map(|y| {
+                (0..width).flat_map(move |x| {
+                    let (x, y) = (x as usize, y as usize);
+                    [
+                        (x * 7 + y).to_le_bytes()[0],
+                        (y * 5 + x / 3).to_le_bytes()[0],
+                        ((x ^ y) * 3).to_le_bytes()[0],
+                        255,
+                    ]
+                })
+            })
+            .collect();
+        let (mut asked, mut tiled_seen) = (0, 0);
+        for n in 0..8 {
+            let node = std::path::PathBuf::from(format!("/dev/dri/card{n}"));
+            let Ok(device) = Device::for_display(&node) else {
+                continue;
+            };
+            asked += 1;
+            for depth in [Depth::Eight, Depth::Ten] {
+                if !device.tiles(depth, Y_TILED) {
+                    println!(
+                        "{node:?} ({}): writes no {depth:?} target Y-tiled",
+                        device.name()
+                    );
+                    continue;
+                }
+                let mut converter = Converter::new(&device).expect("a pipeline");
+                let source = device
+                    .upload_rgba(width, height, &pixels)
+                    .expect("upload the pattern");
+                let untiled = device
+                    .allocate_planar(width, height, depth)
+                    .expect("an untiled target");
+                let tiled = device
+                    .allocate_planar_tiled(width, height, depth, Y_TILED)
+                    .expect("a tiled target");
+                for target in [&untiled, &tiled] {
+                    converter
+                        .run(&device, &source, &target.target(), false)
+                        .expect("convert");
+                }
+                assert!(
+                    device.read_nv12(&tiled).expect("read the tiled planes")
+                        == device.read_nv12(&untiled).expect("read the untiled planes"),
+                    "{node:?}: the tiled {depth:?} target holds a different picture"
+                );
+
+                let (fd, layout) = device.export_nv12(&tiled, true).expect("export the frame");
+                let bytes = std::fs::File::from(fd)
+                    .seek(std::io::SeekFrom::End(0))
+                    .expect("size of the exported descriptor");
+                println!(
+                    "{node:?} ({}) {depth:?}: modifier {:#x}, pitch {}, colour at {} \
+                     (one picture-height in is {}), {} bytes described of {bytes}",
+                    device.name(),
+                    layout.modifier,
+                    layout.pitch,
+                    layout.planes[1].offset,
+                    layout.pitch * height,
+                    layout.size
+                );
+                assert_eq!(
+                    layout.modifier, Y_TILED,
+                    "{node:?}: the tiling is not described"
+                );
+                assert_eq!(
+                    layout.planes[1].pitch, layout.pitch,
+                    "{node:?}: two row lengths"
+                );
+                assert!(
+                    layout.planes[1].offset > layout.pitch * height,
+                    "{node:?}: the colour starts inside the luma plane's last row of tiles"
+                );
+                assert!(
+                    layout.size
+                        >= u64::from(layout.planes[1].offset)
+                            + u64::from(layout.pitch) * u64::from(height / 2),
+                    "{node:?}: the planes run past what the descriptor describes"
+                );
+                assert!(
+                    bytes >= layout.size,
+                    "{node:?}: {} bytes described of a {bytes}-byte descriptor",
+                    layout.size
+                );
+                device.release(source);
+                device.release_nv12(untiled);
+                device.release_nv12(tiled);
+                converter.destroy(&device);
+                tiled_seen += 1;
+            }
+        }
+        println!("{tiled_seen} tiled target(s) compared on {asked} display device(s)");
+        assert!(
+            asked > 0,
+            "no display device answered, so nothing was tested"
+        );
     }
 }

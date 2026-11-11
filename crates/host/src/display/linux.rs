@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use lowlat_capture::convert::{Converter, Nv12};
+use lowlat_capture::convert::{Converter, Nv12, Y_TILED};
 use lowlat_capture::cursor::{Pointer, Watcher};
 use lowlat_capture::desktop::Placement;
 use lowlat_capture::scanout::{self, Card, CursorPlane};
@@ -818,6 +818,23 @@ impl Display {
     ) -> Result<Pipeline, Error> {
         let device = vulkan::Device::for_display(node)?;
         let converter = Converter::new(&device)?;
+        // **The open encoder's own layout, where this device writes it.**
+        // Intel's media driver reads anything untiled through a copy pass
+        // that some of its builds leave out, and then codes noise; written in
+        // its tiling the picture needs no copy in any build. Every other
+        // encoder, and a device that cannot write that tiling, keeps the
+        // untiled target.
+        let tiling = match register {
+            Register::Open(display)
+                if !chroma_444 && display.wants_y_tiled() && device.tiles(colour, Y_TILED) =>
+            {
+                lowlat_common::log_info!(
+                    "display: conversion targets Y-tiled for the open encoder, modifier={Y_TILED:#x}"
+                );
+                Some(Y_TILED)
+            }
+            _ => None,
+        };
         let mut targets = Vec::with_capacity(depth);
         for _ in 0..depth {
             // **At the depth the encoder was built for.** A target allocated
@@ -828,7 +845,15 @@ impl Display {
             // was allocated, just not with what is reading it.
             let slot = match (chroma_444, register) {
                 (false, _) => {
-                    let frame = device.allocate_planar(shape.width, shape.height, colour)?;
+                    let frame = match tiling {
+                        Some(modifier) => device.allocate_planar_tiled(
+                            shape.width,
+                            shape.height,
+                            colour,
+                            modifier,
+                        )?,
+                        None => device.allocate_planar(shape.width, shape.height, colour)?,
+                    };
                     let registration = match register {
                         // Each encoder is handed the descriptor kind it has a
                         // name for; the allocation is built able to produce
