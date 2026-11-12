@@ -775,6 +775,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // is worse than one that offers fewer candidates.
     let configured_stun = std::env::var("LOWLAT_STUN").unwrap_or_else(|_| DEFAULT_STUN.to_string());
     let mut stun: Vec<SocketAddr> = Vec::new();
+    // **Kept, and asked again** (`retry_servers`): a service started at boot
+    // can be here before the machine has a resolver, whatever the unit is
+    // ordered after, and a name given up on now is a host with no reflexive
+    // candidate until it is restarted.
+    let mut unresolved: Vec<String> = Vec::new();
     for name in configured_stun
         .split(',')
         .map(str::trim)
@@ -782,7 +787,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         let found = lowlat_host::admission::resolve_server(name);
         if found.is_empty() {
-            lowlat_common::log_warn!("lowlatd: reflexive server did not resolve, skipped: {name}");
+            lowlat_common::log_warn!(
+                "lowlatd: reflexive server did not resolve, will be asked again: {name}"
+            );
+            unresolved.push(name.to_owned());
             continue;
         }
         for addr in found {
@@ -995,6 +1003,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             own_display: lowlat_host::stream::OwnDisplay::default(),
         }),
     });
+    if !unresolved.is_empty() {
+        let servers = seam.servers();
+        std::thread::Builder::new()
+            .name("lowlat-stun".to_owned())
+            .spawn(move || {
+                retry_servers(
+                    unresolved,
+                    &servers,
+                    lowlat_host::admission::resolve_server,
+                    std::thread::sleep,
+                );
+            })
+            .ok();
+    }
     // **Off unless asked**, as in the library: the guests' keys and pointers
     // go to the host's own input driver only where the owner wants them
     // there. Where the driver is not installed it is said once and the batch
@@ -1567,6 +1589,134 @@ async fn session_loop(
                 other => lowlat_common::log_info!("lowlatd: unhandled seam event {other:?}"),
             }
         }
+    }
+}
+
+/// The first wait before a name that did not resolve is asked again.
+const RESOLVE_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The longest wait between two tries. A resolver that is away for minutes is
+/// a network that is down, and a try a minute costs nothing while it is.
+const RESOLVE_RETRY_LONGEST: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Asks each name again until it resolves, adding what it resolves to.
+///
+/// **Until every name has resolved or the list is full, not for a while.** The
+/// case this exists for is a start before the resolver is up, which ends in
+/// seconds; but a machine brought up with its cable out is the same case
+/// lasting an hour, and giving up there leaves the host as it was before this
+/// existed. The wait doubles from a second to a minute.
+///
+/// The resolver and the sleep are the caller's so the schedule can be checked
+/// without a network or a clock.
+fn retry_servers(
+    mut names: Vec<String>,
+    servers: &lowlat_host::admission::Servers,
+    resolve: impl Fn(&str) -> Vec<SocketAddr>,
+    mut sleep: impl FnMut(std::time::Duration),
+) {
+    let mut wait = RESOLVE_RETRY_FIRST;
+    while !names.is_empty() && servers.has_room() {
+        sleep(wait);
+        wait = (wait * 2).min(RESOLVE_RETRY_LONGEST);
+        names.retain(|name| {
+            let found = resolve(name);
+            for addr in &found {
+                if servers.add(*addr) {
+                    lowlat_common::log_info!(
+                        "lowlatd: reflexive server {name} resolved, added {addr}"
+                    );
+                } else {
+                    lowlat_common::log_warn!(
+                        "lowlatd: reflexive server {name} resolved, {addr} not added: held or full"
+                    );
+                }
+            }
+            found.is_empty()
+        });
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::retry_servers;
+    use std::cell::{Cell, RefCell};
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    fn at(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    /// **A name that resolves on the third try is added then, and only the
+    /// names still missing are asked again.** The waits double.
+    #[test]
+    fn a_name_is_asked_until_it_resolves() {
+        let servers = lowlat_host::admission::Servers::default();
+        let tries = Cell::new(0u32);
+        let asked = RefCell::new(Vec::new());
+        let waits = RefCell::new(Vec::new());
+        retry_servers(
+            vec!["early:1".to_owned(), "late:2".to_owned()],
+            &servers,
+            |name| {
+                asked.borrow_mut().push(name.to_owned());
+                match name {
+                    "early:1" => vec![at(1)],
+                    _ => {
+                        tries.set(tries.get() + 1);
+                        if tries.get() < 3 {
+                            Vec::new()
+                        } else {
+                            vec![at(2)]
+                        }
+                    }
+                }
+            },
+            |wait| waits.borrow_mut().push(wait),
+        );
+        assert_eq!(servers.snapshot(), vec![at(1), at(2)]);
+        assert_eq!(
+            *asked.borrow(),
+            ["early:1", "late:2", "late:2", "late:2"],
+            "a name that had resolved was asked again"
+        );
+        assert_eq!(
+            *waits.borrow(),
+            [1, 2, 4].map(Duration::from_secs),
+            "the waits do not double from a second"
+        );
+    }
+
+    /// The wait stops growing at a minute, and a full list ends the asking
+    /// even with a name outstanding.
+    #[test]
+    fn the_wait_is_capped_and_a_full_list_ends_it() {
+        let servers = lowlat_host::admission::Servers::default();
+        let rounds = Cell::new(0u16);
+        let waits = RefCell::new(Vec::new());
+        retry_servers(
+            vec!["never:1".to_owned(), "fills:2".to_owned()],
+            &servers,
+            |name| {
+                if name == "never:1" {
+                    return Vec::new();
+                }
+                rounds.set(rounds.get() + 1);
+                // Nothing for nine rounds, then enough to fill the list.
+                if rounds.get() < 10 {
+                    Vec::new()
+                } else {
+                    (1..=4).map(at).collect()
+                }
+            },
+            |wait| waits.borrow_mut().push(wait),
+        );
+        assert_eq!(
+            servers.snapshot().len(),
+            lowlat_host::admission::SERVERS_MAX
+        );
+        assert_eq!(waits.borrow().iter().max(), Some(&Duration::from_secs(60)));
     }
 }
 

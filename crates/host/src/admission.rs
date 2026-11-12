@@ -18,7 +18,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
 pub use lowlat_core::conn::Kind;
@@ -359,6 +359,51 @@ impl core::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub use lowlat_net::addrs::resolve_server;
+
+/// The reflexive servers a running host asks, which may still be growing.
+///
+/// **Shared, because a name can resolve after the host has started.** A
+/// service started at boot can be running before the machine has a resolver,
+/// and a list fixed at that moment stays empty for as long as the service
+/// runs; so whoever resolved the names keeps this and adds what resolves
+/// later. An attempt copies the list as it begins and is not changed by an
+/// address that arrives afterwards.
+#[derive(Debug, Clone, Default)]
+pub struct Servers(Arc<Mutex<Vec<SocketAddr>>>);
+
+impl Servers {
+    fn holding(servers: &[SocketAddr]) -> Self {
+        let held = Self::default();
+        for addr in servers {
+            held.add(*addr);
+        }
+        held
+    }
+
+    /// Adds one, and says whether it was taken: not when it is already held,
+    /// and not past [`SERVERS_MAX`].
+    pub fn add(&self, addr: SocketAddr) -> bool {
+        let mut held = self.0.lock().unwrap_or_else(|held| held.into_inner());
+        if held.len() >= SERVERS_MAX || held.contains(&addr) {
+            return false;
+        }
+        held.push(addr);
+        true
+    }
+
+    /// Whether another would be taken.
+    pub fn has_room(&self) -> bool {
+        self.0.lock().unwrap_or_else(|held| held.into_inner()).len() < SERVERS_MAX
+    }
+
+    /// What is held now.
+    pub fn snapshot(&self) -> Vec<SocketAddr> {
+        self.0
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
+            .clone()
+    }
+}
 
 /// How the host is configured.
 #[derive(Debug, Clone)]
@@ -803,6 +848,9 @@ fn terminated(text: &[u8]) -> Vec<u8> {
 #[derive(Debug)]
 pub struct Admission {
     config: Config,
+    /// What `config.servers` began as, and whatever resolved since
+    /// ([`Admission::servers`]).
+    servers: Servers,
     /// Started once, here, because every guest is served from the same encode
     /// (docs/05-host.md section 1) and the seam is what outlives them all.
     stream: Option<Stream>,
@@ -868,8 +916,10 @@ impl Admission {
             config.exclusive_hold_ms,
             Some(emit.clone()),
         );
+        let servers = Servers::holding(&config.servers);
         Self {
             config,
+            servers,
             stream,
             attempts: HashMap::new(),
             withdrawn: Vec::new(),
@@ -882,6 +932,13 @@ impl Admission {
             #[cfg(windows)]
             virtual_pads: false,
         }
+    }
+
+    /// The reflexive servers, for a caller that has more to add: a name that
+    /// did not resolve when the host was configured and does later. Every
+    /// attempt begun after an addition asks the added server too.
+    pub fn servers(&self) -> Servers {
+        self.servers.clone()
     }
 
     /// Move every guest's keys and pointer to a keyboard and a mouse of the
@@ -1168,7 +1225,7 @@ impl Admission {
         self.next_guest = self.next_guest.wrapping_add(1);
         let floor = self.floor.clone();
         let emit = self.emit.clone();
-        let servers = self.config.servers.clone();
+        let servers = self.servers.snapshot();
         // Gathered before the loop starts, which is handed them: a reflexive
         // answer that repeats one is not raised again.
         let hosts: Vec<SocketAddr> = lowlat_net::host_addresses(self.config.shared_address_space)
@@ -3819,6 +3876,28 @@ mod tests {
             found.iter().filter(|a| a.is_ipv6()).count(),
             1,
             "no v6 reflexive server from a dual-stack name: {found:?}"
+        );
+    }
+
+    /// **A server added to a running host is one it holds**, once, and the
+    /// boundary's four are not exceeded.
+    #[test]
+    fn a_server_added_later_is_held_once_and_within_the_limit() {
+        let seam = admission(1);
+        let servers = seam.servers();
+        assert!(servers.snapshot().is_empty());
+        let at = |port: u16| SocketAddr::from(([127, 0, 0, 1], port));
+        assert!(servers.add(at(1)));
+        assert!(!servers.add(at(1)), "the same server was taken twice");
+        for port in 2..=4 {
+            assert!(servers.add(at(port)));
+        }
+        assert!(!servers.has_room());
+        assert!(!servers.add(at(5)), "a fifth server was taken");
+        // The seam's own handle sees what the caller's added.
+        assert_eq!(
+            seam.servers().snapshot(),
+            (1..=4).map(at).collect::<Vec<_>>()
         );
     }
 
