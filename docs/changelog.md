@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - The pointer survives a rebuild made while it is on another output
+
+### Fixed
+- **A guest is no longer left without a pointer after the captured output changes while the
+  pointer is on another screen**: KWin lights the pointer plane of the output the pointer is
+  on and unbinds the others. The walk that chooses the plane preferred any bound plane to an
+  unbound one, so a rebuild for HDMI-A-1 made with the pointer on DP-1 took DP-1's plane and
+  read it for the rest of the session: the guest was told there was no pointer while the desk
+  showed it moving. The choice is now made only among planes the lit controller can carry
+  (the plane's possible controllers), and is as before among those.
+
+### Checked
+- NVIDIA 615.78.08, two outputs, Plasma 6.8.2: each plane there can be put on one controller
+  alone (`modetest -p`: masks 0x1, 0x2, 0x4, 0x8, three planes each), and the state after the
+  fault showed the captured output's own pointer plane bound and moving while the guest had
+  none. Unit tests cover the choice.
+- The same machine with the fix, a stock client: the capture moved HDMI-A-1 -> DP-1 and back
+  with the pointer left on DP-1, twice, and the guest kept its pointer.
+
+### Known
+- A device whose pointer planes can each go on every controller is chosen among as before.
+
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
 
 ### Fixed

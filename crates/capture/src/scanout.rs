@@ -302,7 +302,14 @@ impl Card {
         // to. Resolved after the walk, because the lit controller is not known
         // until the primary plane has been found and the order is the
         // kernel's.
-        let mut cursors: Vec<(CursorPlane, Option<crtc::Handle>)> = Vec::new();
+        //
+        // **And the controllers each can be put on**, which is what tells two
+        // dark ones apart. A compositor lights the pointer plane of whichever
+        // output the pointer is on and leaves the others unbound, so at a
+        // rebuild the wanted output's own plane is dark whenever the pointer
+        // is on another screen; empty where the device will not say.
+        let resources = self.resource_handles().ok();
+        let mut cursors: Vec<(CursorPlane, Option<crtc::Handle>, Vec<u32>)> = Vec::new();
         for handle in planes {
             let Ok(info) = self.get_plane(handle) else {
                 continue;
@@ -334,7 +341,14 @@ impl Card {
                     x,
                     y,
                 };
-                cursors.push((at, info.crtc()));
+                let serves = resources.as_ref().map_or_else(Vec::new, |resources| {
+                    resources
+                        .filter_crtcs(info.possible_crtcs())
+                        .into_iter()
+                        .map(u32::from)
+                        .collect()
+                });
+                cursors.push((at, info.crtc(), serves));
                 continue;
             }
 
@@ -368,12 +382,13 @@ impl Card {
             connector = named;
         }
 
-        // **The one on the controller that is lit**, then any that is bound at
-        // all, then any at all. The last is what covers a pointer plane that
-        // is merely dark at this instant.
-        let candidates: Vec<(CursorPlane, Option<u32>)> = cursors
+        // **Only one the lit controller can carry**, and of those the one
+        // bound to it, then any that is bound at all, then any at all. The
+        // last is what covers a pointer plane that is merely dark at this
+        // instant.
+        let candidates: Vec<(CursorPlane, Option<u32>, &[u32])> = cursors
             .iter()
-            .map(|(at, bound)| (*at, bound.map(u32::from)))
+            .map(|(at, bound, serves)| (*at, bound.map(u32::from), serves.as_slice()))
             .collect();
         let cursor_plane = choose_cursor(&candidates, primary_crtc.map(u32::from));
         if let Some(at) = cursor_plane.as_ref()
@@ -808,22 +823,39 @@ impl core::fmt::Debug for Linear {
 
 /// Which pointer plane to re-read, out of the one per controller a card has.
 ///
-/// **The one on the controller that is lit**, then any that is bound at all,
-/// then any at all. The last is what covers a plane that happens to be dark at
-/// this instant, which is an ordinary state: it carries no framebuffer while
-/// nothing is drawing a pointer, and none for a moment after a mode change.
+/// Each is given with the controller it is bound to and the controllers it can
+/// be put on, the last empty where the device did not say.
 ///
-/// Both halves have shipped broken. Requiring a framebuffer loses the pointer
-/// for the rest of the session, because this walk happens once. Taking any
-/// plane lands on one belonging to a controller that drives nothing, which
-/// never has a pointer on it at all.
-fn choose_cursor<T: Copy>(cursors: &[(T, Option<u32>)], lit: Option<u32>) -> Option<T> {
-    cursors
-        .iter()
-        .find(|(_, bound)| bound.is_some() && *bound == lit)
-        .or_else(|| cursors.iter().find(|(_, bound)| bound.is_some()))
-        .or_else(|| cursors.first())
-        .map(|(at, _)| *at)
+/// **Never one the lit controller cannot carry.** A compositor lights the
+/// plane of the output the pointer is on and unbinds the rest, so with two
+/// screens the wanted output's plane is dark whenever the pointer is on the
+/// other one, and the other one's is bound. Taking the bound one then reads
+/// another screen's pointer for the rest of the session: measured on a switch
+/// of the captured output made with the pointer still on the output being
+/// left, after which the guest was shown no pointer at all while the desk
+/// showed it moving.
+///
+/// Of those that are left, **the one on the controller that is lit**, then any
+/// that is bound at all, then any at all. The last is what covers a plane that
+/// happens to be dark at this instant, which is an ordinary state: it carries
+/// no framebuffer while nothing is drawing a pointer, and none for a moment
+/// after a mode change.
+///
+/// Both of those halves have shipped broken as well. Requiring a framebuffer
+/// loses the pointer for the rest of the session, because this walk happens
+/// once. Taking any plane lands on one belonging to a controller that drives
+/// nothing, which never has a pointer on it at all.
+fn choose_cursor<T: Copy>(cursors: &[(T, Option<u32>, &[u32])], lit: Option<u32>) -> Option<T> {
+    let carries = |serves: &[u32]| match lit {
+        Some(lit) => serves.is_empty() || serves.contains(&lit),
+        None => true,
+    };
+    let mut able = cursors.iter().filter(|(_, _, serves)| carries(serves));
+    able.clone()
+        .find(|(_, bound, _)| bound.is_some() && *bound == lit)
+        .or_else(|| able.clone().find(|(_, bound, _)| bound.is_some()))
+        .or_else(|| able.next())
+        .map(|(at, _, _)| *at)
 }
 
 /// What an exported buffer actually is.
@@ -865,7 +897,13 @@ mod tests {
         // Which plane is being chosen is all that matters here, so they are
         // named rather than built: a real one carries three handles that the
         // choice never looks at.
-        let (dark, other, lit) = (("dark", None), ("other", Some(7)), ("lit", Some(3)));
+        // None of these says which controllers it can be put on.
+        let any: &[u32] = &[];
+        let (dark, other, lit) = (
+            ("dark", None, any),
+            ("other", Some(7), any),
+            ("lit", Some(3), any),
+        );
 
         // The lit controller wins wherever it sits in the kernel's order.
         assert_eq!(choose_cursor(&[dark, other, lit], Some(3)), Some("lit"));
@@ -877,6 +915,46 @@ mod tests {
         // And a plane that is merely dark right now is still the plane.
         assert_eq!(choose_cursor(&[dark], Some(3)), Some("dark"));
         assert_eq!(choose_cursor::<&str>(&[], Some(3)), None);
+    }
+
+    /// **The pointer being on another screen does not make that screen's plane
+    /// ours.** Two outputs, a plane each that can be put on its own controller
+    /// alone: with the pointer on the second, the first one's plane is unbound
+    /// and the second one's is bound, and a rebuild for the first must still
+    /// take the first one's.
+    #[test]
+    fn a_pointer_on_another_output_does_not_lend_its_plane() {
+        let (first, second): (&[u32], &[u32]) = (&[3], &[7]);
+        let ours_dark = ("ours", None, first);
+        let theirs_lit = ("theirs", Some(7), second);
+        assert_eq!(
+            choose_cursor(&[ours_dark, theirs_lit], Some(3)),
+            Some("ours")
+        );
+        assert_eq!(
+            choose_cursor(&[theirs_lit, ours_dark], Some(3)),
+            Some("ours")
+        );
+
+        // Both dark, as when the pointer is hidden: still ours, in either
+        // order.
+        let theirs_dark = ("theirs", None, second);
+        assert_eq!(
+            choose_cursor(&[theirs_dark, ours_dark], Some(3)),
+            Some("ours")
+        );
+
+        // A plane that can be put on either controller is taken where it is
+        // bound to ours, and is not refused for being able to go elsewhere.
+        let shared: &[u32] = &[3, 7];
+        assert_eq!(
+            choose_cursor(&[theirs_lit, ("shared", Some(3), shared)], Some(3)),
+            Some("shared")
+        );
+
+        // Nothing can be put on the lit controller: no pointer, rather than
+        // somebody else's.
+        assert_eq!(choose_cursor(&[theirs_lit], Some(3)), None);
     }
 
     /// **The vblank arm carries the controller above the relative bit.** An
