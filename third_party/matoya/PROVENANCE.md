@@ -144,6 +144,16 @@ extension alone, on the first device that presents.
 | `src/gfx/vk/vk.c` | `mty_vk_valid_hardware_frame` answers whether the device imports the frame's kind and, for a buffer, its modifier for both planes' formats; `mty_vk_render` with `hardware` imports a frame once per allocation number, up to 24 -- every surface a decoder lending its own hands out at once, which is 22 -- the oldest replaced: an opaque descriptor as a buffer, copied into the plane images at each plane's offset and pitch; a buffer a plane at a time as an image in its layout, each import told the whole buffer -- a driver reads a plane past the start only through an import of the whole of it, and lost its device on one told less -- acquired from the foreign queue family with its content kept, copied into the plane images and given back. A repeat that names no format draws the plane images as they are |
 | `src/gfx/gl/gl.c` | a kernel buffer descriptor is refused, at the check and at the draw: the GL context, GLX, imports none |
 
+The Windows build leaves the Vulkan renderer out. This project draws through Direct3D there,
+and the import above is Linux's, built on a POSIX header the Windows C runtime does not have.
+Upstream builds the renderer on Windows. Asked for Vulkan there, the toolkit makes its default,
+Direct3D 11, as it does on any platform for an interface that platform has not.
+
+| file | change |
+|---|---|
+| `makefile` | the Vulkan renderer's three files and four shaders are not built, and `MTY_VK_WIN32` and `MTY_VK_DEBUG` are not defined |
+| `src/windows/gfx/mod-support.h` | Vulkan is not among the interfaces offered, nor in the renderer tables |
+
 A window made at the default frame opens on the primary monitor on Linux. Upstream centres it
 on the X screen, which spans every monitor, so on two side by side it straddled both.
 

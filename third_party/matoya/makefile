@@ -41,9 +41,6 @@ OBJS = \
 	src\thread.obj \
 	src\tlocal.obj \
 	src\version.obj \
-	src\gfx\vk\vk.obj \
-	src\gfx\vk\vk-ctx.obj \
-	src\gfx\vk\vk-ui.obj \
 	src\hid\hid.obj \
 	src\hid\utils.obj \
 	src\windows\aes-gcm.obj \
@@ -71,10 +68,6 @@ OBJS = \
 	$(WEBVIEW_OBJ)
 
 SHADERS = \
-	src\gfx\vk\shaders\fs.h \
-	src\gfx\vk\shaders\vs.h \
-	src\gfx\vk\shaders\fsui.h \
-	src\gfx\vk\shaders\vsui.h \
 	src\windows\gfx\shaders\ps.h \
 	src\windows\gfx\shaders\vs.h \
 	src\windows\gfx\shaders\psui.h \
@@ -87,8 +80,7 @@ INCLUDES = \
 
 DEFS = \
 	-DUNICODE \
-	-DWIN32_LEAN_AND_MEAN \
-	-DMTY_VK_WIN32
+	-DWIN32_LEAN_AND_MEAN
 
 FXCFLAGS = \
 	/O3 \
@@ -111,7 +103,6 @@ LIB_FLAGS = \
 
 !IFDEF DEBUG
 FLAGS = $(FLAGS) /Ob0 /Zi /Oy-
-DEFS = $(DEFS) -DMTY_VK_DEBUG
 !ELSE
 FLAGS = $(FLAGS) /O2 /GS- /Gw /Zi
 !ENDIF

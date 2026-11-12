@@ -51,8 +51,8 @@ path. The C and C++ runtimes are linked statically throughout. The library
 there carries the client half; for its software decoder `LOWLAT_FFMPEG_DIR`
 names the directory of an LGPL FFmpeg build's DLLs, or the pair sits beside
 `client.exe`. Pictures are drawn through Direct3D 11, on the GPU the decoder
-is named on, else on the system's first adapter, or as planes through 12 or
-Vulkan with `LOWLAT_GFX=d3d12` or `vk`. The first run asks the firewall to let
+is named on, else on the system's first adapter, or as planes through 12
+with `LOWLAT_GFX=d3d12`. The first run asks the firewall to let
 the demo receive, since the session arrives over UDP.
 
 On macOS the same `make` builds the demo, the toolkit and the library for the
