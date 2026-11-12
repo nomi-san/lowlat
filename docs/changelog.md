@@ -17,9 +17,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ### Checked
 - Plasma 6.7.5 on Wayland with SDDM's Wayland greeter, NVIDIA 615.71.09: seen in the log of a
   login through a stock client. The unit test covers the size rule only.
-
-### Known
-- The fix has not yet been run across a login.
+- Plasma 6.8.2, NVIDIA 615.78.08, a stock client connected at the greeter and logged in
+  through the stream: the 32x32 picture appeared as before, nothing was refused, and the guest
+  stayed on HEVC at 3840x2160 with encode at 1.9 ms.
 
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
 
