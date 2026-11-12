@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - A reflexive server that did not resolve at start is asked again
+
+### Fixed
+- **A host started before the machine has a resolver no longer runs without reflexive
+  servers**: on one boot both default names failed to resolve as `lowlatd` started, although
+  the unit is ordered after `network-online.target`; each was skipped for good, and the host
+  offered no reflexive candidate until it was restarted. A name that fails is now kept and
+  asked again by a thread of its own, after a second and then doubling to a minute, until
+  each has resolved or the list holds its four. The seam's list is shared
+  (`Admission::servers`), so an attempt begun after an address arrives asks it; an attempt
+  already running keeps the copy it began with.
+
+### Checked
+- Unit tests only: the schedule, that a resolved name is not asked again, that a full list
+  ends the asking, and that the seam sees what was added.
+
+### Known
+- Not yet run on a boot where the names fail. On the boot it was written after, they
+  resolved at the first try.
+- Embedders reach the list through `Admission::servers`; the C boundary (`crates/sdk`) still
+  refuses a name that does not resolve and has no retry.
+
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
 
 ### Fixed
