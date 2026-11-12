@@ -41,13 +41,35 @@ impl MemoryClock {
     }
 }
 
-/// Wait for something to scan out, and report what shape it is: its size, and
+/// The smallest picture taken for a desktop, each way: the smallest mode a
+/// connector lists in practice.
+const DESKTOP_MIN: (u32, u32) = (320, 200);
+
+/// Whether a picture of this size is a desktop rather than a placeholder.
+///
+/// **A session taking the display over scans out a placeholder first.**
+/// Measured at a login through the stream (Plasma 6.7.5, driver 615.71): the
+/// greeter's 3840x2160 picture gave way to a 32x32 one on the same primary
+/// plane for about half a second before the session's own 3840x2160 arrived.
+/// The rebuild that followed the change read 32x32 as the display's shape,
+/// the second codec could not be configured that small, and the refusal was
+/// remembered as the device's -- so that guest and every one after it was
+/// served the first codec until the daemon restarted. A picture this small
+/// is nothing a guest could be shown either, so it is waited out as a display
+/// that has not come back is.
+fn is_a_desktop(width: u32, height: u32) -> bool {
+    width >= DESKTOP_MIN.0 && height >= DESKTOP_MIN.1
+}
+
+/// Wait for a desktop to scan out, and report what shape it is: its size, and
 /// how many times a second it presents.
 fn await_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
     let began = lowlat_common::clock::Time::now();
     let mut said = false;
     loop {
-        if let Some(shape) = crate::display::Display::shape_of_display(wanted) {
+        if let Some(shape) = crate::display::Display::shape_of_display(wanted)
+            && is_a_desktop(shape.0, shape.1)
+        {
             return Some(shape);
         }
         if !said {
@@ -820,5 +842,23 @@ impl FromDevice for lowlat_encode::vulkan::Encoder<'_> {
         // The conversion wrote the slot and handed it over in the layout
         // this encoder reads; the written entry point is what honours that.
         self.submit_written(*slot, force_keyframe).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_a_desktop;
+
+    /// The placeholder a session scans out while it takes the display over is
+    /// not a shape to build an encoder for; every real mode is.
+    #[test]
+    fn a_placeholder_is_not_a_desktop() {
+        assert!(!is_a_desktop(32, 32));
+        assert!(!is_a_desktop(3840, 32));
+        assert!(!is_a_desktop(32, 2160));
+        assert!(is_a_desktop(320, 200));
+        assert!(is_a_desktop(640, 480));
+        assert!(is_a_desktop(3840, 2160));
+        assert!(is_a_desktop(2160, 3840));
     }
 }

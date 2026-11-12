@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - A login through the stream keeps the second codec
+
+### Fixed
+- **A guest that logs in through the stream is no longer left on the first codec**:
+  as the session took the display over from the greeter, the primary
+  plane showed a 32x32 picture for about half a second. The rebuild that followed took that
+  for the display's shape, HEVC could not be configured that small (reason -15000), and the
+  refusal was remembered as the device's, so that guest and every later one was served H.264
+  until the daemon restarted; encode went from 1.9 ms to 3.6-5 ms at 3840x2160. A picture
+  under 320x200 is now waited out as a display that has not come back is.
+
+### Checked
+- Plasma 6.7.5 on Wayland with SDDM's Wayland greeter, NVIDIA 615.71.09: seen in the log of a
+  login through a stock client. The unit test covers the size rule only.
+
+### Known
+- The fix has not yet been run across a login.
+
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
 
 ### Fixed
