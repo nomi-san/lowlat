@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - The pace a guest was told, sent back, is not a rate asked
+
+### Fixed
+- **Moving the capture from a slower output back to a faster one no longer leaves the stream at
+  the slower one's rate**: a stock client sends its whole description of the stream with any
+  one change, the pace it was last told in it. With 120 asked and the capture on a 60 Hz
+  output the guest is told 60; its request to capture the 120 Hz output carried that 60, was
+  taken as a rate asked (`guest 1 changed the stream, fps=60`), and the stream ran at 60 on the
+  120 Hz output until the daemon restarted. For the same reason any change made from the panel
+  turned "the display's own" into a fixed figure. A rate equal to the pace reported now leaves
+  the rate asked as it stands.
+
+### Checked
+- Seen twice in the log of a stock client moving HDMI-A-1 (120 Hz) -> DP-1 (60 Hz) and back,
+  NVIDIA 615.78.08, Plasma 6.8.2. The unit test covers the rule.
+
+### Known
+- Not yet run against a client with the fix installed.
+- A guest that picks the pace it is already at while a higher rate stands asked keeps the
+  higher one asked: nothing in the message tells that from the panel repeating itself.
+
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
 
 ### Fixed
