@@ -220,8 +220,13 @@ impl Params {
 pub struct Display<'a> {
     va: &'a Vaapi,
     raw: VADisplay,
-    /// Owns the binding; the display is terminated when this is dropped.
-    _bound: lowlat_drivers::va::Display<'a>,
+    /// Owns the binding; the display is terminated when this is dropped,
+    /// unless it holds a kept context.
+    _bound: core::mem::ManuallyDrop<lowlat_drivers::va::Display<'a>>,
+    /// Whether a context that is never destroyed was built here
+    /// ([`Display::keeps_contexts`]). **Then the display is never terminated
+    /// either**: terminating a display destroys every context still on it.
+    keeping: core::cell::Cell<bool>,
 }
 
 impl<'a> Display<'a> {
@@ -231,7 +236,8 @@ impl<'a> Display<'a> {
         Ok(Self {
             va,
             raw: bound.raw(),
-            _bound: bound,
+            _bound: core::mem::ManuallyDrop::new(bound),
+            keeping: core::cell::Cell::new(false),
         })
     }
 
@@ -250,6 +256,26 @@ impl<'a> Display<'a> {
     /// it. Named by the driver's own description of itself, because no
     /// attribute says which layout an encoder reads.
     pub fn wants_y_tiled(&self) -> bool {
+        self.intel_media()
+    }
+
+    /// Whether a context built here for `caps` is never destroyed.
+    ///
+    /// **Intel's media driver, through the slice entry point.** There its
+    /// encoders search on the shader cores, and destroying a context that has
+    /// coded for a few seconds crashes the process inside the driver -- on
+    /// Broadwell nearly every time, which a stream rebuilding for a new size
+    /// does. So such a context is kept for the life of the process instead,
+    /// and taken again for the next stream of its shape ([`Context::fits`]).
+    /// The low-power entry point and every other driver destroy theirs as they
+    /// always did.
+    pub fn keeps_contexts(&self, caps: Caps) -> bool {
+        caps.entrypoint == VAEntrypointEncSlice && self.intel_media()
+    }
+
+    /// Whether this is Intel's media driver, by its own description of
+    /// itself: no attribute says which driver answers.
+    fn intel_media(&self) -> bool {
         self._bound.vendor().starts_with("Intel iHD driver")
     }
 
@@ -500,6 +526,16 @@ impl<'a> Display<'a> {
         result?;
         list.truncate(usize::try_from(count).unwrap_or(0));
         Ok(list)
+    }
+}
+
+impl Drop for Display<'_> {
+    fn drop(&mut self) {
+        if self.keeping.get() {
+            return;
+        }
+        // SAFETY: dropped once, here, and never read after.
+        unsafe { core::mem::ManuallyDrop::drop(&mut self._bound) };
     }
 }
 
@@ -1537,6 +1573,12 @@ pub struct Context<'a> {
     /// Where its reconstruction is written. Never the same surface that the
     /// picture was read from; see [`Display::create_context`].
     recon: Vec<VASurfaceID>,
+    /// The picture size it was built for, which a stream taking it again has
+    /// to match ([`Context::fits`]).
+    width: u32,
+    height: u32,
+    /// Never destroyed; see [`Display::keeps_contexts`].
+    kept: bool,
 }
 
 impl Display<'_> {
@@ -1780,6 +1822,10 @@ impl Display<'_> {
             return Err(error.into());
         }
 
+        let kept = self.keeps_contexts(caps);
+        if kept {
+            self.keeping.set(true);
+        }
         Ok(Context {
             display: self,
             caps,
@@ -1787,6 +1833,9 @@ impl Display<'_> {
             context,
             surfaces: pool,
             recon,
+            width,
+            height,
+            kept,
         })
     }
 
@@ -2030,12 +2079,30 @@ impl Context<'_> {
     pub fn recon(&self) -> &[VASurfaceID] {
         &self.recon
     }
+
+    /// Whether this context is never destroyed ([`Display::keeps_contexts`]),
+    /// which makes it one to hold on to and take again.
+    pub fn kept(&self) -> bool {
+        self.kept
+    }
+
+    /// Whether this is the context [`Display::create_context`] would build
+    /// for these arguments, so it can serve a stream in place of a new one.
+    pub fn fits(&self, caps: Caps, width: u32, height: u32, surfaces: usize) -> bool {
+        self.caps == caps
+            && (self.width, self.height) == (width, height)
+            && self.surfaces.len() == surfaces
+    }
 }
 
 impl Drop for Context<'_> {
     /// Torn down innermost first: the context is built on the surfaces and the
-    /// configuration, so both outlive it.
+    /// configuration, so both outlive it. **A kept context is left whole**,
+    /// its surfaces and configuration with it, for the life of the process.
     fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
         let va = self.display.va;
         let display = self.display.raw;
         // SAFETY: each was created once by `create_context` and is destroyed
@@ -3456,6 +3523,17 @@ impl EncoderTrait for Encoder<'_> {
 
 impl Drop for Encoder<'_> {
     fn drop(&mut self) {
+        // **A kept context goes back with nothing in flight.** It serves the
+        // next stream with this one's coded buffers gone, so every picture
+        // still on it is collected first, which settles what the driver holds
+        // about each; a picture that cannot be is left as it is.
+        if self.context.kept {
+            while !self.pending.is_empty() {
+                if self.poll().is_err() {
+                    break;
+                }
+            }
+        }
         let va = self.context.display.va;
         let display = self.context.display.raw;
         for id in &self.coded {

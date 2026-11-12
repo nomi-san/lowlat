@@ -3,7 +3,9 @@
 //! encoder's own input, imported without a copy, encoded, and decoded by the
 //! open decoder, each picture compared with what the conversion wrote. Once
 //! untiled, and again in Intel's Y tiling where the encoder is the one that
-//! reads it and the card writes it. Needs the open-stack driver, so off by
+//! reads it and the card writes it; and twice on one context where the driver
+//! keeps its contexts, as a stream switching size and back takes one again.
+//! Needs the open-stack driver, so off by
 //! default: `cargo test -p lowlat-decode --test vaapi_round_trip -- --ignored
 //! --nocapture`, with `LOWLAT_VAAPI_NODE` naming the render node.
 
@@ -94,14 +96,14 @@ fn psnr(fed: &[u8], decoded: &[u8], pitch: usize, width: usize, rows: usize) -> 
     10.0 * (255.0 * 255.0 / mean).log10()
 }
 
-/// Convert, import, encode and decode every picture through one target, and
-/// return each decoded picture's luma and colour figures against what the
-/// conversion wrote.
+/// Convert, import, encode on `context` and decode every picture through one
+/// target, and return each decoded picture's luma and colour figures against
+/// what the conversion wrote.
 fn round_trip(
     device: &Device,
     display: &Display<'_>,
     decoding: &lowlat_drivers::va::Display<'_>,
-    caps: vaapi::Caps,
+    context: &vaapi::Context<'_>,
     target: &Nv12,
 ) -> Vec<(f64, f64)> {
     let mut converter = Converter::new(device).expect("a pipeline");
@@ -109,9 +111,6 @@ fn round_trip(
     let surface = display
         .import(fd.as_fd(), &exported)
         .expect("import the frame");
-    let context = display
-        .create_context(caps, WIDTH, HEIGHT, 2)
-        .expect("context");
     let mut encoder = context
         .encoder(
             Params::H264(h264::Params {
@@ -152,7 +151,6 @@ fn round_trip(
         }
     }
     drop(encoder);
-    drop(context);
     display.release(surface);
     converter.destroy(device);
 
@@ -249,25 +247,86 @@ fn the_converted_picture_comes_back_through_the_open_encoder() {
             None => device.allocate_planar(WIDTH, HEIGHT, Depth::Eight),
         }
         .expect("a target");
-        let figures = round_trip(&device, &display, &decoding, caps, &target);
+        let context = display
+            .create_context(caps, WIDTH, HEIGHT, 2)
+            .expect("context");
+        let figures = round_trip(&device, &display, &decoding, &context, &target);
+        drop(context);
         device.release_nv12(target);
-        let worst = figures.iter().fold((f64::INFINITY, f64::INFINITY), |w, f| {
-            (w.0.min(f.0), w.1.min(f.1))
-        });
-        let mean = figures.iter().map(|f| f.0.min(99.0)).sum::<f64>() / figures.len() as f64;
-        println!(
-            "{} ({}) {name}: {} pictures, luma worst {:.1} dB mean {mean:.1}, colour worst {:.1} dB",
-            device.name(),
-            card.display(),
-            figures.len(),
-            worst.0,
-            worst.1
+        judge(
+            &format!("{} ({}) {name}", device.name(), card.display()),
+            &figures,
         );
-        for (n, (luma, colour)) in figures.iter().enumerate() {
-            assert!(
-                *luma >= FLOOR_DB && *colour >= FLOOR_DB,
-                "{name}: picture {n} came back at {luma:.1} dB luma, {colour:.1} dB colour"
-            );
-        }
     }
+}
+
+/// Print a leg's figures and fail it on any picture under the floor.
+fn judge(leg: &str, figures: &[(f64, f64)]) {
+    let worst = figures.iter().fold((f64::INFINITY, f64::INFINITY), |w, f| {
+        (w.0.min(f.0), w.1.min(f.1))
+    });
+    let mean = figures.iter().map(|f| f.0.min(99.0)).sum::<f64>() / figures.len() as f64;
+    println!(
+        "{leg}: {} pictures, luma worst {:.1} dB mean {mean:.1}, colour worst {:.1} dB",
+        figures.len(),
+        worst.0,
+        worst.1
+    );
+    for (n, (luma, colour)) in figures.iter().enumerate() {
+        assert!(
+            *luma >= FLOOR_DB && *colour >= FLOOR_DB,
+            "{leg}: picture {n} came back at {luma:.1} dB luma, {colour:.1} dB colour"
+        );
+    }
+}
+
+/// **A kept context codes its next stream as well as its first**, with the
+/// first stream's encoder and imported picture gone and a context of another
+/// size built in between, as a switch of the display's size and back leaves
+/// it. Run where the driver keeps its contexts; elsewhere nothing is taken
+/// again.
+#[test]
+#[ignore = "requires the open-stack driver and its display interface"]
+fn a_kept_context_codes_its_next_stream_as_well_as_its_first() {
+    let va = Vaapi::load().expect("runtime");
+    let display = Display::open(&va, &node()).expect("render node");
+    let decoding = va.open(&node()).expect("render node");
+    let caps = match display.caps(vaapi::Codec::H264) {
+        Err(vaapi::Error::NoEncoder) => {
+            println!("this device offers no H.264 encoder; nothing to round-trip");
+            return;
+        }
+        caps => caps.expect("caps"),
+    };
+    if !display.keeps_contexts(caps) {
+        println!("this driver destroys its contexts; none is kept to take again");
+        return;
+    }
+    let card = card_of(&node()).expect("the card behind the render node");
+    let device = Device::for_display(&card).expect("the card behind the render node opens");
+    let target = device
+        .allocate_planar(WIDTH, HEIGHT, Depth::Eight)
+        .expect("a target");
+
+    let context = display
+        .create_context(caps, WIDTH, HEIGHT, 2)
+        .expect("context");
+    assert!(context.kept(), "a context the driver keeps reports it");
+    let first = round_trip(&device, &display, &decoding, &context, &target);
+    let other = display
+        .create_context(caps, 1280, 720, 2)
+        .expect("a context of another size");
+    assert!(context.fits(caps, WIDTH, HEIGHT, 2));
+    assert!(
+        !other.fits(caps, WIDTH, HEIGHT, 2),
+        "a size is part of the fit"
+    );
+    let second = round_trip(&device, &display, &decoding, &context, &target);
+    device.release_nv12(target);
+
+    judge(&format!("{} first stream", device.name()), &first);
+    judge(
+        &format!("{} the same context again", device.name()),
+        &second,
+    );
 }

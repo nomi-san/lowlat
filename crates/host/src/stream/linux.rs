@@ -12,11 +12,43 @@ use super::{
     Shared, encode_loop, settle_pace, start_bps,
 };
 
-/// The host's own display, which only Windows has: nothing to plug or hold.
+/// What a run holds between its builds. The host's own display is Windows'
+/// alone, so here it is the open encoder's: its runtime, and the displays
+/// whose encode contexts are never destroyed, with those contexts.
 #[derive(Debug, Default)]
-pub(super) struct Own {}
+pub(super) struct Own {
+    /// Loaded once a run and never unloaded, because a kept display borrows
+    /// it for as long as the process lives.
+    runtime: Option<&'static lowlat_encode::vaapi::Vaapi>,
+    /// One per render node, for a driver whose contexts are kept
+    /// ([`lowlat_encode::vaapi::Display::keeps_contexts`]).
+    kept: Vec<Kept>,
+}
+
+/// A display that is never terminated, with the contexts built on it that
+/// wait to serve a stream of their shape again.
+///
+/// **One context per shape, never more**: a stream takes its shape's context
+/// and gives it back when it ends, so what is kept grows only with the
+/// distinct sizes streamed, and a switch back to a size takes the context it
+/// had.
+#[derive(Debug)]
+struct Kept {
+    node: std::ffi::CString,
+    display: &'static lowlat_encode::vaapi::Display<'static>,
+    idle: Vec<lowlat_encode::vaapi::Context<'static>>,
+}
 
 impl Own {
+    /// The open runtime, loaded the first time a build asks for it.
+    fn runtime(&mut self) -> Option<&'static lowlat_encode::vaapi::Vaapi> {
+        if self.runtime.is_none() {
+            let loaded = lowlat_encode::vaapi::Vaapi::load().ok()?;
+            self.runtime = Some(Box::leak(Box::new(loaded)));
+        }
+        self.runtime
+    }
+
     pub(super) fn idle(&mut self, _shared: &Shared, _config: &Config) {}
 
     pub(super) fn prepare(
@@ -72,7 +104,7 @@ pub(super) fn build(
     arrivals: &mpsc::Receiver<Join>,
     config: &Config,
     roster: &mut Roster,
-    _own: &mut Own,
+    own: &mut Own,
     _clock: &MemoryClock,
 ) -> Exit {
     // **Resolved on every rebuild, not once.** A display can move to
@@ -108,7 +140,7 @@ pub(super) fn build(
     match vulkan_exit {
         Some(exit) => exit,
         None => match backend {
-            Backend::Open => run_open(shared, arrivals, config.clone(), roster),
+            Backend::Open => run_open(shared, arrivals, config.clone(), roster, own),
             Backend::Vendor => run_vendor(shared, arrivals, config.clone(), roster),
         },
     }
@@ -476,6 +508,7 @@ fn run_open(
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
+    own: &mut Own,
 ) -> Exit {
     // **The size the display settled on, before anything is built for it.**
     // Same rule as the vendor path: a display decides its own size and
@@ -513,35 +546,11 @@ fn run_open(
         ..config
     };
 
-    let (codec, params) = match config.codec {
-        Codec::H264 => (
-            lowlat_encode::vaapi::Codec::H264,
-            lowlat_encode::vaapi::Params::H264(lowlat_encode::h264::Params {
-                width: config.width,
-                height: config.height,
-                fps: config.fps,
-                level_idc: H264_LEVEL,
-                log2_max_frame_num_minus4: 4,
-                log2_max_poc_lsb_minus4: 4,
-                max_num_ref_frames: 1,
-            }),
-        ),
-        Codec::H265 => (
-            lowlat_encode::vaapi::Codec::H265,
-            lowlat_encode::vaapi::Params::H265(lowlat_encode::h265::Params {
-                width: config.width,
-                height: config.height,
-                fps: config.fps,
-                level_idc: H265_LEVEL,
-                log2_max_poc_lsb_minus4: 4,
-                max_num_ref_frames: 1,
-                transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
-                bit_depth_minus8: if config.ten_bit { 2 } else { 0 },
-                chroma_444: config.chroma_444,
-            }),
-        ),
+    let codec = match config.codec {
+        Codec::H264 => lowlat_encode::vaapi::Codec::H264,
+        Codec::H265 => lowlat_encode::vaapi::Codec::H265,
     };
-    let Ok(display) = lowlat_encode::vaapi::Vaapi::load() else {
+    let Some(runtime) = own.runtime() else {
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
@@ -566,67 +575,186 @@ fn run_open(
             "which is the default; no display to follow"
         }
     );
-    let Ok(display) = lowlat_encode::vaapi::Display::open(&display, asked) else {
+    // **A display whose contexts are kept is opened once a run**, and every
+    // build on its node takes it again: the contexts belong to it, and
+    // terminating it would destroy them.
+    if let Some(kept) = own
+        .kept
+        .iter_mut()
+        .find(|kept| kept.node.as_c_str() == asked)
+    {
+        let display = kept.display;
+        let Some(caps) = caps_of(display, codec, &config) else {
+            return Exit::Failed(status::ENCODER_CAPABILITIES);
+        };
+        return serve_open(
+            shared,
+            arrivals,
+            config,
+            roster,
+            display,
+            caps,
+            Some(&mut kept.idle),
+        );
+    }
+    let Ok(display) = lowlat_encode::vaapi::Display::open(runtime, asked) else {
         lowlat_common::log_error!("stream: render node could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    let Some(caps) = caps_of(&display, codec, &config) else {
+        return Exit::Failed(status::ENCODER_CAPABILITIES);
+    };
+    if display.keeps_contexts(caps) {
+        lowlat_common::log_info!(
+            "stream: this driver's encode contexts are never destroyed, keeping them and the \
+             display, node={}",
+            asked.to_string_lossy()
+        );
+        let display: &'static lowlat_encode::vaapi::Display<'static> = Box::leak(Box::new(display));
+        own.kept.push(Kept {
+            node: asked.to_owned(),
+            display,
+            idle: Vec::new(),
+        });
+        let idle = own.kept.last_mut().map(|kept| &mut kept.idle);
+        return serve_open(shared, arrivals, config, roster, display, caps, idle);
+    }
+    serve_open(shared, arrivals, config, roster, &display, caps, None)
+}
+
+/// What the open encoder on `display` offers for the configuration; `None`,
+/// logged, where it offers nothing.
+fn caps_of(
+    display: &lowlat_encode::vaapi::Display<'_>,
+    codec: lowlat_encode::vaapi::Codec,
+    config: &Config,
+) -> Option<lowlat_encode::vaapi::Caps> {
     let caps = if config.chroma_444 {
         display.caps_444(config.ten_bit)
     } else {
         display.caps_at(codec, config.ten_bit)
     };
-    let Ok(caps) = caps else {
+    if caps.is_err() {
         lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
-        return Exit::Failed(status::ENCODER_CAPABILITIES);
+    }
+    caps.ok()
+}
+
+/// Build the open encoder for one stream on `display` and run it.
+///
+/// **On the context a stream of this shape left in `idle`, where there is
+/// one**, else on a new one; a context that is kept goes back to `idle` when
+/// the stream ends, and any other is destroyed as it always was.
+fn serve_open<'d>(
+    shared: &Arc<Shared>,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+    display: &'d lowlat_encode::vaapi::Display<'d>,
+    caps: lowlat_encode::vaapi::Caps,
+    mut idle: Option<&mut Vec<lowlat_encode::vaapi::Context<'d>>>,
+) -> Exit {
+    let params = match config.codec {
+        Codec::H264 => lowlat_encode::vaapi::Params::H264(lowlat_encode::h264::Params {
+            width: config.width,
+            height: config.height,
+            fps: config.fps,
+            level_idc: H264_LEVEL,
+            log2_max_frame_num_minus4: 4,
+            log2_max_poc_lsb_minus4: 4,
+            max_num_ref_frames: 1,
+        }),
+        Codec::H265 => lowlat_encode::vaapi::Params::H265(lowlat_encode::h265::Params {
+            width: config.width,
+            height: config.height,
+            fps: config.fps,
+            level_idc: H265_LEVEL,
+            log2_max_poc_lsb_minus4: 4,
+            max_num_ref_frames: 1,
+            transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
+            bit_depth_minus8: if config.ten_bit { 2 } else { 0 },
+            chroma_444: config.chroma_444,
+        }),
     };
-    let Ok(context) = display.create_context(caps, config.width, config.height, ENCODE_DEPTH)
-    else {
-        lowlat_common::log_error!("stream: encode context could not be created");
-        return Exit::Failed(status::ENCODER_UNAVAILABLE);
-    };
-    let Ok(mut encoder) = context.encoder(params, start_bps(&config)) else {
-        lowlat_common::log_error!("stream: encoder could not be configured");
-        return Exit::Failed(status::ENCODER_UNAVAILABLE);
-    };
-    encoder.set_quality_setting(config.quality);
-    // **What was asked for, not what the device did.** Nothing in this
-    // interface reports whether a driver honoured either lever, and one
-    // measured here takes the quantiser floor on one codec and ignores it on
-    // the other, so this is a record of the request.
-    lowlat_common::log_info!(
-        "stream: quality={:?}, quantiser floor {}, effort {} of {}",
-        config.quality,
-        encoder.min_qp(),
-        encoder.quality(),
-        caps.quality_range
-    );
-    let mut desktop = if config.display {
-        match crate::display::Display::open(
-            ENCODE_DEPTH,
-            colour_of(&config),
-            config.chroma_444,
-            config.output.as_deref(),
-            config.convert,
-            crate::display::Register::Open(&display),
-        ) {
-            Ok(desktop) => Some(desktop),
-            Err(error) => {
-                lowlat_common::log_error!("stream: the display could not be opened, {error}");
-                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
-            }
+    let (width, height) = (config.width, config.height);
+    let taken = idle.as_mut().and_then(|idle| {
+        let at = idle
+            .iter()
+            .position(|context| context.fits(caps, width, height, ENCODE_DEPTH))?;
+        Some(idle.remove(at))
+    });
+    let context = match taken {
+        Some(context) => {
+            lowlat_common::log_info!(
+                "stream: taking the kept encode context, size={width}x{height}"
+            );
+            context
         }
-    } else {
-        None
+        None => match display.create_context(caps, width, height, ENCODE_DEPTH) {
+            Ok(context) => context,
+            Err(_) => {
+                lowlat_common::log_error!("stream: encode context could not be created");
+                return Exit::Failed(status::ENCODER_UNAVAILABLE);
+            }
+        },
     };
-    encode_loop(
-        shared,
-        arrivals,
-        config,
-        roster,
-        &mut encoder,
-        desktop.as_mut(),
-        None,
-    )
+    let exit = 'run: {
+        let Ok(mut encoder) = context.encoder(params, start_bps(&config)) else {
+            lowlat_common::log_error!("stream: encoder could not be configured");
+            break 'run Exit::Failed(status::ENCODER_UNAVAILABLE);
+        };
+        encoder.set_quality_setting(config.quality);
+        // **What was asked for, not what the device did.** Nothing in this
+        // interface reports whether a driver honoured either lever, and one
+        // measured here takes the quantiser floor on one codec and ignores it
+        // on the other, so this is a record of the request.
+        lowlat_common::log_info!(
+            "stream: quality={:?}, quantiser floor {}, effort {} of {}",
+            config.quality,
+            encoder.min_qp(),
+            encoder.quality(),
+            caps.quality_range
+        );
+        let mut desktop = if config.display {
+            match crate::display::Display::open(
+                ENCODE_DEPTH,
+                colour_of(&config),
+                config.chroma_444,
+                config.output.as_deref(),
+                config.convert,
+                crate::display::Register::Open(display),
+            ) {
+                Ok(desktop) => Some(desktop),
+                Err(error) => {
+                    lowlat_common::log_error!("stream: the display could not be opened, {error}");
+                    break 'run Exit::Failed(status::CAPTURE_UNAVAILABLE);
+                }
+            }
+        } else {
+            None
+        };
+        encode_loop(
+            shared,
+            arrivals,
+            config,
+            roster,
+            &mut encoder,
+            desktop.as_mut(),
+            None,
+        )
+    };
+    // The capture and the encoder are gone by here, so nothing holds the
+    // context and a kept one can wait for the next stream of its shape.
+    if context.kept()
+        && let Some(idle) = idle
+    {
+        idle.push(context);
+        lowlat_common::log_info!(
+            "stream: keeping the encode context, size={width}x{height} kept={}",
+            idle.len()
+        );
+    }
+    exit
 }
 
 fn run_vendor(
