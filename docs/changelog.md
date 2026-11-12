@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
+
+### Fixed
+- **The demo's Windows build no longer stops at its toolkit**: since the 2026-11-10 entry the
+  toolkit's Vulkan renderer imports Linux's descriptors, through a POSIX header the Windows C
+  runtime does not have, and the Windows build compiled that renderer as well.
+
+### Changed
+- **On Windows the demo draws through Direct3D alone**: the toolkit's Windows build leaves the
+  Vulkan renderer out, so `LOWLAT_GFX=vk` there draws planes through the toolkit's default,
+  Direct3D 11.
+
+### Checked
+- The toolkit's Windows build: no warning, and no Vulkan symbol in its library. The demo built
+  against it and the client-only static library, and started with no peer it named that library
+  (`features=0x2`) and left with 2, as the continuous integration's demo step expects.
+
 ## 2026-11-12 - A guest's mode request is honoured on Plasma 6.7
 
 ### Fixed
