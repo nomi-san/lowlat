@@ -18,9 +18,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ### Checked
 - Seen twice in the log of a stock client moving HDMI-A-1 (120 Hz) -> DP-1 (60 Hz) and back,
   NVIDIA 615.78.08, Plasma 6.8.2. The unit test covers the rule.
+- The same move with the fix, a stock client: 60 on DP-1, then `pacing at 120 fps, display=120
+  asked=the display` back on HDMI-A-1, frames 8.33 ms apart, and no change of the stream
+  logged for either message.
 
 ### Known
-- Not yet run against a client with the fix installed.
 - A guest that picks the pace it is already at while a higher rate stands asked keeps the
   higher one asked: nothing in the message tells that from the panel repeating itself.
 
