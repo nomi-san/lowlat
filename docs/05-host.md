@@ -469,6 +469,21 @@ bits by default and ten when the seated guests ask for it. **A backend that cann
 was asked says so and is named**, rather than the pipeline asserting a fixed answer: what a
 device will emit is a capability it reports, not a constant.
 
+**An encode context Intel's media driver cannot destroy is kept for the process**
+(*2026-11-12*). Through the slice entry point, which runs the encoder's search on the shader
+cores, destroying a context that has coded for a few seconds crashes the process inside the
+driver, and terminating the display does the same to every context still on it. A rebuild
+destroyed one every time -- a size switched at the desk or asked by a guest, a codec a guest
+declared. So on that pairing the display is opened once a run and never terminated, its
+contexts are never destroyed, and a stream takes the context a stream of its shape left, else
+builds one; a picture still in flight is collected before a context is put back. **What is kept
+grows with the distinct sizes a process streams and nothing else**: a switch back to a size
+takes its context again. Each costs its surfaces and the driver's own buffers -- on Broadwell
+the display held 125 MiB with one 2560x1440 context in use, and 250 MiB back at that size with
+1920x1080 and 1440x900 kept beside it. Measured on Broadwell, where the slice entry point is
+the only one; later parts take it with the driver's full build and are kept the same way. The
+low-power entry point and every other driver destroy their contexts with each stream, as before.
+
 ### §4.1 Where a host sits between delay and picture
 
 **One setting, three points, and everything else stays a default.** An encoder has a dozen knobs

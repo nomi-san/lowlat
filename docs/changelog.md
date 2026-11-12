@@ -3,6 +3,47 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - A Broadwell host survives a change of size
+
+### Fixed
+- **A stream on Intel's media driver no longer ends the host when it rebuilds**
+  ([05 §4](05-host.md), [09 §4](09-compatibility.md)): through the slice entry point, destroying
+  an encode context that has coded for a few seconds crashes the process inside the driver, and
+  terminating the display does the same to what is left on it. Every rebuild destroyed one -- a
+  resolution switched at the desk or asked by a guest, a codec a guest declared -- so on
+  Broadwell the service died and restarted under its guest, who saw a slow network and a frozen
+  picture. On that pairing the display is now opened once a run and never terminated, its
+  contexts are never destroyed, and each stream takes the context its shape left, else builds
+  one; a picture still in flight is collected before a context is put back. The low-power entry
+  point and every other driver are unchanged.
+
+### Checked
+- An i3-5005U (Broadwell GT2), the media driver 25.2.3 in its full build, the desktop at
+  2560x1440 switched to 1920x1080, 1440x900 and back under a running stream through the
+  session's own mode interface: the earlier build crashed at the second switch; this one ran
+  clean twice, kept a context per size and took the 2560x1440 one back, and the stream decoded
+  without an error -- 170, 48, 31 and 40 pictures, each size opening on a keyframe. Left to end
+  on its own after 15 s, the earlier build crashed once in two runs, this one in none of three.
+- A round trip on one kept context, twice, a context of another size built between: 55.0 dB at
+  worst the first time and 76.6 the second, colour 51.5 and 54.1; handed the other size's
+  context instead, the second stream failed at its first picture.
+- What is kept costs: the display held 125 MiB with one 2560x1440 context in use, 217 MiB at
+  1440x900 with two sizes kept, and 250 MiB back at 2560x1440, the switch back building nothing.
+- The same part as a service with a stock client connected: the desktop switched at the desk to
+  1440x900 after more than a minute of streaming, then 1920x1080 and back to 2560x1440, and
+  turned to portrait and back; the stream followed each with the client still connected, the
+  2560x1440 context taken back, and the service never restarted.
+
+### Known
+- Nothing kept is given back while the process lives, so a process that streams many distinct
+  sizes holds a context for each, tens of MiB apiece on Broadwell, and an application that
+  starts its host again in the same process keeps a second set.
+- A kept display is not opened again if its device goes away and comes back under the same
+  node; the builds on it fail until the process restarts, where before each build opened its
+  own.
+- Not checked: the generations after Broadwell on the full build, which take the same entry
+  point and are kept the same way; none here.
+
 ## 2026-11-11 - Intel's media driver is handed its own tiling (#8)
 
 ### Fixed

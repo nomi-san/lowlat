@@ -174,6 +174,14 @@ to 6.6 ms at the median and 21.8 to 13.7 at the 99th percentile, the driver's pe
 gone, the loop 44 to 57 pictures a second. *The Skylake fault itself is not reproduced here: no
 such part.*
 
+**A Broadwell host survives a change of size** (*2026-11-12*). With the full build, every
+rebuild of the stream -- a resolution switched at the desk or asked by a guest, a codec a guest
+declared -- destroyed an encode context that had been coding, which crashes the process inside
+the driver: in one day the service ended four times and restarted under its guest, who saw a
+slow network and a frozen picture. The context is kept now ([05 §4](05-host.md)). Three switches
+under a running stream, which ended the earlier build at the second, ran clean twice, the
+stream decoding without an error and the size switched back to taking its context again.
+
 **Discrete Arc needs the low-power entry point.** VAAPI names two ways to reach an encoder, and
 the shader-driven one was removed from Intel's discrete parts. Asking for it by name reported
 no encoder at all on a card that encodes both codecs. Fixed 2026-08-26; both codecs verified on
