@@ -139,6 +139,9 @@ struct Link {
     registry: u32,
     barrier: u32,
     manager: Option<u32>,
+    /// The session's list of outputs, where it keeps one rather than
+    /// announcing each output by itself.
+    devices: Option<u32>,
     outputs: HashMap<u32, Device>,
     /// Which output each mode object belongs to.
     owned: HashMap<u32, u32>,
@@ -165,6 +168,7 @@ impl Link {
             registry: 0,
             barrier: 0,
             manager: None,
+            devices: None,
             outputs: HashMap::new(),
             owned: HashMap::new(),
             configuration: None,
@@ -263,6 +267,16 @@ impl Link {
             }
             return Some(());
         }
+        if Some(object) == self.devices {
+            // An output, under an id the session chose; its description
+            // follows as it would have followed a bind.
+            if opcode == 1
+                && let Some(id) = read_u32(body)
+            {
+                self.outputs.insert(id, Device::default());
+            }
+            return Some(());
+        }
         if Some(object) == self.configuration {
             match opcode {
                 0 => self.answered = Some(Ok(())),
@@ -333,6 +347,15 @@ impl Link {
                 let id = self.bind(name, &interface, 2);
                 self.outputs.insert(id, Device::default());
             }
+            // **KWin 6.7 announces no output by itself**: measured on 6.7.5,
+            // the registry lists this one global at version 23 and no
+            // kde_output_device_v2, so every request ended in "the session
+            // has no HDMI-A-1". The list hands the outputs out instead, and
+            // refuses a bind below the version it arrived at, 21. Events
+            // only ever append, so the ones read here keep their numbers.
+            "kde_output_device_registry_v2" if version >= 21 && self.devices.is_none() => {
+                self.devices = Some(self.bind(name, &interface, 21));
+            }
             _ => {}
         }
     }
@@ -392,6 +415,7 @@ mod tests {
             registry: 0,
             barrier: 0,
             manager: None,
+            devices: None,
             outputs: HashMap::new(),
             owned: HashMap::new(),
             configuration: Some(7),
@@ -416,6 +440,33 @@ mod tests {
         assert_eq!(link.answered, Some(Ok(())));
     }
 
+    /// **An output the session's list hands out is an output**, described
+    /// under the id the session chose for it. KWin 6.7.5 offers no other way.
+    #[test]
+    fn an_output_from_the_sessions_list_is_described_like_any_other() {
+        let (near, _far) = UnixStream::pair().expect("a socket pair");
+        let mut link = Link {
+            stream: near,
+            next: 2,
+            registry: 0,
+            barrier: 0,
+            manager: None,
+            devices: Some(4),
+            outputs: HashMap::new(),
+            owned: HashMap::new(),
+            configuration: None,
+            answered: None,
+            pending: Vec::new(),
+        };
+        let mut body = Vec::new();
+        put_u32(&mut body, 0xFF00_0000);
+        link.event(4, 1, &body).expect("an output handed out");
+        let mut name = Vec::new();
+        put_str(&mut name, "HDMI-A-1");
+        link.event(0xFF00_0000, 14, &name).expect("a name");
+        assert_eq!(link.outputs[&0xFF00_0000].name.as_deref(), Some("HDMI-A-1"));
+    }
+
     /// **Modes belong to the output that announced them**, and a mode the
     /// session withdraws stops being one that can be asked for.
     #[test]
@@ -427,6 +478,7 @@ mod tests {
             registry: 0,
             barrier: 0,
             manager: None,
+            devices: None,
             outputs: HashMap::new(),
             owned: HashMap::new(),
             configuration: None,
