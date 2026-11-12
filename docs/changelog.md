@@ -18,9 +18,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   1920x1080 and back, applied in 15 ms and 13 ms, the refresh kept; from a stock client to
   1920x1080, 2560x1440 and 3840x2160, each set; 1920x1200, which the output does not list,
   refused with that reason.
+- Plasma 6.3.6 on Wayland, whose KWin announces each output and no list, on an Intel Broadwell
+  laptop: the same build to 1920x1080, 1440x900 and back to 2560x1440, applied in 27 to 109 ms,
+  a quarter turn and back in 36 and 34 ms, and 1920x1200 refused with that reason. The
+  workspace's checks and tests pass with the change.
 
 ### Known
-- A turn through the list has not been run, and nothing older than 6.7.5 was run again.
+- A turn through the list has not been run.
 
 ## 2026-11-11 - The vendor's decoder on Linux comes back from a decode that never finishes
 
