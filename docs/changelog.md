@@ -19,9 +19,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   alone (`modetest -p`: masks 0x1, 0x2, 0x4, 0x8, three planes each), and the state after the
   fault showed the captured output's own pointer plane bound and moving while the guest had
   none. Unit tests cover the choice.
+- The same machine with the fix, a stock client: the capture moved HDMI-A-1 -> DP-1 and back
+  with the pointer left on DP-1, twice, and the guest kept its pointer.
 
 ### Known
-- Not yet run against a client with the fix installed.
 - A device whose pointer planes can each go on every controller is chosen among as before.
 
 ## 2026-11-12 - The demo builds on Windows again, with no Vulkan there
