@@ -1235,7 +1235,21 @@ fn asked_in_message(
         let asked_mbps = asked as f64;
         wanted.bitrate_mbps = asked_mbps;
     }
-    wanted.fps = asked_fps(first, standing, ceiling);
+    // **A rate equal to the pace it was last told is the panel repeating it,
+    // not a request.** A stock client sends the whole description back with
+    // any one change, the pace it was told in it. On an output slower than
+    // the rate asked that pace is the output's, so a change of output sent
+    // from a 60 Hz one carried 60, was taken as asked, and the 120 Hz output
+    // it moved to was paced at 60 from then on. Somebody who does want the
+    // pace they are already at is given it either way.
+    let repeated = running.fps != 0
+        && first.get("encoderFPS").and_then(serde_json::Value::as_u64)
+            == Some(u64::from(running.fps));
+    wanted.fps = if repeated {
+        standing
+    } else {
+        asked_fps(first, standing, ceiling)
+    };
     if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
         wanted.full_fps = asked;
     }
@@ -2067,5 +2081,32 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(r#"{"encoderFPS":144}"#).expect("json");
         assert_eq!(asked_in_message(&parsed, running, 0, 120).fps, 120);
+    }
+
+    /// **The pace a panel was told, sent back, is not a rate asked.** On a
+    /// 60 Hz output with 120 asked the guest is told 60; its next message
+    /// carries that 60 with whatever it changed, and the 120 must stand for
+    /// the output it moves to. A rate that differs from the pace is a request.
+    #[test]
+    fn the_pace_sent_back_is_not_a_rate_asked() {
+        let on_the_slow_output = lowlat_host::stream::LiveVideo {
+            fps: 60,
+            ..lowlat_host::stream::LiveVideo::default()
+        };
+        let back: serde_json::Value =
+            serde_json::from_str(r#"{"encoderFPS":60,"output":"card1:HDMI-A-1"}"#).expect("json");
+        assert_eq!(
+            asked_in_message(&back, on_the_slow_output, 120, 120).fps,
+            120,
+            "the pace sent back replaced the rate asked"
+        );
+        // The display's own, asked as zero, stands the same way.
+        assert_eq!(asked_in_message(&back, on_the_slow_output, 0, 120).fps, 0);
+        // A different figure is somebody choosing one.
+        let chosen: serde_json::Value = serde_json::from_str(r#"{"encoderFPS":30}"#).expect("json");
+        assert_eq!(
+            asked_in_message(&chosen, on_the_slow_output, 120, 120).fps,
+            30
+        );
     }
 }
