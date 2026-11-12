@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-12 - A guest's mode request is honoured on Plasma 6.7
+
+### Fixed
+- **A guest's request for a size is no longer refused on KDE Plasma 6.7** ([09 §6](09-compatibility.md)):
+  KWin 6.7.5 announces no `kde_output_device_v2` global, only `kde_output_device_registry_v2`
+  (version 23 there), which hands each output out by an event. The session helper bound only
+  the globals, so it knew no output and every request ended in "the session has no HDMI-A-1".
+  It now binds the list as well, at version 21, the lowest the list accepts; a compositor
+  that still announces each output is asked as before.
+
+### Checked
+- Plasma 6.7.5 on Wayland, NVIDIA 615.71.09, a 3840x2160 output at 119.88 Hz: by hand to
+  1920x1080 and back, applied in 15 ms and 13 ms, the refresh kept; from a stock client to
+  1920x1080, 2560x1440 and 3840x2160, each set; 1920x1200, which the output does not list,
+  refused with that reason.
+
+### Known
+- A turn through the list has not been run, and nothing older than 6.7.5 was run again.
+
 ## 2026-11-11 - The vendor's decoder on Linux comes back from a decode that never finishes
 
 ### Fixed

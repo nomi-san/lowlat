@@ -232,7 +232,7 @@ rather than broken, which is the rule the session channel is built to
 |---|---|---|
 | layout, and changes to it | `zxdg_output_manager_v1` on the session's own socket | **measured** on KDE Plasma Wayland, including an output appearing and going away |
 | the output's transform | `wl_output` on the same socket, which every compositor offers | **measured** on KDE Plasma Wayland, a head turned and turned back |
-| a display mode or turn on request | `kde_output_management_v2` on the session's own socket | **measured** on KDE Plasma Wayland, a mode in 75 ms and a turn in 9 ms, and from a stock client end to end |
+| a display mode or turn on request | `kde_output_management_v2` on the session's own socket, the outputs from `kde_output_device_v2` globals or, where the compositor announces none (KWin 6.7), from `kde_output_device_registry_v2` | **measured** on KDE Plasma Wayland, a mode in 75 ms and a turn in 9 ms, and from a stock client end to end; on Plasma 6.7.5 through the list, a mode from a stock client end to end, a turn not run |
 | idle inhibitor | `org.freedesktop.ScreenSaver` on the session bus | **measured** on KDE Plasma Wayland |
 | clipboard | `org.kde.klipper` on the session bus | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface** |
 | attention chord | none: the keys are typed on the guest's own keyboard | **measured** on KDE Plasma Wayland, which answers with its leave dialog |
