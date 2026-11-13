@@ -72,7 +72,15 @@ Three rules. Each is a production scar.
 2. **Explicit sleeps use an absolute deadline.** On POSIX, `clock_nanosleep` with
    `CLOCK_MONOTONIC` and `TIMER_ABSTIME`, with the deadline built from `clock_gettime`. Never
    assume the language runtime's monotonic instant shares a base with `CLOCK_MONOTONIC`. On
-   Windows, a high-resolution waitable timer with a bounded spin finish. On macOS, a
+   Windows, a high-resolution waitable timer with a bounded spin finish, **the spin a tick of
+   the system's clock long** (*amended 2026-11-14*): that timer fires on the clock's first tick
+   after it is due, up to a millisecond late, so a spin of 100 us was seldom reached, and a
+   sleep begun anywhere in a tick landed 0.40 ms late at the median and 0.92 at the 99th
+   percentile, the timer resolution raised or not. With 1.1 ms spun it lands 0.3 us late at the
+   median and under 25 at the 99th percentile (35 to 79 on a laptop on battery, where one sleep
+   in 180 landed 2.1 ms late), for 0.53 to 0.63 ms of spin a sleep, 3.2 to 3.8 percent of a
+   core at sixty a second; a sleep no longer than the spin is spun whole, so it is for a
+   deadline and never for a delay. On macOS, a
    kernel-queue timer marked critical, armed once (*2026-10-29*, M0.1): the system lets every
    ordinary timed wait -- a sleep, an absolute one, a kernel queue's own timeout -- run late by
    an eighth to a quarter of its length, up to 1 and 5 ms (measured: 2 ms landed 260 to 510 us

@@ -18,6 +18,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   wait that is not the loop's: an address wait's timeout, an object wait's, and the waits
   inside the system's and the vendors' libraries still end on the tick.
 - The soak no longer raises the timer resolution.
+- **On Windows the precise sleep spins the last 1.1 ms, not the last 100 us**
+  ([02 §2](02-io-shell.md)). The system's sleep is the same kind of timer and fires on the
+  system clock's first tick after it is due, up to a millisecond late, so the shorter spin was
+  seldom reached and the landing was the timer's own: a sleep begun anywhere in a tick landed
+  0.40 ms late at the median and 0.92 at the 99th percentile, the resolution raised or not,
+  which on a host is where each frame's tick landed. It now lands 0.3 us late at the median
+  and under 25 at the 99th percentile (35 to 79 on a laptop on battery), for 0.53 to 0.63 ms
+  of spin a sleep: 3.2 to 3.8 percent of a core at sixty frames a second. Other platforms keep
+  100 us. The port walk's pause between binds takes the plain sleep, being a delay and not a
+  deadline.
 
 ### Checked
 - On Windows 10 19045, the development machine, whose clock already ran at a millisecond for
@@ -43,16 +53,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   broken once and seen to fail. The net crate's 81 tests, its soak, its stream tests and the
   browser-shell pair pass, and the client's, the hermetic sessions and the relay over a stream
   among them.
+- The precise sleep through its own function, sixty sleeps of 16.667 ms each begun at a
+  different point of the tick: 0.4 us late at the median and 0.8 at worst; with the margin put
+  back to 100 us, 455 at the median, and its two new checks fail. Margins either side of the
+  tick, 150 sleeps each: at 0.9 ms the 99th percentile is 95 to 150 us late, at 1.0 ms 4 to
+  31, from 1.05 ms up under 25. The windowing toolkit's precise sleep, which waits a
+  millisecond at a time on an ordinary timer and needs the resolution raised, lands as well
+  with 2 ms of spin, 8.9 percent of a core, and 0.1 to 0.6 ms late at the 99th percentile with
+  1 ms.
+- The same sixty sleeps on a two-core laptop on Windows 10 19044, three times each: on
+  battery, its clock at the default 15.6 ms, 1.4 to 1.6 us late at the median and 35 to 79 at
+  the 99th percentile; on mains power at its best-performance setting, 0.2 and 0.7 to 1.6.
 
 ### Known
 - **Not measured on Windows 11**, which may leave a process's raised
   resolution unhonoured while its windows are hidden.
 - **Quiet waits back to back, each begun on a tick, are the timer's worst case**: 5 ms waits
   end at 6.0, where the port's timeout with the resolution raised ended them at 5.0.
-- **The precise sleep lands 0.4 ms late at the median on Windows** when it begins anywhere in a
-  tick, 0.9 at the 99th percentile, raised or not: the system's sleep is the same timer and
-  ends on the same tick, past the 100 us the spin covers. Begun on a tick and a whole number of
-  milliseconds long it lands within 13 us at the median. Not changed here.
+- **The precise sleep's spin costs in proportion to the frame rate**: by the figure above,
+  about 7 percent of a core at 120 frames a second, which was not measured.
+- **On battery the spin does not cover every landing**: on that laptop one sleep in 180
+  landed 2.1 ms late, and the loop's own timer reached 2.3 ms late at the 99th percentile.
 
 ## 2026-11-13 - The web client through a relay
 
