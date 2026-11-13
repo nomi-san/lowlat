@@ -136,7 +136,9 @@ impl Socket {
                 }
                 Err(error) => last = Some(error),
             }
-            lowlat_common::clock::precise_sleep(WALK_RETRY);
+            // A delay, not a deadline: the plain sleep. The precise one spins
+            // the whole of a wait this short on Windows.
+            std::thread::sleep(WALK_RETRY);
         }
 
         if any_on_exhaustion {

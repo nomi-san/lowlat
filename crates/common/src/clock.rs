@@ -8,8 +8,10 @@
 //!    rounds to zero.
 //! 2. Sleeps use an **absolute deadline** built from the monotonic clock, and
 //!    finish with a short spin. A sleep of 200 us or less degrades into a busy
-//!    spin on every platform we target, so the last 200 us is spun
-//!    deliberately rather than requested from the scheduler.
+//!    spin on every platform we target, so the tail is spun deliberately
+//!    rather than requested from the scheduler: as much of it as the
+//!    platform's sleep can overshoot by, which on Windows is a tick of the
+//!    system's clock (`SPIN_MARGIN`).
 
 use core::time::Duration;
 use std::time::Instant;
@@ -148,12 +150,40 @@ mod imp {
 /// 45 to 55 us here, so a margin has to exceed that before it corrects
 /// anything; measured at 64 us the spin never runs and the landing error is
 /// the raw overshoot.
+#[cfg(not(windows))]
 const SPIN_MARGIN: Duration = Duration::from_micros(100);
+
+/// The tail of a sleep that is spun, on Windows: a tick of the system's
+/// clock, and a tenth of one over.
+///
+/// **The sleep there ends on a tick, not on its time.** It is a
+/// high-resolution timer, which fires on the system clock's first tick after
+/// it is due: up to a millisecond late with that clock at a millisecond, 0.4
+/// at the median, with the process's timer resolution raised or not. So a
+/// margin under a tick is seldom reached. At 100 us the spin ran for 3 us a
+/// sleep and the landing was the timer's own, 0.40 ms late at the median and
+/// 0.92 at the 99th percentile; only a sleep begun on a tick and a whole
+/// number of milliseconds long landed on time, which is what sleeps measured
+/// back to back are.
+///
+/// **At 1.1 ms a sleep begun anywhere in a tick lands on its deadline**: 0.3
+/// us late at the median and under 25 at the 99th percentile, for 0.53 to
+/// 0.63 ms of spin a sleep, which is 3.2 to 3.8 percent of a core at sixty
+/// landings a second (measured 2026-11-14 on Windows 10 19045). The tenth
+/// over the tick is headroom, and cheap: at 1.0 ms the 99th percentile was 4
+/// to 31 us late for half a percent of a core less, and at 0.9 ms, 95 to 150
+/// us, a tenth of the sleeps ending past the margin.
+#[cfg(windows)]
+const SPIN_MARGIN: Duration = Duration::from_micros(1100);
 
 /// Sleep until `duration` has elapsed, accurately.
 ///
 /// Not for loop cadence. A loop waits on an event with a timeout
 /// (see [`crate::wait`]); this is for the rare case of an explicit delay.
+///
+/// **For a deadline, not for a delay.** A duration within the spin margin is
+/// spun whole -- over a millisecond of it on Windows -- so a caller with time
+/// to pass rather than a moment to land on takes the plain sleep.
 pub fn precise_sleep(duration: Duration) {
     if duration.is_zero() {
         return;
@@ -294,7 +324,8 @@ fn critical_timer(remaining: Duration) -> libc::kevent {
 }
 
 /// The standard library's sleep, which is a high-resolution waitable timer on
-/// Windows: already the deadline-bounded sleep this needs.
+/// Windows. It ends on the system clock's first tick after its time, up to a
+/// millisecond late, which is what the spin margin there is sized for.
 #[cfg(not(unix))]
 fn sleep_until(target: Instant) {
     let remaining = target.saturating_duration_since(Instant::now());
@@ -406,6 +437,56 @@ mod tests {
         println!("precise sleeps landed this late, in us: {late_us:?}");
         assert!(
             late_us[10] < 200.0,
+            "precise sleeps landed this late, in us: {late_us:?}"
+        );
+    }
+
+    /// **The spin covers a tick of the system's clock**, read from the margin
+    /// rather than from where a sleep lands. No landing time holds on a
+    /// shared runner, which preempts a spin of this length often enough; the
+    /// landings themselves are the measurement below. A margin under a tick
+    /// leaves the landing to the system's timer, 0.4 ms late at the median.
+    #[cfg(windows)]
+    #[test]
+    fn the_spin_covers_a_tick_of_the_systems_clock() {
+        assert!(
+            SPIN_MARGIN > Duration::from_millis(1),
+            "the sleep ends on a tick up to a millisecond late, past a margin of {SPIN_MARGIN:?}"
+        );
+    }
+
+    /// **A measurement, not a gate**: where sixty precise sleeps of a frame
+    /// at sixty a second land, each begun at a different point of the system's
+    /// tick -- back to back and a whole number of milliseconds long they land
+    /// on a tick whatever the margin, and show nothing. All within 25 us on
+    /// an idle machine, where a margin of 100 us landed 0.4 ms late at the
+    /// median. Run with `cargo test -p lowlat-common --lib
+    /// a_precise_sleep_begun_anywhere -- --ignored --nocapture`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a measurement, run by hand on an idle machine"]
+    fn a_precise_sleep_begun_anywhere_in_a_tick_lands_on_its_deadline() {
+        let frame = Duration::from_micros(16_667);
+        let mut late_us: Vec<f64> = (0..60u32)
+            .map(|index| {
+                // Somewhere new in the tick each time: up to 3 ms of work.
+                let scatter =
+                    Instant::now() + Duration::from_micros(u64::from(index * 7919 % 3000));
+                while Instant::now() < scatter {
+                    core::hint::spin_loop();
+                }
+                let begin = Time::now();
+                precise_sleep(frame);
+                elapsed_ms(begin).mul_add(1000.0, -16_667.0)
+            })
+            .collect();
+        late_us.sort_by(f64::total_cmp);
+        println!(
+            "precise sleeps landed this late, in us: p50 {:.1} p95 {:.1} p99 {:.1} max {:.1}",
+            late_us[30], late_us[56], late_us[58], late_us[59]
+        );
+        assert!(
+            late_us[30] < 200.0,
             "precise sleeps landed this late, in us: {late_us:?}"
         );
     }
