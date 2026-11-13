@@ -769,7 +769,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // translator is told from a symmetric one, and both answers travel to the
     // peer as candidates. The engine holds four.
     // Names or literals, each resolved to one address per family. **A name that
-    // does not resolve is reported and skipped rather than fatal**: an attempt
+    // does not resolve is reported and kept rather than fatal**: an attempt
     // with no reflexive server still punches on what it gathered locally, and a
     // service that refuses to start because a resolver was briefly unavailable
     // is worse than one that offers fewer candidates.
