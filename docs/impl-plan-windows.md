@@ -2785,6 +2785,10 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-14: W1.1: the loop's deadline is a high-resolution timer tied to its completion port,
+  the port's own timeout a backstop past it and the fallback where the timer or its calls are
+  missing; the loop no longer leans on the raised timer resolution, which stays for every other
+  wait; 02 §2 and §6 amended.
 - 2026-11-09: W1.7: Intel's older runtime dropped, D1 reversed: its first decoder build ended
   the process on a machine with two Intel driver packages mixed, by every way of opening it,
   and it gained nothing over the system's interface; 10 §5.2 and 06 amended.

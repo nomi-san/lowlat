@@ -3,6 +3,57 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-14 - The Windows loop's deadline, a timer on its port
+
+### Changed
+- **On Windows the network loop's deadline is a high-resolution timer tied to its completion
+  port** ([02 §2, §6](02-io-shell.md)), for the datagram loop and the relay's stream alike, in
+  place of the port's own timeout. That timeout ends on the system's tick -- about 15.6 ms
+  until the process raises the timer resolution, and up to a millisecond early once it has --
+  so the loop's deadlines hung on the request each library handle makes for its process, and
+  on the system honouring it. The timer keeps its own time: the system queues an entry on the
+  port when it fires, through a wait completion packet, whose three calls are found at run
+  time. Where they or the timer are missing the port's own timeout stands as before, said
+  once. **The raised resolution stays**, in each library handle and in `lowlatd`, for every
+  wait that is not the loop's: an address wait's timeout, an object wait's, and the waits
+  inside the system's and the vendors' libraries still end on the tick.
+- The soak no longer raises the timer resolution.
+
+### Checked
+- On Windows 10 19045, the development machine, whose clock already ran at a millisecond for
+  some other program. With nothing raised, a port's timeout, an address wait's, an event's and
+  a plain sleep asked for 1 to 10 ms each lasted 12 to 16 ms; the timer -- alone, beside an
+  event, or on the port -- landed 0 to 1 ms after its time, 0.4 at the median, never before
+  it, and the same with the resolution raised.
+- At the system clock's default 15.6 ms, on a two-core laptop on Windows 10 19044 on battery
+  where nothing else raised it: the loop's wait landed 39 to 538 us late at the median by its
+  length and up to 2.3 ms at the 99th percentile, never before its time, and the four new
+  checks pass. The soak there is bound by the processor and read the same before and after:
+  1 934 to 2 069 messages a second before, 1 869 to 2 049 after, none lost.
+- An idle session's acknowledgements, 30 ms apart by the protocol: 30.09 ms at the median and
+  30.98 at the 95th percentile on the timer with nothing raised, no pass in 199 waking for
+  nothing; on the port's own timeout, 32.07 with nothing raised and 30.09 raised, 3 to 5 passes
+  in about 200 waking early.
+- Setting a tied timer again costs 265 ns; the cancel, the set and the tie 820; asking an empty
+  port 227. A posted entry reaches the parked loop in 4 us at the median with the timer armed
+  or not. The soak reads the same before and after: 32 600 messages in 5 s, none lost, 7 or 8
+  timeout wakes a second.
+- Four new checks -- a quiet wait ends on its deadline, on the socket and on the stream; a
+  deadline moved sooner is met; one that passed unseen does not end the next wait -- each
+  broken once and seen to fail. The net crate's 81 tests, its soak, its stream tests and the
+  browser-shell pair pass, and the client's, the hermetic sessions and the relay over a stream
+  among them.
+
+### Known
+- **Not measured on Windows 11**, which may leave a process's raised
+  resolution unhonoured while its windows are hidden.
+- **Quiet waits back to back, each begun on a tick, are the timer's worst case**: 5 ms waits
+  end at 6.0, where the port's timeout with the resolution raised ended them at 5.0.
+- **The precise sleep lands 0.4 ms late at the median on Windows** when it begins anywhere in a
+  tick, 0.9 at the 99th percentile, raised or not: the system's sleep is the same timer and
+  ends on the same tick, past the 100 us the spin covers. Begun on a tick and a whole number of
+  milliseconds long it lands within 13 us at the median. Not changed here.
+
 ## 2026-11-13 - The web client through a relay
 
 ### Added

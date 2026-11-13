@@ -88,6 +88,21 @@ Three rules. Each is a production scar.
    11 us at the median either way. Each library handle holds one request for its life; the system
    counts them, so the last handle released lowers it.
 
+   **The network loop no longer leans on it** (*amended 2026-11-14*). Its deadline is a
+   high-resolution timer tied to the loop's completion port (§6), which keeps its own time
+   whatever the process has asked, so the loop's deadlines depend neither on the request nor on
+   the system honouring it. **The request stays, for every other wait**: an address wait's
+   timeout and an object wait's still end on the tick, and so do the waits inside libraries that
+   are not ours -- the desktop duplication's, a sleep in an encoder's runtime. Measured that day
+   on Windows 10 19045, each wait begun up to 3 ms after the one before it: at the default
+   resolution a port's timeout, an address wait's, an event's and a plain sleep, asked for 1 to
+   10 ms, each lasted 12 to 16 ms -- and the address wait's native form, which takes hundreds of
+   nanoseconds, the same -- though the system's clock already ran at a millisecond, for some
+   other program. **A timeout ends on a tick, and which tick depends on where in one the wait
+   began**: with the resolution raised and the waits begun at scattered points of the tick, a
+   port's timeout asked for 1 ms lasted 0.06 to 1.4 ms and one asked for 10 ms, 9.1 to 10.0, so
+   a timeout can end most of a tick early, which a pass pays a second wake to make good.
+
 **Clock semantics.** The shell's clock exposes **fractional milliseconds as a float**. The
 congestion controller ([01 §10](01-protocol.md)) measures throughput over the interval between
 ticks, and quantizing that interval to whole milliseconds silently skips the peak update
@@ -299,7 +314,7 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 | Platform | Receive |
 |---|---|
 | Linux | `poll` plus `recvmmsg` in batches of 64 directly into slots, looping until drained |
-| Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port |
+| Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port. The pass's deadline is a high-resolution timer tied to that port, not the port's own timeout, which ends on the system's tick (§2) (*built 2026-11-14*) |
 | macOS | `kevent` with a user-event filter for the wake and teardown, plus `recvmsg_x` in batches of 64 directly into slots, each with its datagram's arrival address, looping until drained; a per-datagram receive where the call is not found. The pass's deadline is a critical timer on the same queue, not the queue's own timeout, which the system coalesces (§2) (*built 2026-10-29*, M1.1) |
 
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
@@ -325,6 +340,36 @@ plain one a system that refuses registered I/O needs anyway, and it is taken onl
 measures better than this: the plain port hands over a keyframe-sized burst of 2550 datagrams
 already queued on the socket in 1.8 ms at the median (2.6 at the 99th percentile), 695 ns a
 datagram, on the development machine.
+
+**And the port carries the deadline** (*2026-11-14*). A wait that blocks sets a high-resolution
+timer and the system queues an entry on the port when it fires, through a wait completion
+packet; the port's own timeout is set 32 ms past the deadline and ends the wait only if that
+entry never comes. The packet's three calls belong to the native layer and are in no import
+library, so they are found at run time; where they are missing, or the system has no such timer
+(before Windows 10 1803), the port's own timeout is the deadline as it was before, said once.
+The deadline keeps the loop's shortest wait (§2) and is rounded up to the timer's hundred
+nanoseconds. Measured on Windows 10 19045, on the development machine:
+- **It lands on the system clock's first tick after the deadline, never before it**: 0 to 1 ms
+  late with that clock at a millisecond, 0.4 at the median over waits begun at scattered points
+  of the tick, and the same with the process's resolution raised or not. An idle session's
+  acknowledgements leave 30.09 ms apart at the median (30.98 at the 95th percentile) with
+  nothing raised and no pass that sent nothing in 199; on the port's own timeout they left 32.07
+  ms apart with nothing raised and 30.09 raised, 3 to 5 passes in about 200 waking early for
+  nothing.
+  Quiet waits back to back, each begun on a tick, are its worst case: 5 ms waits end at 6.0.
+- **At the clock's default 15.6 ms it does not wait for that tick**: on a two-core laptop on
+  Windows 10 19044, on battery, where nothing raised the resolution, it landed 39 to 538 us late
+  at the median by the wait's length and up to 2.3 ms at the 99th percentile, never early.
+- **A tie queues one entry, and the loop tracks whether it has.** Setting the timer again while
+  it is tied moves the deadline in one call, 265 ns -- the ordinary case, a wait a datagram ended
+  early. Once the deadline has passed its entry may sit on the port unseen; a cancel takes it
+  back before the timer is set again, so a deadline that moved on is not announced by the one
+  before it, and the cancel, the set and the tie together cost 820 ns, against 227 for asking an
+  empty port. A tie that finds the timer fired already queues its entry all the same.
+- **A posted entry reaches the parked loop as before**: 4 us at the median with the timer armed
+  beside it or not.
+
+The relay's stream arms the same timer on its own port.
 
 **On macOS the queue carries the wake and the deadline beside the socket.** The system clears
 the user event when a wait reports it, so whether work was announced is an armed flag, as on
