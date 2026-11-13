@@ -1316,14 +1316,20 @@ The stack is symmetric enough that the requirements on a browser page are short:
    apply the host's triple as its answer, naming the host as the active side of the handshake
    and stating the port and the message ceiling above.
 2. Add the host's candidates only after that answer is set -- one browser family refuses a
-   candidate offered before the remote description exists -- and send its own as it gathers
-   them, followed by the readiness marker ([03 §3](03-connectivity.md)); without the marker
-   the host checks only directly routable addresses.
+   candidate offered before the remote description exists -- writing a reflexive one with the
+   unspecified related address, without which that family drops it silently; and send its
+   own as it gathers them, a relay's address flagged as a reflexive one, followed by the
+   readiness marker ([03 §3](03-connectivity.md)); without the marker the host checks only
+   directly routable addresses. A failure reported before the session opens is not final:
+   the host's reflexive candidates can follow its own marker.
 3. Send opcode 11 on channel 0 as soon as the channel opens, with the eight keys of §11.5 and
    the flags reduced to what it can decode.
 4. Feed each message on stream 1 to its decoder as one access unit, marking keyframes from
    the bitstream; ask for a fresh reference chain with opcode 13 (same flags, third argument
-   set) rather than replaying a picture it saw earlier.
+   set) rather than replaying a picture it saw earlier. An H.264 sequence set with picture
+   order counts of type 2 and no bitstream restriction is best given one stating no
+   reordering before it is decoded: a browser's decoder otherwise holds pictures to the
+   level's worst case, four of them measured.
 5. Treat five seconds without a control message as the end of the session; leave with
    opcode 10 and a zero status.
 

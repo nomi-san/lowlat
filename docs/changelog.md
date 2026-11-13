@@ -3,6 +3,60 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-13 - The web client through a relay
+
+### Added
+- **`examples/web-client` reaches a host through a TURN relay.** It takes its ICE servers from
+  `ice-servers.json` beside the page when the file is there -- the `{ "iceServers": [...] }` a
+  TURN service's credential call returns -- else one public reflexive server; git ignores the
+  file, which holds credentials. With the **relay** box ticked the session goes through a relay
+  alone, its candidates sent to the host flagged as reflexive ones; unticked, the browser gets
+  the file's reflexive servers alone -- offered both, Chrome once moved a running direct session
+  (26 ms) onto a relay pair (71 ms). The status line names the path in use (`via relay/udp`,
+  `prflx`, ...).
+
+### Fixed
+- **A stock host's H.264 decoded four pictures late in Chrome**: its sequence set has picture
+  order counts of type 2, so output order is decode order, but no bitstream restriction, and the
+  browser's decoder held pictures to the level's worst case -- 120-130 ms of decode at 30 frames
+  a second, 300-400 ms on an idle desktop. The page now adds the restriction (no reordering, a
+  buffer of the reference count) to such a set before decoding (`src/reorder.ts`): 0.3 ms at the
+  same 32 frames a second. A set that states its depth, ours among them, passes untouched, as
+  does any set of another order-count type, which may reorder.
+- **Firefox kept none of the host's reflexive candidates**: the page wrote the line without a
+  related address, which Firefox requires and drops it silently without. Behind its own
+  translation a host's reflexive address is its only reachable one, so Firefox never checked a
+  working pair. The line now carries `raddr 0.0.0.0 rport 0`.
+- **A failure before the session opens no longer ends the attempt.** Through a relay the
+  host's private address fails at once, the relay refusing it, and the host's reflexive
+  candidates can follow its readiness marker; Chrome reported the connection failed at about
+  500 ms and connected when they arrived, by which time the page had given up. The
+  five-second deadline still ends an attempt that never opens.
+
+### Checked
+- Against a stock Windows host across the internet (ping 23 ms), Chrome: direct 69 s at
+  1080p 32 fps, ~11 Mbit/s, rtt 23 ms; relay only through a public TURN service over UDP,
+  connected in 1.7-2.1 s after an early failure each time, rtt 69-98 ms, 33 s at a 5 Mbit/s
+  request with control messages steady.
+- Firefox: relayed candidates gathered over UDP, TCP and TLS, the relayed pair checked in
+  73 ms; the session does not open (below).
+- The rewrite over every access unit of the H.264 decoder fixtures: the two NVENC streams of
+  type 2 with no restriction rewritten (one with a hypothetical reference decoder block, read
+  through), every other untouched -- B-frames, field coding, scaling lists, slices, AMD's --
+  among them an NVENC stream with B-frames whose set states no depth either (type 0), which a
+  rewrite without the type check would have broken; read back by an independent parser, as
+  were a set given usability information it lacked and the stock host's set. Direct after the change: 20 s, `via prflx` throughout, decode 0.3 ms.
+
+### Known
+- **Firefox does not open a session with a stock Windows host**, directly or relayed. That
+  host sends its second handshake flight in three datagrams, each only after a datagram from
+  the browser; Chrome's own retransmissions draw the rest out (two round trips), while Firefox
+  waits once the first piece is in. Captured: nothing in either direction for 34 s after it.
+- **Through the relay, the default 30 Mbit/s request ended the session three times in 7-20 s**
+  on control-channel silence while the picture still arrived, the rtt rising 75 -> 102 ms and
+  the frame rate halving: the host queues its control messages behind a picture backlog the
+  relayed path does not drain. 5 Mbit/s held.
+
 ## 2026-11-12 - The pace a guest was told, sent back, is not a rate asked
 
 ### Fixed
