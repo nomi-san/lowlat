@@ -83,11 +83,16 @@ pub fn monotonic_us() -> u64 {
 /// The system timer raised to one millisecond for as long as this lives.
 ///
 /// **Only Windows needs it, and there it is not optional.** Every timeout a
-/// loop waits with -- a completion port, an address wait, an object wait --
-/// is quantised to the system tick, about 15.6 ms unless raised, and the
+/// thread waits with -- a completion port's, an address wait's, an object
+/// wait's, and the ones inside the system's and the vendors' own libraries
+/// -- is quantised to the system tick, about 15.6 ms unless raised, and the
 /// request is per process, so another application having made it does not
 /// help. The system counts the requests, so each owner holds one of its own
 /// and the last one released lowers it.
+///
+/// **The network loop alone does not lean on it**: its deadline is a timer
+/// of its own, tied to its completion port, which keeps its time whatever the
+/// process has asked (the net crate's `windows/deadline.rs`).
 #[derive(Debug)]
 pub struct TimerResolution(());
 

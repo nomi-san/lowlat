@@ -31,19 +31,23 @@ dcsctp = { version = "0.1", optional = true }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc.workspace = true
 
-# The system's own declarations for the socket, the completion port and the
-# interface walk: layouts from the platform's metadata rather than structs we
-# maintain, which matters most for the ones the system writes after a call has
-# returned. Declarations only, linked by name at build time with no import
-# libraries; the QoS service is not among them, since it is loaded at run time.
+# The system's own declarations for the socket, the completion port, the
+# deadline's timer and the interface walk: layouts from the platform's metadata
+# rather than structs we maintain, which matters most for the ones the system
+# writes after a call has returned. Declarations only, linked by name at build
+# time with no import libraries; the QoS service and the calls that tie the
+# timer to the port are not among them, since they are found at run time. The
+# security feature is there for the timer's declaration, which names it.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
 ] }
 

@@ -22,6 +22,10 @@
 //! a drain collecting what completed since -- can be the wake. It is kept and
 //! reported by the next wait, which then does not block; dropping it would
 //! leave the work it announced to sit out the timeout.
+//!
+//! **And the deadline**, as a timer tied to the port (`deadline.rs`), never
+//! as the port's own timeout, which ends on the system's tick. Its entry
+//! reports nothing: a wait it ends is a quiet one.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::io;
@@ -36,11 +40,12 @@ use windows_sys::Win32::System::IO::{
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 
+use super::deadline::Deadline;
 use super::qos::Marking;
 use super::socket::{Socket, from_storage, last_error, len_of};
 use super::wake::Wake;
-use super::{KEY_RECV, KEY_WAKE, control};
-use crate::shell::{MIN_WAIT_MS, Ready};
+use super::{KEY_DEADLINE, KEY_RECV, KEY_WAKE, control};
+use crate::shell::Ready;
 use crate::socket::RECV_SLOT;
 
 /// Receives kept posted, and the most completions taken in one call.
@@ -89,10 +94,12 @@ struct Slot {
 /// session.
 ///
 /// Fields drop in order after `drop` has taken every receive back: the mark
-/// before the socket it names, and the socket before the port it is joined to.
+/// before the socket it names, and the socket and the deadline's timer before
+/// the port they are joined and tied to.
 pub(crate) struct Io {
     marking: Marking,
     socket: Socket,
+    deadline: Deadline,
     wake: Wake,
     receive: Option<Receive>,
     slots: Box<[Slot]>,
@@ -119,6 +126,7 @@ impl core::fmt::Debug for Io {
             .field("posted", &self.posted)
             .field("in_hand", &self.done.len())
             .field("batch", &self.batch.len())
+            .field("deadline", &self.deadline)
             .field("marking", &self.marking)
             .finish()
     }
@@ -141,6 +149,7 @@ impl Io {
         let mut io = Self {
             marking: Marking::new(),
             socket,
+            deadline: Deadline::new(),
             wake,
             receive: None,
             slots: pool(),
@@ -195,7 +204,8 @@ impl Io {
         core::ptr::without_provenance_mut(self.socket.raw())
     }
 
-    /// Wait for a datagram or the wake, or the deadline.
+    /// Wait for a datagram or the wake, or the deadline, which a wait that
+    /// blocks arms as a timer on the port (`deadline.rs`).
     ///
     /// Reports which of the two the port spoke about, so the pass can leave
     /// the quiet one alone. Does not block while a datagram or a wake is
@@ -204,16 +214,7 @@ impl Io {
         self.check()?;
         self.recycle()?;
         let timeout = if self.done.is_empty() && !self.woken {
-            // Rounded up, never truncated: a fractional wait rounded down
-            // wakes just before the armed deadline, and the pass then pays a
-            // second wake to act on it.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to the wait bounds by the caller"
-            )]
-            let ms = timeout_ms.max(MIN_WAIT_MS).ceil() as u32;
-            ms
+            self.deadline.arm(self.wake.port(), timeout_ms)
         } else {
             0
         };
@@ -379,6 +380,7 @@ impl Io {
             match entry.lpCompletionKey {
                 KEY_WAKE => self.woken = true,
                 KEY_RECV => self.completed(&entry)?,
+                KEY_DEADLINE => self.deadline.fired(),
                 _ => {}
             }
         }
@@ -602,6 +604,119 @@ mod tests {
             seen.windows(2).all(|pair| pair[0] < pair[1]),
             "datagrams arrived out of order"
         );
+    }
+
+    /// One quiet wait of `timeout_ms`, and how long it lasted in
+    /// milliseconds.
+    fn quiet_wait(io: &mut Io, timeout_ms: f64) -> f64 {
+        let started = Instant::now();
+        let ready = io.wait(timeout_ms).expect("wait");
+        assert!(!ready.socket && !ready.wake, "the wait was not quiet");
+        started.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// **The deadline is the timer's, not the port's own timeout**: a quiet
+    /// wait ends on it, not before it and not on the system's tick after it.
+    /// The port's timeout for the same wait lasts about 15.6 ms with the
+    /// timer resolution as the system leaves it, which is how a test finds
+    /// it, and can end before its time with the resolution raised.
+    ///
+    /// **The middle of nine waits, not one**: a shared runner preempts any
+    /// single wait, and both faults are in every one of them.
+    #[test]
+    fn a_quiet_wait_ends_on_its_deadline() {
+        let (mut io, _) = receiver();
+        assert!(io.deadline.timed(), "the loop's timer was not made");
+        let mut waits: Vec<f64> = (0..9).map(|_| quiet_wait(&mut io, 5.0)).collect();
+        waits.sort_by(f64::total_cmp);
+        assert!(
+            waits[4] >= 5.0,
+            "the waits ended before their deadline: {waits:?}"
+        );
+        assert!(
+            waits[4] < 12.0,
+            "the waits ran on to the system's tick, in ms: {waits:?}"
+        );
+    }
+
+    /// **A deadline moved sooner is met.** A wait ended early by a wake
+    /// leaves its timer tied and still to fire; the next wait sets it again
+    /// for its own deadline, and a tie that did not follow would hold the
+    /// loop to the old one, or to the port's backstop.
+    #[test]
+    fn a_deadline_moved_sooner_is_met() {
+        let (mut io, _) = receiver();
+        let producer = io.wake().handle().expect("handle");
+
+        producer.notify().expect("notify");
+        assert!(io.wait(40.0).expect("wait").wake, "the wake did not arrive");
+        assert!(io.take_wake().expect("take"));
+
+        let waited = quiet_wait(&mut io, 3.0);
+        assert!(waited >= 3.0, "ended before its deadline: {waited} ms");
+        assert!(
+            waited < 30.0,
+            "held to the deadline before it, or to the backstop: {waited} ms"
+        );
+    }
+
+    /// **A deadline that passed unseen does not end the next wait.** A pass
+    /// that runs on past the deadline it armed leaves the timer's entry on
+    /// the port; the next wait arms a later one, and the stale entry would
+    /// end it at once -- a quiet pass for nothing, every time a pass outlasts
+    /// its deadline. Taken back before the timer is set again; and where a
+    /// drain took it off the port first, the packet is simply tied again.
+    #[test]
+    fn a_deadline_passed_unseen_does_not_end_the_next_wait() {
+        for drained in [false, true] {
+            let (mut io, _) = receiver();
+            let producer = io.wake().handle().expect("handle");
+
+            producer.notify().expect("notify");
+            assert!(io.wait(2.0).expect("wait").wake, "the wake did not arrive");
+            assert!(io.take_wake().expect("take"));
+            // The pass, outlasting the deadline its wait armed.
+            std::thread::sleep(Duration::from_millis(10));
+            if drained {
+                assert_eq!(io.drain().expect("drain"), 0, "nothing was sent");
+            }
+
+            let waited = quiet_wait(&mut io, 25.0);
+            assert!(
+                waited >= 25.0,
+                "ended by the deadline before it (drained first: {drained}): {waited} ms"
+            );
+        }
+    }
+
+    /// **A measurement, not a gate**: how late the loop's wait lands on its
+    /// deadline with nothing arriving, sixty waits each of 1.3, 5 and 16.7 ms,
+    /// with the timer resolution as the system leaves it and then raised.
+    /// Run with `cargo test -p lowlat-net --lib wait_lateness -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand on an idle machine"]
+    fn wait_lateness() {
+        let (mut io, _) = receiver();
+        let mut measure = |label: &str| {
+            for asked in [1.3, 5.0, 16.7] {
+                let mut late_us: Vec<f64> = (0..60)
+                    .map(|_| (quiet_wait(&mut io, asked) - asked) * 1000.0)
+                    .collect();
+                late_us.sort_by(f64::total_cmp);
+                let at = |percent: usize| late_us[(late_us.len() - 1) * percent / 100];
+                println!(
+                    "{label}: wait {asked} ms: late by p50 {:.0} p95 {:.0} p99 {:.0} us, least {:.0}",
+                    at(50),
+                    at(95),
+                    at(99),
+                    at(0)
+                );
+            }
+        };
+        measure("resolution as it is");
+        let _raised = lowlat_common::clock::TimerResolution::raise();
+        measure("resolution raised");
     }
 
     /// Teardown with every receive posted returns promptly: each cancelled

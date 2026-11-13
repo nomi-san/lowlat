@@ -1,7 +1,8 @@
 //! The system calls under the shell, on Windows: the socket and its options,
 //! the completion port that is both the wait and the receive, message sends
 //! with a claimed source and segmentation offload, the posted wake, the
-//! interface walk, and the mark on the established path.
+//! pass's deadline as a timer on the same port, the interface walk, and the
+//! mark on the established path.
 //!
 //! **Everything above this module is written against these names**, the same
 //! ones every platform's module carries, so nothing above it changes with the
@@ -12,6 +13,7 @@
 
 mod addrs;
 mod control;
+mod deadline;
 mod io;
 mod qos;
 mod send;
@@ -30,3 +32,4 @@ pub use wake::{Wake, WakeHandle};
 const KEY_RECV: usize = 1;
 const KEY_WAKE: usize = 2;
 const KEY_STREAM: usize = 3;
+const KEY_DEADLINE: usize = 4;

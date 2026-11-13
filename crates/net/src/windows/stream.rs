@@ -6,7 +6,8 @@
 //! when bytes have arrived -- the bytes themselves are read with an ordinary
 //! receive into the stream's buffer, so nothing the system holds points into
 //! storage that moves; and a send from the stream's staging, posted when the
-//! socket could not take it at once.
+//! socket could not take it at once. The pass's deadline arrives through it
+//! as well, as the datagram loop's does (`deadline.rs`).
 //!
 //! **Teardown takes every operation back** before what it was posted with
 //! goes, as the datagram receives' teardown does.
@@ -25,14 +26,16 @@ use windows_sys::Win32::System::IO::{
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 
+use super::deadline::Deadline;
 use super::qos::Marking;
 use super::socket::{last_error, len_of, start, to_storage};
 use super::wake::Wake;
-use super::{KEY_STREAM, KEY_WAKE};
-use crate::shell::{MIN_WAIT_MS, Ready};
+use super::{KEY_DEADLINE, KEY_STREAM, KEY_WAKE};
+use crate::shell::Ready;
 use crate::stream::Written;
 
-/// Completions taken in one call: the stream's three operations and the wake.
+/// Completions taken in one call: the stream's three operations, the wake
+/// and the deadline.
 const ENTRIES: usize = 8;
 
 /// How long teardown waits for its cancelled operations to come back.
@@ -75,11 +78,13 @@ enum Op {
 /// they complete on.
 ///
 /// Fields drop in order after `drop` has taken every operation back: the mark
-/// before the socket it names, and the socket before the port it is joined to.
+/// before the socket it names, and the socket and the deadline's timer before
+/// the port they are joined and tied to.
 pub(crate) struct StreamIo {
     marking: Marking,
     socket: OwnedSocket,
     ops: Box<Ops>,
+    deadline: Deadline,
     wake: Wake,
     connecting: bool,
     /// A zero-length receive is posted.
@@ -107,6 +112,7 @@ impl core::fmt::Debug for StreamIo {
             .field("readable", &self.readable)
             .field("sending", &self.sending)
             .field("posted", &self.posted)
+            .field("deadline", &self.deadline)
             .field("marking", &self.marking)
             .finish_non_exhaustive()
     }
@@ -145,6 +151,7 @@ impl StreamIo {
             socket: unsafe { OwnedSocket::from_raw_socket(raw as u64) },
             // SAFETY: plain system structures, for which zero is valid.
             ops: Box::new(unsafe { mem::zeroed::<Ops>() }),
+            deadline: Deadline::new(),
             wake,
             connecting: false,
             reading: false,
@@ -226,23 +233,18 @@ impl StreamIo {
     }
 
     /// Wait for the stream -- the connect, bytes, a send's return -- or the
-    /// wake, or the deadline; at once when `now`, or while something is
-    /// already in hand. The send's return arrives on the port whether or not
-    /// anything is `writing`.
+    /// wake, or the deadline, armed as a timer on the port; at once when
+    /// `now`, or while something is already in hand. The send's return
+    /// arrives on the port whether or not anything is `writing`.
     pub(crate) fn wait(&mut self, timeout_ms: f64, _writing: bool, now: bool) -> io::Result<Ready> {
         if let Some(error) = self.failed.take() {
             return Err(error);
         }
         let in_hand = now || self.readable || self.woken || self.finished.is_some();
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "clamped to the wait bounds by the caller"
-        )]
         let timeout = if in_hand {
             0
         } else {
-            timeout_ms.max(MIN_WAIT_MS).ceil() as u32
+            self.deadline.arm(self.wake.port(), timeout_ms)
         };
         self.collect(timeout)?;
         if let Some(error) = self.failed.take() {
@@ -410,6 +412,7 @@ impl StreamIo {
             match entry.lpCompletionKey {
                 KEY_WAKE => self.woken = true,
                 KEY_STREAM => self.completed(entry.lpOverlapped),
+                KEY_DEADLINE => self.deadline.fired(),
                 _ => {}
             }
         }
@@ -598,4 +601,46 @@ fn connect_ex_of(socket: ws::SOCKET) -> io::Result<ConnectEx> {
         return Err(last_error());
     }
     function.ok_or_else(|| io::Error::other("the provider has no connect extension"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::net::Ipv6Addr;
+
+    /// **The stream's deadline is the timer's too**: a quiet wait on a
+    /// connected stream ends on it, not before it and not on the system's
+    /// tick after it, as the datagram loop's does (`io.rs`). The middle of
+    /// nine waits, for the reason given there.
+    #[test]
+    fn a_quiet_wait_ends_on_its_deadline() {
+        let listener = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).expect("listener");
+        let server = listener.local_addr().expect("addr");
+        let mut io = StreamIo::connect(server, Wake::new().expect("wake")).expect("connect");
+        let (_peer, _) = listener.accept().expect("accept");
+        let started = Instant::now();
+        while !io.connected() && started.elapsed() < Duration::from_secs(2) {
+            io.wait(50.0, false, false).expect("wait");
+        }
+        assert!(io.connected(), "the connect never came back");
+        assert!(io.deadline.timed(), "the loop's timer was not made");
+
+        let mut waits: Vec<f64> = (0..9)
+            .map(|_| {
+                let started = Instant::now();
+                let ready = io.wait(5.0, false, false).expect("wait");
+                assert!(!ready.socket && !ready.wake, "the wait was not quiet");
+                started.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        waits.sort_by(f64::total_cmp);
+        assert!(
+            waits[4] >= 5.0,
+            "the waits ended before their deadline: {waits:?}"
+        );
+        assert!(
+            waits[4] < 12.0,
+            "the waits ran on to the system's tick, in ms: {waits:?}"
+        );
+    }
 }

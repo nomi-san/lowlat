@@ -260,9 +260,10 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5_000.0);
-    // Held for the run, as a library handle holds it for its life: without it
-    // a Windows wait lasts the system tick, not the deadline it was armed for.
-    let _resolution = lowlat_common::clock::TimerResolution::raise();
+    // The timer resolution is left as the system has it: on Windows the
+    // loop's deadline is a timer of its own and asks nothing of the process.
+    // That is held by the wait's own tests, not here, where nearly every wake
+    // is a datagram and the run reads the same either way.
 
     let mut left_arena = Arena::new();
     let mut right_arena = Arena::new();
