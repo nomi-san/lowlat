@@ -10,7 +10,8 @@ export interface Options {
   server: string
   session: string
   peer: string
-  stunServer: string
+  iceServers: RTCIceServer[]
+  relayOnly: boolean
   hevc: boolean
   // The video configuration a guest asks for through the application
   // message; the host reports what it applied on its own log.
@@ -48,12 +49,16 @@ export class Client {
     this.video = new Video(canvas, options.hevc)
     this.video.onNeedKeyframe = () => this.send(control.encoderConfig(this.flags(), true))
 
-    this.transport = new Transport(options.stunServer)
+    this.transport = new Transport(options.iceServers, options.relayOnly)
     this.transport.onMessage = (channel, data) => this.receive(channel, data)
     this.transport.onOpen = () => this.opened()
     this.transport.onState = (state) => {
       this.onStatus(`peer connection ${state}`)
-      if (state === 'failed' || state === 'closed') this.end(`peer connection ${state}`)
+      // Before the session opens, a failure covers only the pairs checked so
+      // far: a relay refuses a private address at once, and the host's
+      // routable candidates can follow its readiness marker. The liveness
+      // deadline ends an attempt that never opens.
+      if (state === 'closed' || (state === 'failed' && this.opened_)) this.end(`peer connection ${state}`)
     }
     this.transport.onLocalCandidate = (c) => this.signaling.candidate(c)
 
@@ -89,8 +94,8 @@ export class Client {
     return this.video.stats
   }
 
-  roundTripMs(): Promise<number | undefined> {
-    return this.transport.roundTripMs()
+  path(): Promise<{ rttMs?: number; via?: string }> {
+    return this.transport.path()
   }
 
   private flags(): number {

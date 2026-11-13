@@ -4,6 +4,8 @@
 // drawn as a textured quad; the newest frame wins when the display is slower
 // than the stream.
 
+import { stateReorderDepth } from './reorder'
+
 const VERTEX = `#version 300 es
 in vec2 xy;
 out vec2 uv;
@@ -75,7 +77,8 @@ export class Video {
   }
 
   push(unit: ArrayBuffer): void {
-    const key = isKeyframe(new Uint8Array(unit), this.hevc)
+    const bytes = new Uint8Array(unit)
+    const key = isKeyframe(bytes, this.hevc)
     this.stats.bytes += unit.byteLength
     if (unit.byteLength > this.stats.largestUnit) this.stats.largestUnit = unit.byteLength
     if (key) this.stats.keyframes++
@@ -89,7 +92,7 @@ export class Video {
       this.decoder!.decode(new EncodedVideoChunk({
         type: key ? 'key' : 'delta',
         timestamp: Math.round(performance.now() * 1000),
-        data: unit,
+        data: this.hevc ? bytes : stateReorderDepth(bytes),
       }))
     } catch (err) {
       console.warn('[video] decode refused:', err)

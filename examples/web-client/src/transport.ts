@@ -33,8 +33,10 @@ export class Transport {
   onState: (state: RTCPeerConnectionState) => void = () => {}
   onLocalCandidate: (c: Candidate) => void = () => {}
 
-  constructor(stunServer: string) {
-    this.pc = new RTCPeerConnection({ iceServers: [{ urls: stunServer }] })
+  // Relay-only gathers nothing but the relays' addresses, so every path the
+  // browser checks runs through one.
+  constructor(iceServers: RTCIceServer[], relayOnly: boolean) {
+    this.pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: relayOnly ? 'relay' : 'all' })
     this.pc.onicecandidate = (e) => this.gathered(e.candidate)
     this.pc.onconnectionstatechange = () => this.onState(this.pc.connectionState)
     for (const [id, label] of CHANNELS) {
@@ -106,15 +108,27 @@ export class Transport {
     return true
   }
 
-  async roundTripMs(): Promise<number | undefined> {
+  // The pair in use, its round trip and the kind of our end: host, srflx,
+  // prflx, or relay with the relay's own transport. One browser family names
+  // the pair on the transport, the other marks the pair itself.
+  async path(): Promise<{ rttMs?: number; via?: string }> {
     const stats = await this.pc.getStats()
-    let rtt: number | undefined
+    let pair: any
     for (const r of stats.values()) {
-      if (r.type !== 'candidate-pair' || r.currentRoundTripTime === undefined) continue
-      // The pair in use where the browser marks one, else any measured pair.
-      if (r.nominated || r.selected || rtt === undefined) rtt = r.currentRoundTripTime * 1000
+      if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId)
     }
-    return rtt
+    if (!pair) {
+      for (const r of stats.values()) {
+        if (r.type === 'candidate-pair' && (r.selected || r.nominated)) pair = r
+      }
+    }
+    if (!pair) return {}
+    const local = stats.get(pair.localCandidateId)
+    // A path through a relay can show our end as peer reflexive -- learned
+    // from the host's answer -- and still carries the relay's transport.
+    const via = local?.relayProtocol ? `relay/${local.relayProtocol}` : local?.candidateType
+    const rtt = pair.currentRoundTripTime
+    return { rttMs: rtt === undefined ? undefined : rtt * 1000, via }
   }
 
   close(): void {
@@ -125,7 +139,11 @@ export class Transport {
 
   private addRemote(c: Candidate): void {
     const ip = c.ip.replace(/^::ffff:/, '')
-    const typ = c.from_stun ? 'srflx' : 'host'
+    // A reflexive candidate's line names a related address; the host gives
+    // none, so the line names the unspecified one. One browser family drops
+    // a reflexive line without it, silently, and with it the host's one
+    // address beyond its translation.
+    const typ = c.from_stun ? 'srflx raddr 0.0.0.0 rport 0' : 'host'
     void this.pc.addIceCandidate({
       candidate: `candidate:1 1 udp 2113937151 ${ip} ${c.port} typ ${typ} generation 0`,
       sdpMid: this.mid,
@@ -143,15 +161,17 @@ export class Transport {
     if (parts.length < 8 || parts[2]?.toLowerCase() !== 'udp') return
     const typ = parts[7]
     const ip = parts[4] ?? ''
-    if (typ !== 'host' && typ !== 'srflx') return
+    if (typ !== 'host' && typ !== 'srflx' && typ !== 'relay') return
     // A host candidate hidden behind a multicast name carries nothing a host
     // can probe; the host learns that address from our own checks instead.
     if (ip.endsWith('.local')) return
+    // A relay's address is offered as a reflexive one: an address beyond our
+    // translation, which the host checks once the readiness marker is in.
     this.onLocalCandidate({
       ip,
       port: parseInt(parts[5] ?? '0', 10),
       lan: typ === 'host',
-      from_stun: typ === 'srflx',
+      from_stun: typ !== 'host',
       sync: false,
     })
   }

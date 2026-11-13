@@ -130,3 +130,5 @@ examples/client/client
 examples/client/probe-import
 examples/client/ws-check
 examples/client/build/
+# The web client's ICE servers, credentials included.
+examples/web-client/ice-servers.json
