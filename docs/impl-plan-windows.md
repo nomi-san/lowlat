@@ -687,6 +687,13 @@ once, here.
   the grid moved a refresh later, or the deadline aimed at the refresh before, after five late
   pictures in a row -- each fixed it, and each made some content near the stream's rate up to 8 ms
   later at the median.
+  *Amended 2026-11-14 (the maintainer's decision):* **the deadlines take their phase from the
+  primary display's refresh**, the compositor's answer only where no primary is listed, since on
+  Windows 11 that answer is the fastest display's while compositions stay on the primary's; the
+  rate is still the lowest of the request, the mode and the compositor's answer. On the
+  duplication a deadline that skips no refresh is waited for in its wait, not slept to, and one
+  past a skipped refresh lands past its composition by a margin learned from where compositions
+  land, never giving a picture back ([05 §2](05-host.md)).
   *Amended 2026-10-16, at W3.4's review:* **a masked colour pointer made only of black, white,
   clear and inverting pixels is drawn as the monochrome one it is**, its inverting pixels black
   in a light halo: the system hands a display driver every monochrome pointer in that form, so
@@ -2785,6 +2792,10 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-14: W2's pacing decision amended: the deadlines on the primary display's refresh, not
+  the compositor's answer, which on Windows 11 is the fastest display's; on the duplication a
+  deadline that skips no refresh waited for in its wait, one past a skip at a learned margin; 05
+  §2 amended.
 - 2026-11-14: W1.1: the loop's deadline is a high-resolution timer tied to its completion port,
   the port's own timeout a backstop past it and the fallback where the timer or its calls are
   missing; the loop no longer leans on the raised timer resolution, which stays for every other

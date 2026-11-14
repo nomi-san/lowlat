@@ -3,6 +3,45 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-14 - The Windows frame loop on the composition wait
+
+### Changed
+- **On Windows a deadline that skips no refresh is waited for in the duplication's own wait**
+  ([05 §2](05-host.md)), entered once the tick is done, not slept to: the wait returns as the
+  composition lands, where the sleep and its spin ended just before. Its bound still counts
+  from the deadline, so a composition landing late is not first taken for a present of the
+  same picture. The host's own display read from its driver waits as before.
+- **A deadline past a skipped refresh lands past its composition by a learned margin**: the
+  99th percentile of how late the last 512 compositions landed against their refresh, counted
+  at deadlines that skipped nothing, at least half a millisecond. It was half a millisecond
+  always. Nothing is given back to wait for a later picture.
+- **The deadlines take their phase from the primary display's refresh** (W2's pacing decision,
+  [impl-plan-windows.md](impl-plan-windows.md)), the compositor's answer only where no primary
+  is listed; the rate is still the lowest of the request, the mode and that answer.
+
+### Checked
+- On Windows 11 26H2 with a 90 Hz panel, a copy of the loop around the duplication: every
+  composition taken, 0.7 percent of a core where the sleep's spin cost 8.1, each picture in hand
+  0.077 ms after its composition at the median and 0.188 at the 99th percentile, against 0.059
+  and 0.735. At sixty a second, 21 of 1800 pictures a refresh old where the half millisecond
+  left 105, the margin learned at 1.3 ms. Beside a 240 Hz virtual display, which the compositor
+  reports as its clock while the panel is still composed at 90, the panel's pictures 0.075 ms
+  after their composition at the median, where the deadlines on that clock took every one 1.9
+  ms late; the virtual display's own, 0.149 at the 99th percentile, as before.
+- Changes landing one at a time, 40 to 200 ms apart: none waits for the next, where giving the
+  skipped refresh's picture back held one 186 ms.
+- On Windows 10, a 120 Hz primary: every composition 0.034 ms after it at the median for 0.9
+  percent of a core, against 7.9 with the spin; at sixty, the margin stays at its least.
+- Three new checks -- the primary's refresh chosen, the margin learned from landings alone,
+  late compositions past a skipped refresh waited out -- each broken once and seen to fail. The
+  host's 229 tests and the capture crate's pass on Windows, and the host's on Linux.
+
+### Known
+- **Where every deadline skips a refresh** -- sixty of 120 -- no picture lands at a deadline
+  that skipped nothing, so the margin stays at its least, as before.
+- **Not measured**: a physical display faster than the primary on Windows 11, which may be
+  composed at its own rate; the host's own display read from its driver; a live session.
+
 ## 2026-11-14 - The Windows loop's deadline, a timer on its port
 
 ### Changed

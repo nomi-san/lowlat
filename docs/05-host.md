@@ -108,6 +108,24 @@ Rules:
   holds. Waiting on every encoder instead cost NVIDIA's leg a fifth of its rate, so the guard
   is Intel's alone; the host's own display read from its driver waits on an event of its own and
   needs none.
+  *Amended 2026-11-14:* **on Windows a deadline that skips no refresh is not slept to.** The
+  loop enters the duplication's own wait once the tick is done, and the wait returns as the
+  composition lands -- where the sleep and its spin ended just before. Entered early, its bound
+  still counts from the deadline: counted from the early start, a composition landing late ended
+  it first as a present of the same picture, an empty tick that, while a change still settles,
+  submits the unchanged picture just ahead of the real one. **A deadline past a skipped refresh
+  is placed past its own composition by a learned margin**: the 99th percentile of how late the
+  last 512 compositions landed against the refresh they were expected on, counted only at
+  deadlines that skipped nothing -- one past a skip sees only what landed within the margin
+  already set -- and never under half a millisecond. Nothing is given back to wait for a later
+  picture: the one in hand may be the last change there is, a keystroke's, and a probe that gave
+  it back held that change 186 ms for the next. Measured on Windows 11 26H2 with a 90 Hz panel:
+  with every composition taken, the sleep's spin cost 8.1 percent of a core and the wait alone
+  0.7, each picture in hand 0.077 ms after its composition at the median and 0.188 at the 99th
+  percentile, against 0.059 and 0.735; at sixty a second, 21 of 1800 pictures were a refresh old
+  against 105 with the half millisecond, the margin learned at 1.3 ms and those pictures taken
+  that long after their composition. The host's own display read from its driver waits as
+  before.
 - **The rate is read from the display, not only bounded by it.** The mode the lit controller is
   running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
   from the refresh alone when nothing was asked. Bounding without reading is not enough: the
@@ -144,6 +162,14 @@ Rules:
   each over within 0.15 ms; at the monitor's 120 it streams clean. Left as it is
   ([impl-plan-windows.md](impl-plan-windows.md), W2's pacing decision): the host streams the
   primary, its own display or a headless machine, each composed on the clock.
+  *Amended 2026-11-14 ([impl-plan-windows.md](impl-plan-windows.md), W2's pacing decision):*
+  **the refresh the deadlines take their phase from is the primary display's**, read from the
+  system's display configuration, and the compositor's answer only where it lists no primary;
+  the rate is still the lowest of the request, the mode and that answer. On Windows 11 the
+  compositor reports the fastest display's clock: beside a 240 Hz virtual display it said 240
+  while the 90 Hz primary panel was still composed 90 times a second and the virtual display
+  about 88, and on the 4.2 ms clock every picture of the panel was taken 1.9 ms after its
+  composition at the median -- 0.075 on the primary's refresh. On Windows 10 the two agree.
 - **The host's own display can be read straight from its driver** (*added 2026-10-16*,
   [11 §1.6](11-drivers.md), [impl-plan-windows.md](impl-plan-windows.md) W3.3), the system's
   own buffers converted as they are, with no duplication between: a second Windows source behind
