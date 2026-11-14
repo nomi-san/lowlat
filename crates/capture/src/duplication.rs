@@ -25,9 +25,9 @@ use lowlat_drivers::ffi::d3d11_guids::{IID_ID3D11Texture2D, IID_IDXGIOutput5};
 use lowlat_drivers::vcall;
 use windows_sys::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes,
-    QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+    DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE, DISPLAYCONFIG_PATH_INFO,
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo,
+    GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
 };
 use windows_sys::Win32::Foundation::GENERIC_ALL;
 use windows_sys::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
@@ -571,6 +571,9 @@ pub struct Shown {
     /// whatever number the output carries, which a driver restart renews.
     /// Empty where the system will not say.
     pub monitor: String,
+    /// Whether its source sits at the desktop's origin: the primary display,
+    /// whose refresh every output is composed on ([`composed_rate`]).
+    pub primary: bool,
 }
 
 /// How many times a second the output named `name` presents, as a ratio,
@@ -591,7 +594,40 @@ pub fn refresh_of(name: &str) -> Option<(u32, u32)> {
 /// a virtual display at 144 or 240 was handed 120 pictures a second under a
 /// 120 Hz primary, measured -- so the rate an output presents at is the lower
 /// of this and its mode. Nothing where the compositor will not say.
+///
+/// **On Windows 11 it can overstate the primary's** (26H2, measured
+/// 2026-11-14): with displays at different rates it reports the fastest one's,
+/// 240 with a 240 Hz virtual display beside a 90 Hz primary panel. As a rate
+/// that is harmless -- the panel's own mode caps it -- but not as the refresh
+/// a picture's deadline is placed on ([`primary_rate`]).
 pub fn composed_rate() -> Option<(u32, u32)> {
+    compositor_rate()
+}
+
+/// The primary display's refresh, as a ratio, where the system lists one:
+/// the refresh compositions land on.
+///
+/// **Where it and [`composed_rate`] part, this is the one compositions
+/// follow** (Windows 11 26H2, measured 2026-11-14): beside a 240 Hz virtual
+/// display the compositor reported 240 while the 90 Hz primary panel was
+/// still composed 90 times a second and the virtual display about 88, and a
+/// deadline placed on the 4.2 ms clock landed 1.9 ms after every one of the
+/// panel's compositions. On Windows 10 the two agree.
+pub fn primary_rate() -> Option<(u32, u32)> {
+    primary_refresh(&shown())
+}
+
+/// The refresh of the output listed as the primary, where it has one.
+fn primary_refresh(outputs: &[Shown]) -> Option<(u32, u32)> {
+    outputs
+        .iter()
+        .find(|output| output.primary)
+        .map(|output| output.refresh)
+        .filter(|&(numerator, denominator)| numerator != 0 && denominator != 0)
+}
+
+/// The compositor's own clock, as it reports it for the desktop.
+fn compositor_rate() -> Option<(u32, u32)> {
     let mut info = DWM_TIMING_INFO {
         cbSize: u32::try_from(size_of::<DWM_TIMING_INFO>()).unwrap_or(0),
         ..Default::default()
@@ -686,10 +722,24 @@ pub fn shown() -> Vec<Shown> {
         };
         let named = wide(&source.viewGdiDeviceName);
         let rate = path.targetInfo.refreshRate;
+        // SAFETY: the plain index, as the configuration was asked without the
+        // virtual-mode layout.
+        let index = unsafe { path.sourceInfo.Anonymous.modeInfoIdx };
+        let primary = mode_list
+            .get(..modes as usize)
+            .zip(usize::try_from(index).ok())
+            .and_then(|(filled, index)| filled.get(index))
+            .filter(|mode| mode.infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
+            .is_some_and(|mode| {
+                // SAFETY: a source mode, as its type says.
+                let position = unsafe { mode.Anonymous.sourceMode.position };
+                position.x == 0 && position.y == 0
+            });
         out.push(Shown {
             name: named.strip_prefix(r"\\.\").unwrap_or(&named).to_string(),
             refresh: (rate.Numerator, rate.Denominator),
             monitor,
+            primary,
         });
     }
     out
@@ -894,6 +944,33 @@ mod tests {
     fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
         let at = ((y * width + x) * 4) as usize;
         rgba[at..at + 4].try_into().expect("four bytes")
+    }
+
+    /// **The desktop is composed at the primary's refresh**, whichever output
+    /// is faster or listed first; nothing where no primary is listed or its
+    /// rate is not known, which leaves the compositor's own answer.
+    #[test]
+    fn the_composed_rate_is_the_primarys_refresh() {
+        let output = |name: &str, refresh: (u32, u32), primary: bool| Shown {
+            name: name.to_string(),
+            refresh,
+            monitor: String::new(),
+            primary,
+        };
+        let panel = output("DISPLAY23", (90_000, 1000), true);
+        let fast = output("DISPLAY6", (240_000, 1000), false);
+        assert_eq!(
+            primary_refresh(&[fast.clone(), panel.clone()]),
+            Some((90_000, 1000)),
+            "the primary's, not the fastest's or the first listed"
+        );
+        assert_eq!(primary_refresh(std::slice::from_ref(&fast)), None);
+        assert_eq!(
+            primary_refresh(&[output("DISPLAY1", (0, 0), true), fast]),
+            None,
+            "a primary whose rate is not known says nothing"
+        );
+        assert_eq!(primary_refresh(&[]), None);
     }
 
     /// **A colour shape is straight BGRA**, so what travels is the same

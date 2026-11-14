@@ -1453,6 +1453,16 @@ impl Display {
         None
     }
 
+    /// Never here: the wait is for the vblank event the loop arms after each
+    /// tick, asked about once the deadline has passed.
+    pub fn waits_for_composition(&self) -> bool {
+        false
+    }
+
+    /// Nothing: no wait here begins before its deadline
+    /// ([`Self::waits_for_composition`]).
+    pub fn wait_early(&mut self, _until_ms: f64) {}
+
     /// Wait up to `timeout_ms` for the present an arm asked about.
     ///
     /// Nothing when the display said nothing in the time. Otherwise whether

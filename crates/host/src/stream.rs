@@ -3448,13 +3448,22 @@ mod pace_tests {
     }
 }
 
-/// How far either side of a refresh a deadline is placed.
+/// How far either side of a refresh a deadline is placed, and the least past
+/// one that a deadline skipping refreshes is ([`Slots`]).
 ///
 /// **A composition lands within a fraction of a millisecond of its refresh**,
 /// 0.2 to 0.4 ms after it on the development machine, so half a millisecond
 /// keeps a deadline on the side of the refresh it is meant for without a
 /// latency figure seeing it.
 const SLOT_MARGIN_MS: f64 = 0.5;
+
+/// How many recent landings the margin past a skipped refresh is learned
+/// from: several seconds of them, the 99th percentile their sixth-latest.
+///
+/// **Fewer read low.** A 99th percentile of 128 is their third-latest, which
+/// came out at 0.86 ms on a laptop whose compositions reached 1.3 to 1.5 past
+/// their refresh, and 14 of 480 pictures were taken a refresh old there.
+const LANDINGS: usize = 512;
 
 /// The frame clock against a display that says when it composed each picture
 /// (docs/05-host.md section 2).
@@ -3473,10 +3482,42 @@ const SLOT_MARGIN_MS: f64 = 0.5;
 /// landing between a tick and the next deadline waited for that deadline: up
 /// to an interval on every frame of content whose phase fell that way, and on
 /// about half of all desktop updates.
-#[derive(Debug, Default)]
+///
+/// **Past a skipped refresh, the margin is learned** (*2026-11-14*): where
+/// nearly every composition lands, the 99th percentile of how late the recent
+/// ones landed against the refresh they were expected on, and never under
+/// [`SLOT_MARGIN_MS`]. A deadline sooner than its own composition takes the
+/// skipped refresh's, a refresh old: at sixty a second of ninety, on a laptop
+/// whose compositions landed up to 1.5 ms past their refresh, 105 of 1800
+/// pictures so with the least margin, 21 with the learned one (1.3 ms),
+/// measured. Nothing is given back to wait for a later picture instead,
+/// since the one in hand may be the last change there is: a keystroke's,
+/// which would then wait for the next -- 186 ms, where a probe did.
+#[derive(Debug)]
 struct Slots {
     /// Where the rate puts the next picture, on the loop's clock.
     grid_ms: Option<f64>,
+    /// The refresh the last deadline expected a composition on.
+    expected_ms: Option<f64>,
+    /// Whether the last deadline skips refreshes, so lands past its own.
+    skipping: bool,
+    /// How late recent compositions landed against the refresh they were
+    /// expected on, in milliseconds, the oldest overwritten first.
+    late_ms: [f64; LANDINGS],
+    /// How many landings have been recorded.
+    landings: usize,
+}
+
+impl Default for Slots {
+    fn default() -> Self {
+        Self {
+            grid_ms: None,
+            expected_ms: None,
+            skipping: false,
+            late_ms: [0.0; LANDINGS],
+            landings: 0,
+        }
+    }
 }
 
 impl Slots {
@@ -3488,7 +3529,24 @@ impl Slots {
     /// the grid to keep. One composed before its grid point -- left pending
     /// from a skipped refresh -- keeps the grid, which is what stops it
     /// bringing the next picture a refresh early.
+    ///
+    /// **A landing is a picture within half a refresh of the refresh it was
+    /// expected on**, taken at a deadline that skipped nothing. One further
+    /// off is a stall's end, or the picture left from a skipped refresh, and
+    /// says nothing of where compositions land; and one taken past a skip is
+    /// seen only if it landed within the margin already set, so it would
+    /// teach that margin back to itself -- 14 of 480 pictures a refresh old
+    /// where it was counted, measured.
     fn after_picture(&mut self, composed_ms: f64, interval_ms: f64, refresh_ms: f64) -> f64 {
+        if let Some(expected) = self.expected_ms
+            && !self.skipping
+        {
+            let late = composed_ms - expected;
+            if late.abs() < refresh_ms / 2.0 {
+                self.late_ms[self.landings % LANDINGS] = late;
+                self.landings = self.landings.saturating_add(1);
+            }
+        }
         let grid = match self.grid_ms {
             Some(grid) if composed_ms <= grid + refresh_ms / 2.0 => grid,
             _ => composed_ms,
@@ -3496,17 +3554,40 @@ impl Slots {
         self.grid_ms = Some(grid);
         let steps = ((grid - composed_ms) / refresh_ms).round();
         let slot = composed_ms + steps * refresh_ms;
-        if steps > 1.0 {
-            slot + SLOT_MARGIN_MS
+        self.expected_ms = Some(slot);
+        self.skipping = steps > 1.0;
+        if self.skipping {
+            slot + self.margin_past(refresh_ms)
         } else {
             slot - SLOT_MARGIN_MS
         }
+    }
+
+    /// Whether the last deadline skips refreshes, so lands past its own
+    /// refresh rather than before it.
+    fn skipping(&self) -> bool {
+        self.skipping
+    }
+
+    /// How far past its refresh a deadline that skips refreshes is placed:
+    /// the 99th percentile of the recent landings, at least [`SLOT_MARGIN_MS`]
+    /// and at most half a refresh.
+    fn margin_past(&self, refresh_ms: f64) -> f64 {
+        let recorded = self.landings.min(LANDINGS);
+        let mut late = self.late_ms;
+        let late = &mut late[..recorded];
+        late.sort_unstable_by(f64::total_cmp);
+        let p99 = late
+            .get(recorded.saturating_sub(1) * 99 / 100)
+            .copied()
+            .unwrap_or(0.0);
+        p99.clamp(SLOT_MARGIN_MS, (refresh_ms / 2.0).max(SLOT_MARGIN_MS))
     }
 }
 
 #[cfg(test)]
 mod slot_tests {
-    use super::{SLOT_MARGIN_MS, Slots};
+    use super::{LANDINGS, SLOT_MARGIN_MS, Slots};
 
     const REFRESH: f64 = 1000.0 / 120.0;
     const EXACT: f64 = 1e-6;
@@ -3538,6 +3619,110 @@ mod slot_tests {
             deadline = slots.after_picture(composed, interval, REFRESH);
         }
         taken
+    }
+
+    /// [`stream`] against a display whose every refresh is composed, each
+    /// composition landing `late(k)` ms past its refresh: each picture's
+    /// deadline and composition.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "refresh counts of a few thousand"
+    )]
+    fn stream_late(interval: f64, pictures: usize, late: impl Fn(i64) -> f64) -> Vec<(f64, f64)> {
+        let at = |k: i64| k as f64 * REFRESH + late(k);
+        let mut slots = Slots::default();
+        let mut taken = Vec::with_capacity(pictures);
+        let (mut deadline, mut last) = (0.0f64, -1i64);
+        while taken.len() < pictures {
+            let mut k = last + 1;
+            while at(k) <= deadline && at(k + 1) <= deadline {
+                k += 1;
+            }
+            taken.push((deadline, at(k)));
+            last = k;
+            deadline = slots.after_picture(at(k), interval, REFRESH);
+        }
+        taken
+    }
+
+    /// Compositions landing past their refresh as far as a laptop's did,
+    /// spread from a tenth of a millisecond to 1.2 with nothing a stride of
+    /// refreshes can follow: a mix of the refresh's index, not a sequence
+    /// whose differences repeat.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        reason = "a refresh index mixed as bits, and 53 of them as a fraction"
+    )]
+    fn laptop_late(k: i64) -> f64 {
+        let mut x = (k as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 31;
+        0.1 + 1.1 * ((x >> 11) as f64 / (1u64 << 53) as f64)
+    }
+
+    /// **A deadline past a skipped refresh waits out compositions that land
+    /// late**: ninety a second on 120 skips every third refresh, and with
+    /// compositions landing up to 1.2 ms past their refresh, the margin
+    /// learned from the pictures caught as they land puts nearly every such
+    /// deadline past its own composition -- the 99th percentile's worth --
+    /// where half a millisecond took the skipped refresh's, a refresh old,
+    /// for about one picture in ten.
+    #[test]
+    fn a_deadline_past_a_skipped_refresh_waits_out_late_compositions() {
+        let interval = 1000.0 / 90.0;
+        let taken = stream_late(interval, 900, laptop_late);
+        let counted = &taken[64..];
+        let stale = counted
+            .iter()
+            .filter(|(deadline, composed)| deadline - composed > REFRESH / 2.0)
+            .count();
+        assert!(
+            stale * 100 <= counted.len(),
+            "{stale} of {} pictures a refresh old",
+            counted.len()
+        );
+        assert!((mean_gap(&taken) - interval).abs() < 0.01 * interval);
+    }
+
+    /// **Only a landing teaches the margin**: a picture caught a refresh past
+    /// the one it was expected on (that one left empty), one from a refresh
+    /// before it, and a stall's end all leave it at the least; so does every
+    /// picture taken past a skip, which is seen only if it landed within the
+    /// margin already set. Compositions landing late within half a refresh at
+    /// deadlines that skip nothing raise it to where they land.
+    #[test]
+    fn only_a_landing_teaches_the_margin() {
+        let teach = |interval: f64, late: &dyn Fn(usize, f64) -> f64, rounds: usize| {
+            let mut slots = Slots::default();
+            slots.after_picture(0.0, interval, REFRESH);
+            for round in 0..rounds {
+                let expected = slots.expected_ms.expect("a deadline was placed");
+                slots.after_picture(late(round, expected), interval, REFRESH);
+            }
+            slots.margin_past(REFRESH)
+        };
+        let no_landing = |round: usize, expected: f64| match round % 3 {
+            0 => expected + REFRESH,
+            1 => expected - REFRESH,
+            _ => expected + 100.0 * REFRESH,
+        };
+        let taught = teach(REFRESH, &no_landing, 300);
+        assert!(
+            (taught - SLOT_MARGIN_MS).abs() < EXACT,
+            "taught by no landing: {taught:.3} ms"
+        );
+        let past_a_skip = teach(2.0 * REFRESH, &|_, expected| expected + 0.9, LANDINGS);
+        assert!(
+            (past_a_skip - SLOT_MARGIN_MS).abs() < EXACT,
+            "taught by pictures past a skip: {past_a_skip:.3} ms"
+        );
+        let landed = teach(REFRESH, &|_, expected| expected + 0.9, LANDINGS);
+        assert!(
+            (landed - 0.9).abs() < 1e-9,
+            "landings 0.9 ms late: {landed:.3} ms"
+        );
     }
 
     #[allow(clippy::cast_precision_loss, reason = "a few hundred pictures")]
@@ -4103,7 +4288,18 @@ fn encode_loop<E: Encoder + FromDevice>(
         // events, the clock alone decides, as before. The bound covers a
         // panel whose vblanks stop while nothing moves, so a stream cannot be
         // held by a display that stopped answering.
-        let deadline_passed = now_ms >= next_frame_ms;
+        //
+        // **Where the display's wait is the composition itself, a deadline
+        // that skips no refresh is met by the composition**
+        // ([`Display::waits_for_composition`]): the wait is entered once the
+        // tick is done (below), and a composition landing before the deadline
+        // is taken as it lands rather than held for it.
+        let straight = vblank_live
+            && !slots.skipping()
+            && display
+                .as_deref()
+                .is_some_and(Display::waits_for_composition);
+        let deadline_passed = now_ms >= next_frame_ms || (straight && vblank_seen);
         let due = deadline_passed
             && (display.is_none()
                 || !vblank_live
@@ -4697,8 +4893,22 @@ fn encode_loop<E: Encoder + FromDevice>(
         // promised; when it arrives, the next pass ticks on the picture that
         // was just presented. The bound in the tick gate is the fallback, so
         // a poll that never fires cannot hold the stream.
+        //
+        // **A deadline that skips no refresh is not slept to** where the
+        // display's wait is the composition itself: the wait is entered now,
+        // once a picture in flight has been waited for as below, and returns
+        // as the composition lands -- the moment the sleep and its spin
+        // ended just before, for none of their cost (8.1 % of a core at 90,
+        // measured). A deadline past a skipped refresh is still slept to,
+        // since what waits before it is the skipped refresh's picture.
+        let early = vblank_live
+            && !slots.skipping()
+            && !(waiting && until > POLL_MS * 2.0)
+            && display
+                .as_deref()
+                .is_some_and(Display::waits_for_composition);
         if vblank_live
-            && now_ms >= next_frame_ms
+            && (now_ms >= next_frame_ms || early)
             && !vblank_seen
             && let Some(desktop) = display.as_deref_mut()
         {
@@ -4734,6 +4944,10 @@ fn encode_loop<E: Encoder + FromDevice>(
             } else {
                 20
             };
+            // Entered early, the wait's bound still counts from the deadline.
+            if now_ms < next_frame_ms {
+                desktop.wait_early(next_frame_ms - now_ms);
+            }
             if let Some(presented) = desktop.wait_present(timeout) {
                 vblank_seen = presented;
                 if vblank_seen {
