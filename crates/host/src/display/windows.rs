@@ -29,10 +29,11 @@ use lowlat_common::clock::{self, Time};
 use lowlat_core::video::Rotation;
 use lowlat_drivers::d3d11::{Bounds, Com, D3d11, Device, Event, Fence, Output, Span, Timer};
 use lowlat_drivers::ffi::d3d11::{
-    DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_ROTATE90,
-    DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_UNSPECIFIED, ID3D11ShaderResourceView,
-    ID3D11Texture2D, IDXGIOutput,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_IDENTITY,
+    DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_UNSPECIFIED,
+    ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D, IDXGIOutput,
 };
+use lowlat_drivers::vcall;
 use lowlat_vdd_ctl::{Controller, FramePage, ShapeKind, Snapshot, Waited};
 
 use super::{Acquired, Capturable, Selectable, VIRTUAL};
@@ -214,6 +215,72 @@ struct InPlace {
     torn: u64,
     /// A keyframe owed for one of those, carried by the next picture.
     owe_keyframe: bool,
+    /// The picture copied as its frame went back ([`Self::keep`]): what a
+    /// picture sent again reads once the system has the frame.
+    copy: Option<Com<ID3D11Texture2D>>,
+    /// Whether `presented` is that copy rather than the frame.
+    copied: bool,
+    /// Pictures sent again from the copy.
+    resent: core::cell::Cell<u64>,
+    /// Pictures that would have been sent again with no copy to read, and
+    /// were not.
+    refused: core::cell::Cell<u64>,
+}
+
+impl InPlace {
+    /// Copy the held picture before its frame goes back, and hand the encoder
+    /// the copy from then on.
+    ///
+    /// **A picture is sent again after its frame has gone back** -- a change
+    /// still settling, a heartbeat, a joining guest's keyframe, a wait that
+    /// spent its refresh on the encoder -- and read from the frame the system
+    /// had taken back it came out black, the whole picture, on Windows 11:
+    /// once per two pictures at ninety a second on an AMD laptop, measured
+    /// 2026-11-14. The frame cannot stay held instead, since the next is taken
+    /// only once it is back. Queued on the device ahead of the release, which
+    /// orders it; where no copy can be made, nothing is sent again.
+    fn keep(&mut self, device: &Device) {
+        if self.copied {
+            return;
+        }
+        let Some(Registration::Captured(image)) = self.presented.as_ref() else {
+            self.presented = None;
+            return;
+        };
+        // SAFETY: plain data, for which zero is valid, filled by the call.
+        let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
+        // SAFETY: a live texture; the description is a live local.
+        unsafe { vcall!(image.as_ptr(), GetDesc, &raw mut desc) };
+        let same = |copy: &Com<ID3D11Texture2D>| {
+            // SAFETY: as above.
+            let mut was: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
+            // SAFETY: as above.
+            unsafe { vcall!(copy.as_ptr(), GetDesc, &raw mut was) };
+            (was.Width, was.Height, was.Format) == (desc.Width, desc.Height, desc.Format)
+        };
+        if !self.copy.as_ref().is_some_and(same) {
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.CPUAccessFlags = 0;
+            desc.MiscFlags = 0;
+            self.copy = device.texture(&desc).ok();
+        }
+        let Some(copy) = self.copy.as_ref() else {
+            self.presented = None;
+            return;
+        };
+        // SAFETY: the device's context on this thread; both textures are live,
+        // of one size and format, and the frame is still held.
+        unsafe {
+            vcall!(
+                device.context(),
+                CopyResource,
+                copy.as_ptr().cast::<ID3D11Resource>(),
+                image.as_ptr().cast::<ID3D11Resource>()
+            );
+        }
+        self.presented = Some(Registration::Captured(copy.clone_ref()));
+        self.copied = true;
+    }
 }
 
 /// Whether `wanted` names `name`: the system's own name, its `\\.\` prefix
@@ -1488,6 +1555,10 @@ impl Display {
                 reading: None,
                 torn: 0,
                 owe_keyframe: false,
+                copy: None,
+                copied: false,
+                resent: core::cell::Cell::new(0),
+                refused: core::cell::Cell::new(0),
             }),
             Register::Nvenc(_) | Register::Amd(_) | Register::Intel(_) => None,
         };
@@ -1723,6 +1794,11 @@ impl Display {
         self.duplication = None;
         if let Some(in_place) = self.in_place.as_mut() {
             in_place.held = false;
+            // The frame went with the duplication, uncopied: nothing to send
+            // again until the next.
+            if !in_place.copied {
+                in_place.presented = None;
+            }
         }
         self.converter.forget();
     }
@@ -1799,6 +1875,16 @@ impl Display {
     /// texture an encoder reading in place was last handed.
     pub fn presented(&self) -> Option<&Registration> {
         if let Some(in_place) = &self.in_place {
+            // **Never a frame the system has taken back** ([`InPlace::keep`]):
+            // past its frame, the copy, or nothing. The host's own display
+            // read from its driver holds no frame, and is not this.
+            if self.direct.is_none() && !in_place.held {
+                if !in_place.copied {
+                    in_place.refused.set(in_place.refused.get() + 1);
+                    return None;
+                }
+                in_place.resent.set(in_place.resent.get() + 1);
+            }
             return in_place.presented.as_ref();
         }
         let slot = self.next.checked_sub(1)? % self.registrations.len().max(1);
@@ -1845,6 +1931,7 @@ impl Display {
             // it goes back only before the next is taken.
             in_place.presented = Some(Registration::Captured(kept.image));
             in_place.held = true;
+            in_place.copied = false;
             self.next = self.next.wrapping_add(1);
             self.timing
                 .queued
@@ -1853,10 +1940,12 @@ impl Display {
             if self.timing.pictures % REPORT_EVERY == 0 {
                 lowlat_common::log_info!(
                     "display: {} read in place, the next frame held off for the encoder {} \
-                     time(s) in {} pictures",
+                     time(s) in {} pictures; sent again from its copy {}, refused {}",
                     self.output.name,
                     in_place.deferred,
-                    self.timing.pictures
+                    self.timing.pictures,
+                    in_place.resent.get(),
+                    in_place.refused.get()
                 );
             }
             self.flight = Some(Acquired {
@@ -2168,6 +2257,7 @@ impl Display {
             && !in_place.engine.busy()
             && let Some(source) = self.duplication.as_mut()
         {
+            in_place.keep(&self.device);
             source.release();
             in_place.held = false;
         }
@@ -2386,11 +2476,39 @@ impl Display {
         let mut deferred = false;
         loop {
             let now = Time::now();
+            let budget = f64::from(timeout_ms.max(1)) - clock::diff_ms(called, now);
+            // **Nothing is taken while the encoder reads in place**: taking the
+            // next frame gives the held one back, and the system writes the
+            // desktop's changes into the same texture once it is back. **Nor
+            // is a present declared meanwhile**: the refresh the bound would
+            // call empty was spent on the encoder, not on the compositor, and
+            // called so it was a tick with nothing new, and a duplicate encode,
+            // for each picture that took the encoder longer than a refresh.
+            if let Some(in_place) = self.in_place.as_mut()
+                && in_place.engine.busy()
+            {
+                if budget <= 0.0 {
+                    return moved.then_some(false);
+                }
+                if !core::mem::replace(&mut deferred, true) {
+                    in_place.deferred += 1;
+                }
+                std::thread::sleep(core::time::Duration::from_millis(1));
+                continue;
+            }
             let bound = self.period_ms + self.early_ms - clock::diff_ms(began, now);
             if bound <= 0.0 {
+                // **Read in place, a look comes first**: the wait may not
+                // have looked at all, and a composition left there is the next
+                // picture, not the same one.
+                if self.in_place.is_some() {
+                    self.give_back();
+                    if let Ok(Looked::Image(kept)) = self.look(0) {
+                        self.kept = Some(kept);
+                    }
+                }
                 return Some(true);
             }
-            let budget = f64::from(timeout_ms.max(1)) - clock::diff_ms(called, now);
             if budget <= 0.0 {
                 return moved.then_some(false);
             }
@@ -2414,23 +2532,7 @@ impl Display {
                 std::thread::sleep(core::time::Duration::from_millis(1));
                 continue;
             }
-            // **Nothing is taken while the encoder reads in place**: taking the
-            // next frame gives the held one back, and the system writes the
-            // desktop's changes into the same texture once it is back.
-            if let Some(in_place) = self.in_place.as_mut() {
-                if in_place.engine.busy() {
-                    if !core::mem::replace(&mut deferred, true) {
-                        in_place.deferred += 1;
-                    }
-                    std::thread::sleep(core::time::Duration::from_millis(1));
-                    continue;
-                }
-                if core::mem::take(&mut in_place.held)
-                    && let Some(source) = self.duplication.as_mut()
-                {
-                    source.release();
-                }
-            }
+            self.give_back();
             match self.look(wait) {
                 Ok(Looked::Image(kept)) => {
                     self.kept = Some(kept);
@@ -2440,6 +2542,18 @@ impl Display {
                 Ok(Looked::Nothing) => {}
                 Err(_) => return Some(true),
             }
+        }
+    }
+
+    /// Give the frame read in place back to the system, its picture copied
+    /// first ([`InPlace::keep`]); nothing where none is held.
+    fn give_back(&mut self) {
+        if let Some(in_place) = self.in_place.as_mut()
+            && core::mem::take(&mut in_place.held)
+            && let Some(source) = self.duplication.as_mut()
+        {
+            in_place.keep(&self.device);
+            source.release();
         }
     }
 
