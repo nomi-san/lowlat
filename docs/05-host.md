@@ -126,6 +126,12 @@ Rules:
   against 105 with the half millisecond, the margin learned at 1.3 ms and those pictures taken
   that long after their composition. The host's own display read from its driver waits as
   before.
+  *Fixed 2026-11-14 ([impl-plan-windows.md](impl-plan-windows.md) W2.7):* **a picture the
+  encoder reads in place is sent again from a copy**, made as its frame goes back, never from the
+  frame: read from a frame the system had taken back, the whole picture came out black. **While
+  the encoder still reads it, the wait declares no present**: the refresh it would call empty was
+  spent on the encoder, and called so it was a tick with nothing new and a duplicate encode for
+  each picture that took longer than a refresh; once the bound has passed, a look comes first.
 - **The rate is read from the display, not only bounded by it.** The mode the lit controller is
   running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
   from the refresh alone when nothing was asked. Bounding without reading is not enough: the

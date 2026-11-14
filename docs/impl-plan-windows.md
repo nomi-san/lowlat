@@ -1216,6 +1216,15 @@ once, here.
   gate words it**: the second machine's link could not be shaped from here, so its rate change
   and loss stand on its hardware checks and on the development machine's live legs.
   *Closed 2026-10-20.*
+  *Amended 2026-11-14 (found live on Windows 11):* **a picture read in place and sent again after
+  its frame went back came out black**, the whole picture, flickering on every client: a change
+  still settling, the heartbeat and a joining guest's keyframe send the last picture again, and
+  with the frame given back as soon as the encoder was done, the encoder read a texture the
+  system had taken back -- once per two pictures at ninety a second on an AMD laptop whose encode
+  took longer than a refresh. **The picture is copied as its frame goes back** and what is sent
+  again reads the copy; the frame cannot stay held instead, since the next is taken only once it
+  is back. And while the encoder still reads in place, the duplication's wait declares no present
+  ([05 §2](05-host.md)).
 - [x] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
   below, it has its own*): Intel's own runtime, found by the GPU and loaded at run time as the
   client's decoder loads it (W1.7), encoding on the D3D11 device of an output an Intel GPU renders

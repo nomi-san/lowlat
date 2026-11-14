@@ -19,6 +19,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   [impl-plan-windows.md](impl-plan-windows.md)), the compositor's answer only where no primary
   is listed; the rate is still the lowest of the request, the mode and that answer.
 
+### Fixed
+- **A picture read in place and sent again after its frame went back came out black** -- the
+  whole picture, flickering on every client -- with AMD's encoder on Windows 11 ([05 §2](05-host.md),
+  W2.7 in [impl-plan-windows.md](impl-plan-windows.md)). A change still settling, the heartbeat
+  and a joining guest's keyframe send the last picture again, and the frame had been given back
+  as soon as the encoder was done; counted at ninety a second on an AMD laptop whose encode took
+  longer than a refresh, 332 such sends in 600 pictures before this loop and 474 with it. The
+  picture is now copied as its frame goes back and sent again from the copy, and while the
+  encoder still reads in place the wait declares no present.
+
 ### Checked
 - On Windows 11 26H2 with a 90 Hz panel, a copy of the loop around the duplication: every
   composition taken, 0.7 percent of a core where the sleep's spin cost 8.1, each picture in hand
@@ -35,12 +45,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Three new checks -- the primary's refresh chosen, the margin learned from landings alone,
   late compositions past a skipped refresh waited out -- each broken once and seen to fail. The
   host's 229 tests and the capture crate's pass on Windows, and the host's on Linux.
+- Live, the host on that laptop (AMD's encoder, 2880x1800 at about twelve milliseconds a
+  picture, so some sixty pictures a second) and the library's demo on the LAN: the host's own
+  processor time 7.3 to 9.5 percent of a core over 40 s where the loop before took 9.8 to 11.2,
+  the demo's latency 3.6 ms and nothing lost. With the copy, no picture went black over 45 s of
+  the demo and 13 minutes of an established client, 1963 pictures sent again from the copy and
+  one refused for want of one.
 
 ### Known
 - **Where every deadline skips a refresh** -- sixty of 120 -- no picture lands at a deadline
   that skipped nothing, so the margin stays at its least, as before.
+- **A picture sent again from the copy is still an encode**: held through an encode longer than
+  a refresh, the frame leaves the system's next composition waiting until it goes back, so the
+  wait finds nothing new yet and the loop sends the last picture again.
 - **Not measured**: a physical display faster than the primary on Windows 11, which may be
-  composed at its own rate; the host's own display read from its driver; a live session.
+  composed at its own rate; the host's own display read from its driver.
 
 ## 2026-11-14 - The Windows loop's deadline, a timer on its port
 
