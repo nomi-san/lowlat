@@ -184,8 +184,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the 99th percentile; on mains power at its best-performance setting, 0.2 and 0.7 to 1.6.
 
 ### Known
-- **Not measured on Windows 11**, which may leave a process's raised
-  resolution unhonoured while its windows are hidden.
+- **Measured on Windows 11 since** (*corrected 2026-11-15*; it said not measured, and that
+  Windows 11 may leave a process's raised resolution unhonoured while its windows are hidden).
+  The loop's wait does not lean on the resolution: on 24H2, 0.22 ms late at the median for a
+  1.3 ms wait, 0.50 for 5 ms and 0.31 for 16.7, at most 0.57 at the 99th percentile, never
+  early, raised or not, as on 26H2. **The raised resolution is dropped for a process whose
+  window is minimized**, 3 s after its start or at the minimize -- 1 ms waits then last 15 to 16
+  ms, on 26H2 -- which reaches the waits that are not the loop's in an application hosting the
+  library. A process whose windows are hidden or message-only kept it, for the 24 to 27 s
+  measured on 26H2 and for every minute-long run of the host's own process on 24H2.
 - **Quiet waits back to back, each begun on a tick, are the timer's worst case**: 5 ms waits
   end at 6.0, where the port's timeout with the resolution raised ended them at 5.0.
 - **The precise sleep's spin costs in proportion to the frame rate**: by the figure above,
