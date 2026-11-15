@@ -59,7 +59,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Submit to collected moves between runs on NVIDIA's and Intel's encoders**, with the copy and
   without it: 2.5 to 5.4 ms at the median on the RTX 5060 at 2560x1440 and 120, and on the Arc
   A380 3.2 or 5.2, the 2 ms between inside Intel's own wait for the picture -- where the loop
-  waited for 594 to 600 of every 600 pictures in flight either way.
+  waited for 594 to 600 of every 600 pictures in flight either way. On the Arc it follows small
+  pictures, and the video engine is as busy either way: the runtime notices the finished picture
+  late ([09 §8](09-compatibility.md)).
 
 ## 2026-11-14 - The Windows frame loop on the composition wait
 
