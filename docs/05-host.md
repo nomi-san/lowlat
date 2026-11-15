@@ -132,6 +132,14 @@ Rules:
   the encoder still reads it, the wait declares no present**: the refresh it would call empty was
   spent on the encoder, and called so it was a tick with nothing new and a duplicate encode for
   each picture that took longer than a refresh; once the bound has passed, a look comes first.
+  *Amended 2026-11-15 ([impl-plan-windows.md](impl-plan-windows.md) W2.7):* **the picture AMD's
+  encoder reads is copied as it is taken and its frame goes back at once**, no longer held through
+  the encode. Held, the frame kept the system from writing the next composition until it went
+  back, so after an encode as long as a refresh the wait found nothing new and the picture before
+  was encoded again: on an AMD laptop at ninety a second, 42.7 new pictures a second and 21.3
+  again; copied, 78.2 and 0.7. The copy is the device's work ahead of the encode, which waits for
+  it: 0.3 to 1.1 ms at the median by size and GPU. While the encoder reads the copy the wait still
+  takes nothing and declares no present.
 - **The rate is read from the display, not only bounded by it.** The mode the lit controller is
   running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
   from the refresh alone when nothing was asked. Bounding without reading is not enough: the

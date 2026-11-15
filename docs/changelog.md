@@ -3,6 +3,64 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-15 - AMD's encoder reads a copy taken with the picture
+
+### Changed
+- **On Windows the picture AMD's encoder reads at eight bits is copied as it is taken, and the
+  duplication's frame goes back at once** ([05 §2](05-host.md), W2.7 in
+  [impl-plan-windows.md](impl-plan-windows.md)). It was held through the encode and copied as it
+  went back, and while a frame is held the system does not write the next composition: after an
+  encode as long as a refresh, the wait that followed found nothing new and the loop encoded the
+  picture before again. The copy is the device's work ahead of the encode, which waits for it.
+  While the encoder reads the copy, the wait still takes nothing and declares no present.
+- The display's report counts the pictures sent again among those taken.
+
+### Fixed
+- **A third of what AMD's encoder made could be the picture before, again**, wherever its encode
+  took about a refresh or longer: on an AMD laptop on Windows 11, its 90 Hz panel at 2880x1800
+  and an encode of 11.7 ms, 42.7 new pictures a second and 21.3 sent again; with the copy, 78.2
+  and 0.7, and the library's demo presented 78 a second where it had 57.
+
+### Checked
+- On the development machine on Windows 11 24H2, AMD's integrated GPU beside the 120 Hz primary
+  on NVIDIA's, with content every refresh: a 2880x1800 virtual display at 120, 59.5 new pictures
+  a second and 37.8 sent again held, 103.8 and 5.9 copied, the demo presenting 110 a second where
+  it had 80; at 90, 59.9 and 29.5 held, 90.0 and none copied. Waiting a refresh more for the
+  composition held back, the alternative compared, ended the second encodes but kept 58 to 60 new
+  pictures a second.
+- The copy on the device: 0.6 ms at the median and 2.0 at the 99th percentile at 2880x1800 on
+  the development machine, 1.1 and 2.3 on the laptop, 0.3 to 0.4 at 1920x1080.
+- A physical 1920x1080 display at 60 on the same GPU: nothing sent again with the copy or
+  without it, submit to collected 4.16 ms at the median against 3.52. Sparse changes at 120: the
+  medians unchanged, the 99th percentile of submit to collected 10.5 ms against 9.8.
+- A new check -- an encode longer than a refresh, each unit handed over 12 ms late, at 120 with
+  content every refresh -- found nothing new in 1 to 6 of 240 waits, three runs; against the
+  frame held through the encode it failed, 120 and 121 of 240.
+- NVIDIA's and Intel's encoders read the conversion and never held a frame, and read the same
+  with the copy and without it: on the development machine's RTX 5060 and Arc A380, a 2560x1440
+  virtual display at 120, every picture taken and the conversion unchanged, 0.05 to 0.07 ms and
+  0.40 on the device.
+- The workspace's tests pass on Windows, and on Linux all but two that need a localhost
+  answering on both families, which the machine they ran on lacks.
+
+### Known
+- **The copy is in each picture's path**: the encode waits for it, 0.3 to 1.1 ms at the median
+  by size and GPU, where a picture whose encode ended before the next composition lost nothing
+  to the hold. Back to back on the laptop, the 99th percentile of submit to collected rose from
+  13.5 ms to 17.7.
+- **While the encoder is busy, a picture waits in the duplication**: taken 5.4 ms after its
+  composition at the median on the laptop, against 0.2 held, where the composition itself waited
+  for the encode instead.
+- **Where every deadline skips a refresh -- a 60 Hz display beside the 120 Hz primary -- the
+  deadlines can settle on the refresh between the display's compositions**, and then every
+  picture is taken a refresh after its composition for the whole stream: 8.9 ms against 0.5, in
+  2 of 14 runs, both with the copy. The deadlines keep a grid that a picture composed before its
+  point does not move, so the copy is not what decides it.
+- **Submit to collected moves between runs on NVIDIA's and Intel's encoders**, with the copy and
+  without it: 2.5 to 5.4 ms at the median on the RTX 5060 at 2560x1440 and 120, and on the Arc
+  A380 3.2 or 5.2, the 2 ms between inside Intel's own wait for the picture -- where the loop
+  waited for 594 to 600 of every 600 pictures in flight either way.
+
 ## 2026-11-14 - The Windows frame loop on the composition wait
 
 ### Changed

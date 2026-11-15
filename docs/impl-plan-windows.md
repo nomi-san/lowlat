@@ -1225,6 +1225,14 @@ once, here.
   again reads the copy; the frame cannot stay held instead, since the next is taken only once it
   is back. And while the encoder still reads in place, the duplication's wait declares no present
   ([05 §2](05-host.md)).
+  *Amended 2026-11-15 (after a comparison of two fixes):* **the picture is copied as it is taken
+  and its frame goes back at once**: held through the encode, it kept the next composition back
+  until it went, and after an encode as long as a refresh the wait found nothing new and the
+  picture before was encoded again -- a third of the laptop's encodes at ninety a second. Copied,
+  the laptop took 78.2 new pictures a second where it took 42.7, and the development machine's
+  AMD integrated GPU 103.8 at 120 where it took 59.5. Waiting a refresh more for the composition
+  held back, the other fix compared, ended the second encodes but kept 58 to 60. The copy is in
+  each picture's path, 0.3 to 1.1 ms of the device ([05 §2](05-host.md)).
 - [x] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
   below, it has its own*): Intel's own runtime, found by the GPU and loaded at run time as the
   client's decoder loads it (W1.7), encoding on the D3D11 device of an output an Intel GPU renders
@@ -2801,6 +2809,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-15: W2.7: the picture AMD's encoder reads is copied as it is taken and its frame goes
+  back at once, no longer held through the encode, which kept the next composition back; 05 §2
+  amended.
 - 2026-11-14: W2's pacing decision amended: the deadlines on the primary display's refresh, not
   the compositor's answer, which on Windows 11 is the fastest display's; on the duplication a
   deadline that skips no refresh waited for in its wait, one past a skip at a learned margin; 05
