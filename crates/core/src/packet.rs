@@ -383,17 +383,17 @@ mod tests {
             panic!("a 23-byte acknowledgement was refused");
         };
         assert_eq!(ack.reported, LEGACY_CHANNELS);
-        for channel in 0..LEGACY_CHANNELS {
+        for (channel, &cumulative) in ack.cumulative[..LEGACY_CHANNELS].iter().enumerate() {
             assert_eq!(
-                ack.cumulative[channel],
+                cumulative,
                 0x0A00_0000u32 + channel as u32,
                 "channel {channel} did not survive"
             );
         }
         // Everything past what it reported stays absent rather than reading as
         // an acknowledgement of nothing.
-        for channel in LEGACY_CHANNELS..CHANNEL_COUNT {
-            assert_eq!(ack.cumulative[channel], 0);
+        for &cumulative in &ack.cumulative[LEGACY_CHANNELS..] {
+            assert_eq!(cumulative, 0);
         }
 
         // And a full-length one still reports every channel.
