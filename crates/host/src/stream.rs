@@ -4397,12 +4397,6 @@ fn encode_loop<E: Encoder + FromDevice>(
                 live.fps,
             );
         }
-        // **What an encoder read in place goes back as soon as it is done**,
-        // before the next composition: held across it, the system's copy of
-        // the next picture waits a whole period of its clock.
-        if pending && let Some(desktop) = display.as_deref_mut() {
-            desktop.encoded();
-        }
         // **A stopped encoder used to be a log line per pass, forever.** The
         // guests went on holding seats and receiving nothing, and the only
         // thing that eventually noticed was each peer's own liveness deadline.

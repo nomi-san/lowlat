@@ -1309,10 +1309,6 @@ impl Display {
         Ok(began)
     }
 
-    /// The loop has collected what the encoder made. Nothing here holds a
-    /// picture for an encoder, so nothing goes back.
-    pub fn encoded(&mut self) {}
-
     /// Collect the conversion [`Display::acquire`] submitted, waiting for it.
     ///
     /// **The wait is the point of the pair.** The submit happened before the
