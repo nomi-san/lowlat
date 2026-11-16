@@ -95,6 +95,12 @@ pub fn monotonic_us() -> u64 {
 /// **The network loop alone does not lean on it**: its deadline is a timer
 /// of its own, tied to its completion port, which keeps its time whatever the
 /// process has asked (the net crate's `windows/deadline.rs`).
+///
+/// **Raising it also asks that it be honoured while the process is out of
+/// sight.** From Windows 11 the system drops a raised resolution for a process
+/// it takes to be out of sight -- one whose window is minimized, or one with no
+/// window of its own while the program that started it is not in front -- and
+/// every wait above goes back to the default tick (`keep_honoured_out_of_sight`).
 #[derive(Debug)]
 pub struct TimerResolution(());
 
@@ -102,6 +108,8 @@ impl TimerResolution {
     /// Raise it, until the value returned is dropped.
     #[must_use]
     pub fn raise() -> Self {
+        #[cfg(windows)]
+        keep_honoured_out_of_sight();
         #[cfg(windows)]
         // SAFETY: one millisecond is within every system's supported range;
         // a refusal leaves the resolution where it was, which is harmless.
@@ -122,11 +130,85 @@ impl Drop for TimerResolution {
     }
 }
 
+/// **Opt the process out of the system's timer-resolution throttling**: its
+/// power-throttling state says it controls that mechanism, and wants it off.
+/// Measured on Windows 11 24H2 and 26H2, 1 ms waits lasted 15.5 to 16 ms in a
+/// process whose window was minimized, from the minimize, and on 24H2 in one
+/// with no window of its own, from 3 s after its start while the program that
+/// started it was not in front; 1 to 2 ms with this, in every case.
+///
+/// **A set replaces the state whole**, so the state is read and this one
+/// mechanism added to it: set alone, it would take back what the application
+/// chose for itself, its efficiency mode among it. **Never withdrawn**: once
+/// the last request goes, the application's own requests are honoured out of
+/// sight, as every system before Windows 11 honoured them. A system that
+/// cannot read the state is left as it is.
+#[cfg(windows)]
+fn keep_honoured_out_of_sight() {
+    let size = u32::try_from(core::mem::size_of::<imp::PowerThrottlingState>()).unwrap_or(0);
+    let mut state = imp::PowerThrottlingState {
+        version: imp::POWER_THROTTLING_VERSION,
+        control_mask: 0,
+        state_mask: 0,
+    };
+    // SAFETY: this process's own pseudo-handle, and a structure we own of
+    // the size given.
+    let read = unsafe {
+        imp::GetProcessInformation(
+            imp::GetCurrentProcess(),
+            imp::PROCESS_POWER_THROTTLING,
+            (&raw mut state).cast(),
+            size,
+        )
+    };
+    if read == 0 {
+        return;
+    }
+    state.control_mask |= imp::IGNORE_TIMER_RESOLUTION;
+    state.state_mask &= !imp::IGNORE_TIMER_RESOLUTION;
+    // SAFETY: as above; a refusal leaves the state as it was.
+    unsafe {
+        imp::SetProcessInformation(
+            imp::GetCurrentProcess(),
+            imp::PROCESS_POWER_THROTTLING,
+            (&raw const state).cast(),
+            size,
+        );
+    }
+}
+
 #[cfg(windows)]
 mod imp {
+    use core::ffi::c_void;
+
+    /// The power-throttling class of the process information calls.
+    pub(super) const PROCESS_POWER_THROTTLING: i32 = 4;
+    pub(super) const POWER_THROTTLING_VERSION: u32 = 1;
+    pub(super) const IGNORE_TIMER_RESOLUTION: u32 = 0x4;
+
+    #[repr(C)]
+    pub(super) struct PowerThrottlingState {
+        pub(super) version: u32,
+        pub(super) control_mask: u32,
+        pub(super) state_mask: u32,
+    }
+
     unsafe extern "system" {
         pub(super) fn QueryPerformanceCounter(counter: *mut i64) -> i32;
         pub(super) fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+        pub(super) fn GetCurrentProcess() -> *mut c_void;
+        pub(super) fn GetProcessInformation(
+            process: *mut c_void,
+            class: i32,
+            information: *mut c_void,
+            size: u32,
+        ) -> i32;
+        pub(super) fn SetProcessInformation(
+            process: *mut c_void,
+            class: i32,
+            information: *const c_void,
+            size: u32,
+        ) -> i32;
     }
 
     #[link(name = "winmm")]
@@ -452,6 +534,63 @@ mod tests {
         assert!(
             SPIN_MARGIN > Duration::from_millis(1),
             "the sleep ends on a tick up to a millisecond late, past a margin of {SPIN_MARGIN:?}"
+        );
+    }
+
+    /// **The raise opts the process out of the timer-resolution throttling
+    /// and keeps what the process chose for itself**: a set replaces the
+    /// power-throttling state whole, so one naming the timer alone would take
+    /// back an application's choice of efficiency mode. The choice made here is
+    /// efficiency mode off, which slows nothing else in the run. Skipped where
+    /// the system has no such mechanism to opt out of.
+    #[cfg(windows)]
+    #[test]
+    fn the_raise_opts_out_and_keeps_the_processs_own_choice() {
+        const EXECUTION_SPEED: u32 = 0x1;
+        let size = u32::try_from(core::mem::size_of::<imp::PowerThrottlingState>()).unwrap();
+        let set = |control_mask, state_mask| {
+            let state = imp::PowerThrottlingState {
+                version: imp::POWER_THROTTLING_VERSION,
+                control_mask,
+                state_mask,
+            };
+            // SAFETY: this process's pseudo-handle and a structure we own.
+            unsafe {
+                imp::SetProcessInformation(
+                    imp::GetCurrentProcess(),
+                    imp::PROCESS_POWER_THROTTLING,
+                    (&raw const state).cast(),
+                    size,
+                ) != 0
+            }
+        };
+        let get = || {
+            let mut state = imp::PowerThrottlingState {
+                version: imp::POWER_THROTTLING_VERSION,
+                control_mask: 0,
+                state_mask: 0,
+            };
+            // SAFETY: as above.
+            let read = unsafe {
+                imp::GetProcessInformation(
+                    imp::GetCurrentProcess(),
+                    imp::PROCESS_POWER_THROTTLING,
+                    (&raw mut state).cast(),
+                    size,
+                )
+            };
+            (read != 0).then_some((state.control_mask, state.state_mask))
+        };
+        if !set(imp::IGNORE_TIMER_RESOLUTION, 0) || get().is_none() {
+            println!("no timer-resolution throttling here to opt out of");
+            return;
+        }
+        assert!(set(EXECUTION_SPEED, 0));
+        let _raised = TimerResolution::raise();
+        assert_eq!(
+            get(),
+            Some((EXECUTION_SPEED | imp::IGNORE_TIMER_RESOLUTION, 0)),
+            "the control and state masks after the raise"
         );
     }
 
