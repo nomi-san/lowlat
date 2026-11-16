@@ -111,6 +111,20 @@ Three rules. Each is a production scar.
    port's timeout asked for 1 ms lasted 0.06 to 1.4 ms and one asked for 10 ms, 9.1 to 10.0, so
    a timeout can end most of a tick early, which a pass pays a second wake to make good.
 
+   **The request is kept honoured out of sight** (*amended 2026-11-16*). Windows 11 drops a
+   raised resolution for a process it takes to be out of sight, and every wait above then ends
+   on the default tick again: an object wait, a sleep and an address wait asked for 1 ms lasted
+   15.3 to 16.0 ms. Measured on 24H2 and 26H2 for a process whose window was minimized, from the
+   minimize; and on 24H2 for one with no window of its own -- none at all, or a hidden one and a
+   message-only one -- from 3 s after its start, while the program that started it was not in
+   front. So each raise also sets the process's power-throttling state to say it controls the
+   timer-resolution mechanism and wants it off, which kept 1 ms waits in every case. **A set
+   replaces that state whole**, so it is read first and the one mechanism added: what the
+   application chose for itself, its efficiency mode for one, stays. It is never withdrawn; once
+   the last handle goes, the application's own requests are honoured out of sight too, as Windows
+   10 honours them. Windows 10 drops nothing and its state cannot be read, so nothing is set
+   there.
+
 **Clock semantics.** The shell's clock exposes **fractional milliseconds as a float**. The
 congestion controller ([01 §10](01-protocol.md)) measures throughput over the interval between
 ticks, and quantizing that interval to whole milliseconds silently skips the peak update

@@ -2809,6 +2809,10 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-16: W0.1: each raise of the timer resolution also opts the process out of Windows 11's
+  timer-resolution throttling, merged into its power-throttling state, which a set replaces
+  whole; a minimized process, and on 24H2 one with no window of its own, lost the resolution
+  without it; 02 §2 amended.
 - 2026-11-15: W2.7: the picture AMD's encoder reads is copied as it is taken and its frame goes
   back at once, no longer held through the encode, which kept the next composition back; 05 §2
   amended.

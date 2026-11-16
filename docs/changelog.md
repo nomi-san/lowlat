@@ -3,6 +3,56 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-16 - The timer resolution kept out of sight on Windows 11
+
+### Changed
+- **On Windows each raise of the timer resolution also asks the system to keep honouring it
+  while the process is out of sight** ([02 §2](02-io-shell.md)), in every library handle and in
+  `lowlatd`. Windows 11 drops a raised resolution for a process whose window is minimized, and
+  for one with no window of its own while the program that started it is not in front, and every
+  wait that is not a high-resolution timer then ends on the default tick again. The ask is the
+  process's power-throttling state, which a set replaces whole: it is read first and only the
+  timer's mechanism added, so what the application chose for itself stays. It is never
+  withdrawn. Windows 10 drops nothing, and there nothing is set.
+
+### Checked
+- A host started through the library with its defaults -- no guest, no display plugged -- in a
+  program timing 1 ms waits back to back for 60 s (an object wait, a sleep, an address wait),
+  the build before this and the build after taking turns, each second's median read:
+  - **A window minimized 15 s in**, on the development machine (Windows 11 24H2) and a laptop
+    (26H2): before, 15.3 to 16.0 ms in every second from the minimize to the end, three runs;
+    after, 1.0 to 2.0 ms throughout, three runs.
+  - **No window, or a hidden and a message-only window** -- `lowlatd`'s host has the two --
+    started from a terminal in an editor on 24H2: before, 15.5 to 16.0 ms from 3 s after the
+    start, in 52 to 57 of the 60 seconds of each of nine runs, with a notification icon added
+    and in the high priority class alike, and 1 to 2 ms only while the editor was in front;
+    after, 1.0 to 2.0 ms in every second of five runs.
+  - **The same two as the system account in the console session, started by a service**, as
+    `lowlatd`'s service starts its host: 1.0 to 2.0 ms throughout, before and after, another
+    program in front. On 26H2, started under a console or by the task scheduler itself, the
+    shell in front and nobody at the laptop: 1.0 to 2.0 ms throughout, before and after.
+  - **Beside the minimized window, a 1x1 window kept on top at an alpha of 1 and repainted 16
+    times a second** kept the resolution without the ask: 1.0 to 2.0 ms throughout, in three runs
+    across the two machines, another program in front.
+  - On Windows 10 19045, 2.0 ms in every second of every case, either build; the state cannot be
+    read there, and the build after leaves it as it was.
+- **The power-throttling state on 24H2 and 26H2**: a set naming the timer's mechanism alone took
+  back an efficiency-mode choice made before it; read and merged, both stay. On Windows 10 the
+  read and a set naming the timer's mechanism are both refused. The new check -- the raise opts
+  out and keeps what the process chose -- fails against a set of the timer's mechanism alone and
+  against no set at all.
+- The workspace's tests pass on Windows, and the common crate's on Linux, where the change is
+  comments alone.
+
+### Known
+- **The ask is never withdrawn**: once the library's last handle goes, the application's own
+  timer requests are honoured out of sight as well, as on Windows 10.
+- **What decides for a process with no window is not known**: on 24H2 it followed whether the
+  program that started it was in front, and a process started by a service kept the resolution
+  with another program in front. Not measured: 26H2 with another program in front of such a
+  process, Windows 11 before 24H2, battery, power modes but Balanced (24H2) and Best performance
+  (26H2), and runs past a minute.
+
 ## 2026-11-15 - AMD's encoder reads a copy taken with the picture
 
 ### Changed
@@ -192,7 +242,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   window is minimized**, 3 s after its start or at the minimize -- 1 ms waits then last 15 to 16
   ms, on 26H2 -- which reaches the waits that are not the loop's in an application hosting the
   library. A process whose windows are hidden or message-only kept it, for the 24 to 27 s
-  measured on 26H2 and for every minute-long run of the host's own process on 24H2.
+  measured on 26H2 and for every minute-long run of the host's own process on 24H2. *Corrected
+  2026-11-16*: not always -- on 24H2 such a process, and one with no window at all, lost it 3 s
+  after its start while the program that started it was not in front; each raise now asks for it
+  to be kept (the entry of that day).
 - **Quiet waits back to back, each begun on a tick, are the timer's worst case**: 5 ms waits
   end at 6.0, where the port's timeout with the resolution raised ended them at 5.0.
 - **The precise sleep's spin costs in proportion to the frame rate**: by the figure above,
