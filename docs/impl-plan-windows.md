@@ -723,6 +723,9 @@ once, here.
   into a texture of the host's own would avoid that, and was measured on the integrated GPU: 0.47
   and 0.83 ms of it at 1080p and 1440p, slower to the output than the conversion, so it is not
   taken.
+  *Amended 2026-11-17 (W2.7):* **a duplicated image is converted on an AMD GPU as on any other**,
+  and its frame goes back once the conversion is queued; the encoder reads only the host's own
+  display's buffers itself.
 - **The host is per-monitor DPI aware** (*added 2026-10-14, at W2.2's review*). On a thread
   that is not, the duplication call the host uses is refused outright, and every coordinate
   the system hands back is scaled at a display scale other than 100 percent (measured, at 125
@@ -1233,6 +1236,26 @@ once, here.
   AMD integrated GPU 103.8 at 120 where it took 59.5. Waiting a refresh more for the composition
   held back, the other fix compared, ended the second encodes but kept 58 to 60. The copy is in
   each picture's path, 0.3 to 1.1 ms of the device ([05 §2](05-host.md)).
+  *Amended 2026-11-17 (measured on four AMD GPUs, decided after):* **a duplicated desktop takes
+  the host's conversion at eight bits too; the encoder converts for itself only the host's own
+  display read from its driver** ([05 §3](05-host.md), amended). Once every picture was copied
+  ahead of its encode, the encoder's own conversion saved nothing: the copy costs the device what
+  the conversion costs, the encoder then converts the copy, and with one texture to copy into
+  each take waited for the encoder to be done with the one before. From queued to output at
+  1920x1080 and 2560x1440, a copy against the conversion: 5.52 and 8.67 ms against 4.78 and 7.76
+  on a Ryzen 7 5800U, 4.76 and 6.98 against 4.37 and 6.67 on the development machine's integrated
+  GPU, 2.30 and 3.48 against 2.14 and 3.22 on a Radeon 780M, 2.20 and 2.93 against 2.12 and 2.89
+  on a Radeon RX 9060 XT. Live, a display redrawn every refresh: the laptop's 2880x1800 panel at
+  90, 79.5 new pictures a second copied and 89.9 converted, the encode 12.1 ms and 11.0; the
+  integrated GPU at 2880x1800 and 120, 105 to 113 and 116 to 120; the RX 9060 XT at 2560x1440,
+  2880x1800 and 3840x2160 at 120, every picture either way. **On the 5800U the encoder's own
+  conversion is a pass on the GPU, by its own report**, and dearer than the host's: the captured
+  picture handed over as it is took 5.3 ms at 1920x1080 against 4.8 converted first. Where the
+  encode cannot keep the display's pace -- the integrated GPU at 3840x2160 and 120 -- the
+  conversion gave 86 to 89 new pictures a second against 70, at 17 ms from submit to collected
+  against 14 and a wait of 4.6 for the encoder. The host's own display read from its driver was
+  checked as the system account on the integrated GPU and on the RX 9060 XT: in place, no picture
+  half written on time, 19 of 20 caught with each unit handed over 30 ms late.
 - [x] **W2.8 Intel's encoder** (*added and planned 2026-10-25, at its interview; not in the gate
   below, it has its own*): Intel's own runtime, found by the GPU and loaded at run time as the
   client's decoder loads it (W1.7), encoding on the D3D11 device of an output an Intel GPU renders
@@ -2809,6 +2832,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-17: W2.7: on an AMD GPU a duplicated desktop takes the host's conversion at eight bits
+  too, the copy ahead of the encode and its guard gone; the encoder converts for itself only the
+  host's own display read from its driver; 05 §2 and §3 amended.
 - 2026-11-16: W0.1: each raise of the timer resolution also opts the process out of Windows 11's
   timer-resolution throttling, merged into its power-throttling state, which a set replaces
   whole; a minimized process, and on 24H2 one with no window of its own, lost the resolution

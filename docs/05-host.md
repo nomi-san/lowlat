@@ -140,6 +140,16 @@ Rules:
   again; copied, 78.2 and 0.7. The copy is the device's work ahead of the encode, which waits for
   it: 0.3 to 1.1 ms at the median by size and GPU. While the encoder reads the copy the wait still
   takes nothing and declares no present.
+  *Amended 2026-11-17 ([impl-plan-windows.md](impl-plan-windows.md) W2.7):* **a duplicated
+  desktop is converted for AMD's encoder too, at eight bits as at ten** (§3), and its frame goes
+  back once the conversion is queued, as for every other encoder: the copy, its one texture and
+  the wait that held the next take off while the encoder read it are gone. The copy cost what the
+  conversion costs and then the encoder converted it again; and with one texture to copy into,
+  each take waited for the encoder to finish the one before, where the conversion turns through
+  four targets. On the same laptop at ninety a second, 79.5 new pictures a second copied and 89.9
+  converted, each picture at the encoder 0.4 ms after its composition at the median where it was
+  5.7; on an AMD integrated GPU at 2880x1800 and 120, 105 to 113 against 116 to 120. Only the
+  host's own display read from its driver is still handed to AMD's encoder as it is.
 - **The rate is read from the display, not only bounded by it.** The mode the lit controller is
   running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
   from the refresh alone when nothing was asked. Bounding without reading is not enough: the
@@ -285,6 +295,16 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   takes this conversion into P010, which the encoder codes as its source. And its matrix is BT.709
   whatever profile it is told -- at 1280x720 and below 720 lines alike -- only the range following
   the statement, so the colour description stated is the picture's.
+  *Amended 2026-11-17:* **for the host's own display read from its driver alone.** There the
+  encoder is handed the driver's buffer and nothing is copied or converted ahead of it. A
+  duplicated desktop takes this conversion at eight bits too: its frame has to go back before the
+  next composition (§2), so the picture was being copied first, and the copy costs the device as
+  much as the conversion does -- 0.49 against 0.55 ms at 1920x1080 on the integrated GPU the
+  exception was measured on, 4.76 against 4.37 ms from queued to output -- after which the
+  encoder still converted it. On a discrete GPU of the newest generation either is a twentieth of
+  a millisecond. **And the encoder's conversion is not the video engine's on every part**: an
+  older integrated GPU's runtime reports it as a pass on the GPU, and there the captured picture
+  handed over as it is took 5.3 ms at 1920x1080 against 4.8 through this conversion.
 - **Planes are written by a compute shader**, addressing each plane as a separate view.
   Copying between subresources to move plane data drops chroma on more than one vendor's
   driver, produces green or smeared output, and looks like an encoder bug for as long as it
@@ -451,7 +471,7 @@ Backends:
 | Backend | Status | Notes |
 |---|---|---|
 | hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
-| hardware, AMD on Windows | shipped (*2026-10-20*) | H.264 and HEVC, HEVC at ten bits from the host's conversion, no full chroma; the low-latency usage, a latency-constrained variable rate with the largest picture bounded by the buffer; at eight bits the captured picture read in place and converted in the encoder's own hardware (§3) |
+| hardware, AMD on Windows | shipped (*2026-10-20*) | H.264 and HEVC, HEVC at ten bits from the host's conversion, no full chroma; the low-latency usage, a latency-constrained variable rate with the largest picture bounded by the buffer; at eight bits the host's own display's picture read in place from its driver and converted in the encoder's own hardware, a duplicated desktop through the host's conversion (§3, *amended 2026-11-17*) |
 | hardware, Intel on Windows | shipped (*2026-10-25*) | H.264 and HEVC, HEVC at ten bits and full chroma at both depths, all from the host's conversion; the current runtime alone; a variable rate, the buffer at six pictures of the session's ceiling and each picture bounded by the encoder's own largest-picture limit, moved with every live change; the runtime's remote-gaming tuning in both codecs; HEVC's predicted pictures the runtime's low-delay bidirectional slices; one picture in the engine at a time |
 | hardware, open stack | shipped | AMD and Intel parts, reached through the display interface; HEVC's predicted pictures as low-delay bidirectional slices where a device requires the second list (*2026-10-28*: Intel's low-power encoder, which otherwise hangs after the first picture on the integrated parts) |
 | hardware, Vulkan Video | explicit choice | H.264 and HEVC at either depth, half-resolution chroma only; conversion and encode on one interface, where the conversion may write the encoder's picture |

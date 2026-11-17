@@ -3,6 +3,108 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-17 - A duplicated desktop takes the host's conversion on AMD's GPUs too
+
+### Changed
+- **On Windows AMD's encoder is handed a duplicated desktop through the host's conversion at
+  eight bits, as at ten** ([05 §2 and §3](05-host.md), W2.7 in
+  [impl-plan-windows.md](impl-plan-windows.md)). The picture was copied as it was taken and the
+  encoder converted the copy in its own hardware; now the frame goes back once the conversion is
+  queued, as for every other encoder. The copy, its one texture, the wait that kept the next take
+  off while the encoder read it, and the display's count of pictures sent again from it are gone.
+- **The host's own display read from its driver is still handed over as it is**, its buffer read
+  in place and converted by the encoder: a display opened for that is opened on the driver's
+  frames and on nothing else.
+
+### Checked
+- **A copy against the conversion on four AMD GPUs**, from queued to output at 1920x1080 and
+  2560x1440, H.264, a picture every sixtieth of a second, 360 each: a Ryzen 7 5800U 5.52 and
+  8.67 ms copied, 4.78 and 7.76 converted; the development machine's integrated GPU 4.76 and
+  6.98, 4.37 and 6.67; a Radeon 780M 2.30 and 3.48, 2.14 and 3.22; a Radeon RX 9060 XT 2.20 and
+  2.93, 2.12 and 2.89. The device's own time for the copy and for the conversion: 0.46 and 0.48 ms
+  at 1920x1080 on the first, 0.49 and 0.55 on the second, 0.14 and 0.15 on the third, 0.03 and
+  0.02 on the fourth.
+- **Live, a display redrawn every refresh**, the library's demo as the guest, forty seconds a
+  run, the builds taking turns:
+  - **The 5800U laptop's 2880x1800 panel at 90**: copied, 79.3 and 79.8 new pictures a second and
+    0.5 to 0.6 sent again, the encode 12.1 to 12.2 ms at the median and 13.4 to 13.7 at the 99th
+    percentile, each picture at the encoder 5.6 to 5.8 ms after its composition; converted, 89.9
+    and 89.9 and none again, 11.0 and 11.7, 0.4 ms.
+  - **The development machine's integrated GPU, a 2880x1800 display at 120**: copied, 105 to 113
+    and 3 to 6 again, the encode 8.3 to 8.7 ms; converted, 116 to 120 and none to 3 again, 8.2 to
+    8.3. Its 1920x1080 monitor at 60: 60 either way, the encode 4.19 ms copied and 4.0 converted.
+  - **A Radeon RX 9060 XT at 2560x1440, 2880x1800 and 3840x2160 at 120**: every picture either
+    way, the encode 2.7 ms for H.264 and 2.1 for HEVC at 2560x1440, 5.3 and 3.9 at 3840x2160, each
+    picture at the encoder 0.27 ms after its composition copied or converted. At the highest
+    quality setting, HEVC at 2560x1440 and an encode of 7.7 ms: every picture either way, at the
+    encoder 1.6 ms after its composition at the 95th percentile copied and 0.36 converted -- and
+    with the frame held through the encode, as before 2026-11-15, 86 new pictures a second and 10
+    again.
+  - **An encode that cannot keep the display's pace**, the integrated GPU at 3840x2160 and 120:
+    copied, 70 new pictures a second, 14.1 ms from submit to collected after 4.6 waiting for the
+    encoder; converted, 86 to 89 new and 11 to 13 again, 16.8 to 17.1 ms and 26 to 28 at the 99th
+    percentile.
+- **The hardware checks on the integrated GPU and on the RX 9060 XT**: the desktop at its
+  display's pace through the conversion at eight and ten bits, 240 units each and none late; the
+  host's own display read in place from its driver as the system account, no picture half
+  written on time and 19 of 20 caught with each unit handed over 30 ms late; an encode longer
+  than a refresh through the conversion, 6 of 240 waits finding nothing new.
+- The workspace's tests pass on Windows -- one check of a port's reclaim failed in one run of
+  the whole and passed alone and in the next. On Linux, where the change compiles nothing new,
+  the host's and the drivers' crates pass all but one check that needs a localhost answering on
+  both families, which the machine they ran on lacks.
+
+### Known
+- **Two AMD GPUs on different driver packages cannot both encode in one process**, found while
+  measuring on a machine with an RX 9060 XT beside a Ryzen's integrated GPU: the runtime of
+  whichever GPU was used first serves the process for good and refuses the other's encoder, so a
+  guest's move to a display of the other GPU fails and the stream stays on the display it began
+  on, until the host starts again. Each GPU's own runtime, loaded by its place in that GPU's
+  driver, encoded for both in one process in a probe. Not changed here.
+- **Where a frame could have stayed held the conversion costs what the copy did**: on the
+  integrated GPU's 1920x1080 monitor at 60 the encode is 4.0 ms, where it was 3.55 held and 4.19
+  copied.
+- **A duplicated desktop's chroma on an AMD GPU is the host's conversion's now**, as on every
+  other GPU, where it was the encoder's own: the two differ at sharp colour edges.
+- Past the encoder's pace about an eighth of the encodes are a picture sent again.
+- **On an older integrated GPU the encoder's own conversion is a pass on the GPU, by its own
+  report, and dearer than the host's**: on the 5800U the captured picture handed over as it is
+  took 5.3 ms at 1920x1080 against 4.8 converted first. Its own display read from its driver
+  still takes the encoder's.
+- The check of an encode longer than a refresh needs thirty waits in a row to find a new picture
+  before it starts, and on the development machine as it stands -- the RX 9060 XT the primary,
+  the display driver on the integrated GPU -- it did not get them in most runs, with this change
+  and without it; it passed once each way.
+- Not run: a live session on the Radeon 780M.
+
+## 2026-11-17 - AMD's runtime headers at their latest release
+
+### Changed
+- **The headers carried for AMD's runtime are its v1.5.3**, from v1.5.0, and the library asks a
+  runtime for up to that version ([PROVENANCE](../third_party/amf/PROVENANCE.md)). Between the two
+  the carried headers gained interfaces derived from the surface, the buffer and the context, a
+  colour-matrix property on the decoder, a surface format, and the Windows order of two entries
+  of the component's C table; one encoder property changed its name. Nothing the library calls
+  moved and no name it writes changed.
+
+### Checked
+- Each of the 25 files is upstream's blob at the tag; they compile as C and as C++; every slot
+  the library asserts was read from both sets of headers, and the two entries that changed places
+  are among those it never calls.
+- **On a runtime of 1.5.3**, a Radeon RX 9060 XT's: both decoders and both encoders build and
+  each codes a keyframe; the encoder's ten round trips, worst luma 76 dB for H.264, 93 for HEVC
+  and 76 at ten bits, the captured picture against BT.709 at 48; the decode suites, 56 clip runs
+  and none wrong; nothing allocated per picture; the quality and the frame-rate moves.
+- **On a runtime of 1.5.2**, a Radeon 780M's, asked for 1.5.2 where it was asked for 1.5.0: both
+  decoders and both encoders build, and the ten round trips pass.
+
+### Known
+- **On the Radeon 780M the check that a moved frame rate spends its share fails for HEVC at 240
+  a second**, 1.03 of its share against 0.77 at the rate it was built at, with the library built
+  against the old version and the new alike: the part's, never run there before, and not this
+  change's.
+- A runtime older than the headers is asked for its own version, as before.
+
 ## 2026-11-16 - The timer resolution kept out of sight on Windows 11
 
 ### Changed
