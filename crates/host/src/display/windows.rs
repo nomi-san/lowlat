@@ -29,11 +29,10 @@ use lowlat_common::clock::{self, Time};
 use lowlat_core::video::Rotation;
 use lowlat_drivers::d3d11::{Bounds, Com, D3d11, Device, Event, Fence, Output, Span, Timer};
 use lowlat_drivers::ffi::d3d11::{
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_IDENTITY,
-    DXGI_MODE_ROTATION_ROTATE90, DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_UNSPECIFIED,
-    ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D, IDXGIOutput,
+    DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_IDENTITY, DXGI_MODE_ROTATION_ROTATE90,
+    DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_UNSPECIFIED, ID3D11ShaderResourceView,
+    ID3D11Texture2D, IDXGIOutput,
 };
-use lowlat_drivers::vcall;
 use lowlat_vdd_ctl::{Controller, FramePage, ShapeKind, Snapshot, Waited};
 
 use super::{Acquired, Capturable, Selectable, VIRTUAL};
@@ -194,18 +193,14 @@ impl Register<'_, '_> {
     }
 }
 
-/// The captured picture handed to an encoder that reads it as it is (AMD's,
-/// at eight bits), with no conversion: the duplication's frame copied into a
-/// texture of the display's own as it is taken and given back at once
-/// ([`InPlace::copy_in`]), the host's own display's buffer read where its
-/// driver left it.
+/// The host's own display's buffer handed to an encoder that reads it as it
+/// is (AMD's, at eight bits), where its driver left it, with no conversion.
+/// **Only the driver's buffers are read so**: a duplicated picture is
+/// converted, for every encoder.
 struct InPlace {
     engine: lowlat_encode::amf::Engine,
     /// The texture the pictures are made from, as the encoder is handed it.
     presented: Option<Registration>,
-    /// Waits that found the engine still reading and held off the next
-    /// frame: how often the guard is what kept a picture whole.
-    deferred: u64,
     /// The driver's picture whose buffer was last handed over, by generation
     /// and sequence, until what the encoder read of it is checked.
     reading: Option<(u64, u64)>,
@@ -214,65 +209,6 @@ struct InPlace {
     torn: u64,
     /// A keyframe owed for one of those, carried by the next picture.
     owe_keyframe: bool,
-    /// The duplication's picture, copied as it was taken.
-    copy: Option<Com<ID3D11Texture2D>>,
-    /// Whether the copy holds a picture the encoder has not been handed.
-    fresh: core::cell::Cell<bool>,
-    /// Pictures handed to the encoder again from the copy.
-    resent: core::cell::Cell<u64>,
-}
-
-impl InPlace {
-    /// Copy the picture just taken into the texture the encoder reads, before
-    /// its frame goes back.
-    ///
-    /// **The frame goes back as soon as it is copied, never held through the
-    /// encode**: held, it kept the system from writing the next composition
-    /// until it was back, so after an encode as long as a refresh the wait
-    /// found nothing new and the picture before was encoded again. At 120 a
-    /// second on a 2880x1800 display of AMD's integrated GPU, 60 new pictures
-    /// a second and 38 sent again held, against 104 and 6 copied, measured
-    /// 2026-11-15; the copy took 0.6 ms of the device at the median there,
-    /// 0.3 at 1920x1080. **What is sent again reads the copy**: read from a
-    /// frame the system had taken back, it came out black, the whole picture
-    /// (2026-11-14). Queued on the device ahead of the release, which orders
-    /// it.
-    fn copy_in(&mut self, device: &Device, image: &Com<ID3D11Texture2D>) -> Result<(), Error> {
-        // SAFETY: plain data, for which zero is valid, filled by the call.
-        let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
-        // SAFETY: a live texture; the description is a live local.
-        unsafe { vcall!(image.as_ptr(), GetDesc, &raw mut desc) };
-        let same = |copy: &Com<ID3D11Texture2D>| {
-            // SAFETY: as above.
-            let mut was: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
-            // SAFETY: as above.
-            unsafe { vcall!(copy.as_ptr(), GetDesc, &raw mut was) };
-            (was.Width, was.Height, was.Format) == (desc.Width, desc.Height, desc.Format)
-        };
-        let copy = match self.copy.take() {
-            Some(copy) if same(&copy) => copy,
-            _ => {
-                desc.Usage = D3D11_USAGE_DEFAULT;
-                desc.CPUAccessFlags = 0;
-                desc.MiscFlags = 0;
-                device.texture(&desc)?
-            }
-        };
-        // SAFETY: the device's context on this thread; both textures are live,
-        // of one size and format, and the frame is still held.
-        unsafe {
-            vcall!(
-                device.context(),
-                CopyResource,
-                copy.as_ptr().cast::<ID3D11Resource>(),
-                image.as_ptr().cast::<ID3D11Resource>()
-            );
-        }
-        self.presented = Some(Registration::Captured(copy.clone_ref()));
-        self.copy = Some(copy);
-        self.fresh.set(true);
-        Ok(())
-    }
 }
 
 /// Whether `wanted` names `name`: the system's own name, its `\\.\` prefix
@@ -1462,6 +1398,16 @@ impl Display {
         Some(found)
     }
 
+    /// The driver's slot of `output` when a display opened on it now is read
+    /// straight from the host's display driver, as [`Display::open`] chooses:
+    /// one of the driver's monitors, upright, whose frames this process can
+    /// take. What an encoder that reads in place is built for, and opened on
+    /// with [`Display::open_direct`].
+    pub fn driver_frames(output: &Output) -> Option<u8> {
+        let slot = driver_slot(&output.name)?;
+        (upright(output.rotation) && Direct::attach(slot).is_ok()).then_some(slot)
+    }
+
     /// Prepare to capture the output named `name` on `device`, its own
     /// adapter's, into targets in `layout` for a `size` picture, each
     /// registered once with the encoder `register` names. **A monitor of the
@@ -1542,13 +1488,9 @@ impl Display {
             Register::Captured(engine) => Some(InPlace {
                 engine: engine.clone(),
                 presented: None,
-                deferred: 0,
                 reading: None,
                 torn: 0,
                 owe_keyframe: false,
-                copy: None,
-                fresh: core::cell::Cell::new(false),
-                resent: core::cell::Cell::new(0),
             }),
             Register::Nvenc(_) | Register::Amd(_) | Register::Intel(_) => None,
         };
@@ -1630,6 +1572,11 @@ impl Display {
             display.repace();
             lowlat_common::log_info!("display: {name} read straight from its driver, slot={slot}");
         } else {
+            // **Only the driver's buffers are read in place**: a duplicated
+            // picture is converted, and this display was given no targets.
+            if display.in_place.is_some() {
+                return Err(Error::Frames(lowlat_vdd_ctl::Error::Absent));
+            }
             match display.duplicate() {
                 Ok(()) => {}
                 Err(Error::Duplication(duplication::Error::Busy(_) | duplication::Error::Lost)) => {
@@ -1853,19 +1800,10 @@ impl Display {
         Some(if self.own { VIRTUAL } else { &self.output.name })
     }
 
-    /// The registration the last conversion wrote into, or the capture's own
-    /// texture an encoder reading in place was last handed.
+    /// The registration the last conversion wrote into, or the driver's
+    /// buffer an encoder reading in place was last handed.
     pub fn presented(&self) -> Option<&Registration> {
         if let Some(in_place) = &self.in_place {
-            // **The duplication's picture is always the copy**
-            // ([`InPlace::copy_in`]), handed over again until the next is
-            // taken. The host's own display read from its driver keeps none.
-            if self.direct.is_none()
-                && in_place.presented.is_some()
-                && !in_place.fresh.replace(false)
-            {
-                in_place.resent.set(in_place.resent.get() + 1);
-            }
             return in_place.presented.as_ref();
         }
         let slot = self.next.checked_sub(1)? % self.registrations.len().max(1);
@@ -1897,9 +1835,6 @@ impl Display {
         self.duplicate()?;
         let kept = match self.kept.take() {
             Some(kept) => kept,
-            // **Read in place, the picture held stands**: a new one is taken
-            // by a wait alone, once the encoder is done with this one.
-            None if self.in_place.is_some() => return Ok(Time::now()),
             // A composition since the wait gave up, asked for without
             // waiting.
             None => match self.look(0)? {
@@ -1907,51 +1842,6 @@ impl Display {
                 Looked::Pointer | Looked::Nothing => return Ok(Time::now()),
             },
         };
-        if let Some(in_place) = self.in_place.as_mut() {
-            // **Copied, not converted**: the encoder reads the copy as it is,
-            // and the frame goes back at once ([`InPlace::copy_in`]).
-            let timed = self.timing.read(&self.device);
-            if timed && let Some(timer) = &self.timing.timer {
-                self.device.begin_span(timer);
-            }
-            let copied = in_place.copy_in(&self.device, &kept.image);
-            if timed
-                && let (Some(fence), Some(timer)) = (&self.timing.fence, &self.timing.timer)
-                && self
-                    .device
-                    .signal_timed(fence, self.timing.signalled + 1, timer)
-                    .is_ok()
-            {
-                self.timing.signalled += 1;
-                self.timing.timing = true;
-            }
-            if let Some(duplication) = self.duplication.as_mut() {
-                duplication.release();
-            }
-            copied?;
-            self.next = self.next.wrapping_add(1);
-            self.timing
-                .queued
-                .record(duplication::age_ms(kept.presented));
-            self.timing.report(&self.output.name);
-            if self.timing.pictures % REPORT_EVERY == 0 {
-                lowlat_common::log_info!(
-                    "display: {} copied as taken, the next frame held off for the encoder {} \
-                     time(s) in {} pictures; sent again {}",
-                    self.output.name,
-                    in_place.deferred,
-                    self.timing.pictures,
-                    in_place.resent.get()
-                );
-            }
-            self.flight = Some(Acquired {
-                at: kept.at,
-                changed: true,
-                composed_before_ms: Some(kept.age_ms),
-                keyframe: false,
-            });
-            return Ok(kept.at);
-        }
         let slot = self.next % self.targets.len().max(1);
         let target = self.targets.get(slot).ok_or(Error::Register)?;
         let timed = self.timing.read(&self.device);
@@ -2452,40 +2342,13 @@ impl Display {
         let began = *self.waiting_since.get_or_insert_with(Time::now);
         let called = Time::now();
         let mut moved = false;
-        let mut deferred = false;
         loop {
             let now = Time::now();
-            let budget = f64::from(timeout_ms.max(1)) - clock::diff_ms(called, now);
-            // **Nothing is taken while the encoder reads**: the next picture is
-            // copied into the texture it is reading. **Nor is a present
-            // declared meanwhile**: the refresh the bound would call empty was
-            // spent on the encoder, not on the compositor, and called so it was
-            // a tick with nothing new, and a duplicate encode, for each picture
-            // that took the encoder longer than a refresh.
-            if let Some(in_place) = self.in_place.as_mut()
-                && in_place.engine.busy()
-            {
-                if budget <= 0.0 {
-                    return moved.then_some(false);
-                }
-                if !core::mem::replace(&mut deferred, true) {
-                    in_place.deferred += 1;
-                }
-                std::thread::sleep(core::time::Duration::from_millis(1));
-                continue;
-            }
             let bound = self.period_ms + self.early_ms - clock::diff_ms(began, now);
             if bound <= 0.0 {
-                // **Held off for the encoder, a look comes first**: the wait
-                // may not have looked at all, and a composition landed
-                // meanwhile is the next picture, not the same one.
-                if self.in_place.is_some()
-                    && let Ok(Looked::Image(kept)) = self.look(0)
-                {
-                    self.kept = Some(kept);
-                }
                 return Some(true);
             }
+            let budget = f64::from(timeout_ms.max(1)) - clock::diff_ms(called, now);
             if budget <= 0.0 {
                 return moved.then_some(false);
             }
@@ -3050,9 +2913,6 @@ mod tests {
         let device = Arc::new(d3d11.open(output.adapter.luid).expect("a device"));
         // AMD's, written out.
         if output.adapter.vendor == 0x1002 {
-            // As the stream builds it: eight bits read the duplication in
-            // place, ten go through the conversion.
-            let in_place = layout == Layout::Nv12;
             let runtime = lowlat_drivers::amf::Amf::load().expect("AMD's runtime");
             let context = runtime.context(&device).expect("a context");
             let mut encoder = amf::Encoder::new(
@@ -3071,35 +2931,19 @@ mod tests {
                     } else {
                         amf::Depth::Eight
                     },
-                    source: if in_place {
-                        amf::Source::Rgb
-                    } else {
-                        amf::Source::Yuv
-                    },
+                    source: amf::Source::Yuv,
                 },
             )
             .expect("an encoder");
-            let register = if in_place {
-                Register::Captured(encoder.engine())
-            } else {
-                Register::Amd(&mut encoder)
-            };
-            let mut display =
-                Display::open(&device, &output.name, layout, (width, height), register)
-                    .expect("the display");
-            println!("in place: {in_place}");
-            at_the_displays_pace(
-                &mut display,
-                &mut encoder,
-                hz,
-                |encoder, made, force| match made {
-                    Registration::Amd(input) => encoder.submit_registered(*input, force).is_ok(),
-                    Registration::Captured(texture) => {
-                        encoder.submit_texture(texture, force).is_ok()
-                    }
-                    Registration::Nvenc(_) | Registration::Intel(_) => false,
-                },
-            );
+            let mut display = Display::open(
+                &device,
+                &output.name,
+                layout,
+                (width, height),
+                Register::Amd(&mut encoder),
+            )
+            .expect("the display");
+            at_the_displays_pace(&mut display, &mut encoder, hz, on_amd);
             return;
         }
         // Intel's, written out.
@@ -3196,8 +3040,21 @@ mod tests {
         }
     }
 
+    /// AMD's encoder handed a converted target, as the stream's own submit
+    /// hands it over.
+    fn on_amd(
+        encoder: &mut lowlat_encode::amf::Encoder<'_>,
+        made: &Registration,
+        force: bool,
+    ) -> bool {
+        match made {
+            Registration::Amd(input) => encoder.submit_registered(*input, force).is_ok(),
+            Registration::Nvenc(_) | Registration::Captured(_) | Registration::Intel(_) => false,
+        }
+    }
+
     /// AMD's encoder handed what a display reading in place presents: the
-    /// capture's own texture, as the stream's own submit hands it over.
+    /// driver's own buffer, as the stream's own submit hands it over.
     fn in_place(
         encoder: &mut lowlat_encode::amf::Encoder<'_>,
         made: &Registration,
@@ -3899,15 +3756,15 @@ mod tests {
 
     /// **An encode longer than a refresh does not hold the compositor back**,
     /// reading a monitor of the display driver on AMD's GPU through the
-    /// duplication with a load presenting on it every refresh (`LOWLAT_LOAD`,
-    /// as the comparison below) at 120, each unit handed over 12 ms after it
-    /// came out once the load is presenting -- past a refresh, as a laptop's
-    /// encode at 2880x1800 was. In the loop's own order, the next present
-    /// waited for in short calls while the picture before is still in the
-    /// encoder, nearly every wait finds a new picture: 1 to 6 of 240 found
-    /// none, measured 2026-11-15. A frame held through the encode kept the next
-    /// composition back until it went, and every other wait found none, 120 and
-    /// 121 of 240.
+    /// duplication and the conversion with a load presenting on it every
+    /// refresh (`LOWLAT_LOAD`, as the comparison below) at 120, each unit
+    /// handed over 12 ms after it came out once the load is presenting -- past
+    /// a refresh, as a laptop's encode at 2880x1800 was. In the loop's own
+    /// order, the next present waited for in short calls while the picture
+    /// before is still in the encoder, nearly every wait finds a new picture:
+    /// 6 of 240 found none, measured 2026-11-17. A frame held through the
+    /// encode kept the next composition back until it went, and every other
+    /// wait found none, 120 and 121 of 240 (2026-11-15).
     #[test]
     #[ignore = "requires the display driver on AMD's GPU and a load"]
     fn an_encode_longer_than_a_refresh_does_not_hold_the_compositor_back() {
@@ -3930,8 +3787,10 @@ mod tests {
                 .converted()
                 .expect("the take")
                 .is_some_and(|got| got.changed);
+            // A refusal is the encoder holding as many pictures as it takes,
+            // as the loop meets it: the next goes in once one has come out.
             if let Some(made) = display.presented() {
-                assert!(in_place(encoder, made, first), "a submit");
+                on_amd(encoder, made, first);
             }
             new
         }
@@ -3957,7 +3816,7 @@ mod tests {
         let mut encoder = amf::Encoder::new(
             &runtime,
             &context,
-            amd_config(width, height, hz, amf::Source::Rgb),
+            amd_config(width, height, hz, amf::Source::Yuv),
         )
         .expect("an encoder");
         let mut display = Display::open_duplicated(
@@ -3965,7 +3824,7 @@ mod tests {
             &output.name,
             Layout::Nv12,
             (width, height),
-            Register::Captured(encoder.engine()),
+            Register::Amd(&mut encoder),
         )
         .expect("the display, duplicated");
 

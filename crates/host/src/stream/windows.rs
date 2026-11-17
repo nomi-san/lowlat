@@ -666,10 +666,16 @@ fn run_amd(
             return Exit::Failed(status::ENCODER_UNAVAILABLE);
         }
     };
-    // **Eight bits read the capture as it is**, the encoder converting in its
-    // own hardware; ten go through our conversion into P010, which the
-    // encoder's own cannot write.
-    let in_place = !config.ten_bit;
+    // **Only the host's own display read from its driver is handed over as
+    // it is**, at eight bits, the encoder converting in its own hardware. A
+    // duplicated desktop takes our conversion at either depth, and so do ten
+    // bits from anywhere, which the encoder's own cannot write.
+    let slot = if config.ten_bit {
+        None
+    } else {
+        Display::driver_frames(output)
+    };
+    let in_place = slot.is_some();
     let source = if in_place {
         lowlat_encode::amf::Source::Rgb
     } else {
@@ -689,21 +695,34 @@ fn run_amd(
         config.quality.min_qp(),
         if in_place { "in place" } else { "converted" }
     );
-    let register = if in_place {
-        Register::Captured(encoder.engine())
-    } else {
-        Register::Amd(&mut encoder)
+    let layout = Layout::of(config.ten_bit, config.chroma_444);
+    let size = (config.width, config.height);
+    let opened = match slot {
+        Some(slot) => Display::open_direct(
+            device,
+            &output.name,
+            layout,
+            size,
+            Register::Captured(encoder.engine()),
+            slot,
+        ),
+        None => Display::open(
+            device,
+            &output.name,
+            layout,
+            size,
+            Register::Amd(&mut encoder),
+        ),
     };
-    let mut desktop = match Display::open(
-        device,
-        &output.name,
-        Layout::of(config.ten_bit, config.chroma_444),
-        (config.width, config.height),
-        register,
-    ) {
+    let mut desktop = match opened {
         Ok(desktop) => desktop,
         Err(crate::display::Error::NoOutput) => {
             return Exit::Rediscover("the output moved before it could be opened");
+        }
+        // The driver answered the look above and not the open: the next
+        // round finds it gone and converts.
+        Err(crate::display::Error::Frames(_)) => {
+            return Exit::Rediscover("the display's driver went away before it could be opened");
         }
         Err(error) => {
             lowlat_common::log_error!("stream: the display could not be opened, {error}");
