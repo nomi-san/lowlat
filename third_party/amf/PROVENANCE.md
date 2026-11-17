@@ -6,9 +6,9 @@ the files from upstream at the new tag and regenerate whatever is generated from
 | | |
 |---|---|
 | Upstream | https://github.com/GPUOpen-LibrariesAndSDKs/AMF |
-| Tag | `v1.5.0` |
-| Commit | `afed28d37aca1938da2eedc50599bb3535a987ec` (2025-10-29) |
-| Interface version | 1.5.0 (`AMF_FULL_VERSION`) |
+| Tag | `v1.5.3` |
+| Commit | `57ee0cfb0e1a08d9041f77435653794c1b012be0` (2026-10-16) |
+| Interface version | 1.5.3 (`AMF_FULL_VERSION`) |
 | Runtime | `amfrt64.dll`, installed with AMD's display driver |
 
 Every header is byte-identical to upstream's `amf/public/include` at that tag: each file's blob
@@ -24,8 +24,8 @@ H.264 and HEVC encoder components (`components/VideoEncoderVCE.h`,
 `components/VideoEncoderHEVC.h`, with the `components/PreAnalysis.h` they include), 25 headers,
 which compile as C and as C++. The AV1 encoder, capture, the pre-processing components, the
 software codec wrappers, the Vulkan and D3D12 interop headers, the samples and the documentation
-are not carried. The three encoder headers were added on 2026-10-19 from the same commit, each
-blob checked against upstream's there.
+are not carried. The three encoder headers were added on 2026-10-19, and all 25 replaced from
+the tag above on 2026-11-17, each blob checked against upstream's there.
 
 ## Licensing
 
@@ -36,13 +36,19 @@ this is the compliance record.
 ## Why this version
 
 The runtime is the display driver's, and the documented initialization passes the runtime's
-own version, read with `AMFQueryVersion`, to `AMFInit`. So the header does not raise a driver
-floor by itself, as a version stamped into every structure would; a feature the runtime lacks
-is refused where it is asked for. Everything the decoder uses is here -- its low-latency mode
-arrived at 1.4.26 -- and the next release, 1.5.2, changes nothing in these headers the decoder
-calls: it adds a surface interface for mapping to the processor, and encoder options. Everything
-the encoders use is here too, and a runtime of 1.4.37 answers all of it. **Raise the pin only for
-a feature we actually call.**
+own version, read with `AMFQueryVersion`, to `AMFInit`; the library passes the lesser of that
+and these headers'. So the header does not raise a driver floor by itself, as a version stamped
+into every structure would; a feature the runtime lacks is refused where it is asked for.
+Everything the decoder uses is here -- its low-latency mode arrived at 1.4.26 -- and everything
+the encoders use, and a runtime of 1.4.37 answers all of it.
+
+**The pin is upstream's latest release**, raised from 1.5.0 on 2026-11-17, when drivers in use
+carried runtimes 1.5.2 and 1.5.3. Between the two tags the carried headers gained interfaces
+derived from the surface, the buffer and the context (mapping to the processor, shared surface
+resources), a colour-matrix property on the decoder, one surface format, and the Windows order
+of two property-information entries in the component's C table; one encoder property, its memory
+type, changed its name. No method the tables call moved and no name the library writes changed:
+each asserted slot was read from both sets of headers.
 
 ## What is generated from this
 

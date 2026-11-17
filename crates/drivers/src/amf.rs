@@ -10,8 +10,8 @@
 //! **Its interfaces are C++ classes**, called through their tables. Only the
 //! methods used are declared, each at the slot the runtime's headers give it,
 //! which a test asserts; the rest of each table is padding. The one pair of
-//! overloads the compiler lays out the other way round from the headers' C
-//! transcription is in the padding.
+//! overloads, which the compiler lays out in the reverse of their
+//! declaration, is in the padding.
 //!
 //! **Everything is on the caller's device**: a context is initialised on it --
 //! which turns the device's multithread protection on, since the runtime's own
@@ -56,8 +56,8 @@ const NEED_MORE_INPUT: Status = 44;
 
 /// The runtime's library, installed with the display driver.
 const LIBRARY: &CStr = c"amfrt64.dll";
-/// The headers' version, 1.5.0: the most this side asks of a runtime.
-const HEADER_VERSION: u64 = 1 << 48 | 5 << 32;
+/// The headers' version, 1.5.3: the most this side asks of a runtime.
+const HEADER_VERSION: u64 = 1 << 48 | 5 << 32 | 3 << 16;
 /// Host memory, the kind of buffer a unit is handed over in.
 const MEMORY_HOST: i32 = 1;
 /// The device interface a context asks its device for: the first, which
