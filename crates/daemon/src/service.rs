@@ -637,6 +637,42 @@ fn raise_process_class() {
     }
 }
 
+/// Put this process's GPU work in the realtime band, once: the host's
+/// conversion then takes the GPU between a game's draws instead of after its
+/// frame (docs/05-host.md section 3).
+///
+/// **The whole process again**, and again never the library's doing. The band
+/// asks for the base-priority privilege, which the system account holds;
+/// refused, the process's GPU work stays at normal priority and says so once.
+#[cfg(windows)]
+fn raise_gpu_class() {
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn D3DKMTSetProcessSchedulingPriorityClass(
+            process: *mut core::ffi::c_void,
+            class: i32,
+        ) -> i32;
+    }
+    const D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME: i32 = 5;
+    // SAFETY: the pseudo-handle for this process, which needs no closing, and
+    // a class the call documents.
+    let status = unsafe {
+        D3DKMTSetProcessSchedulingPriorityClass(
+            GetCurrentProcess(),
+            D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME,
+        )
+    };
+    if status < 0 {
+        lowlat_common::log_warn!(
+            "lowlatd: the process's GPU work stays at normal priority, status={:#x}",
+            status.cast_unsigned()
+        );
+    } else {
+        lowlat_common::log_info!("lowlatd: the process's GPU work at realtime priority");
+    }
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // **Decided before any flag is read**, which is the whole of the rule: a
     // role that depends on a line having been scanned is a role a line can be
@@ -683,6 +719,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // the service's file. Nothing happens when it was not.
     #[cfg(windows)]
     crate::windows_service::host_handles();
+    // After the handles, so what it says reaches the service's file.
+    #[cfg(windows)]
+    raise_gpu_class();
     #[cfg(windows)]
     let stop = crate::windows_service::stop_signal();
     #[cfg(not(windows))]
