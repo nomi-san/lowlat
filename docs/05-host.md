@@ -330,6 +330,17 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   picture: on an AMD APU under a game, 265 held pictures in 80 s became none, the conversion
   0.6 ms. Refused, the device is made as before, on the first family that computes, and the
   refusal is said once: at normal priority the compute-only family measured no better.
+- **On Windows the host's GPU work runs in the realtime band** (*2026-11-18*). `lowlatd`'s host
+  process asks for the system's realtime scheduling class for its GPU work once at start, so the
+  conversion takes the GPU between a game's draws instead of after its frame. On an NVIDIA GPU
+  under a game on the same GPU -- in a window at 120 frames a second, or in exclusive fullscreen at
+  210 to 870 -- the stream's encode stage, which waits for the conversion on the device, went from
+  7.7 to 8.5 ms to 3.6 to 4.3 at the 99th percentile; the game lost about 1 % of its frames. The
+  system's high class bought nothing, and on an AMD Radeon RX 9060 XT neither did the realtime
+  band: there the conversion ends with the game's frame whatever its class. The band asks for the
+  base-priority privilege, which the system account holds; refused, the process's GPU work stays
+  at normal priority and says so once. The library never asks: its process is its
+  application's.
 - **An integrated device powers its compute block down between frames, and the first
   conversion after the gap pays the wakeup.** Measured on the open stack: 0.4 ms warm
   against 1.3 ms after a few milliseconds of idle, with no encoder and no display activity

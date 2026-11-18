@@ -2832,6 +2832,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-18: W2.1: `lowlatd`'s host puts its process's GPU work in the system's realtime band,
+  measured on NVIDIA under a game on the same GPU (the encode stage's 99th percentile halved, the
+  game about 1 % slower) and of no effect on AMD's RX 9060 XT; 05 §3 and 02 §1 amended.
 - 2026-11-17: W2.7: on an AMD GPU a duplicated desktop takes the host's conversion at eight bits
   too, the copy ahead of the encode and its guard gone; the encoder converts for itself only the
   host's own display read from its driver; 05 §2 and §3 amended.

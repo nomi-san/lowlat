@@ -53,7 +53,8 @@ is the *process* class, which lifts every thread together and preserves ordering
 decision belongs to the integrating application. `lowlatd` owns its process and may make it
 for itself. (*Since W2.1* it does on Windows: high, once at startup, as the established host
 does for its own, and it holds the system timer at a millisecond as the library's handles do
--- [impl-plan-windows.md](impl-plan-windows.md).)
+-- [impl-plan-windows.md](impl-plan-windows.md). *Since 2026-11-18* its GPU work runs in the
+system's realtime band too, [05 §3](05-host.md).)
 
 **Scale every thread-count knob by available parallelism.** A hardcoded worker count
 oversubscribes a two-core machine invisibly on a development box.

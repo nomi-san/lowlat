@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-18 - The Windows host's GPU work at realtime priority
+
+### Changed
+- **`lowlatd`'s host puts its GPU work in the system's realtime band on Windows**
+  ([05 §3](05-host.md), [02 §1](02-io-shell.md), W2.1 in [impl-plan-windows.md](impl-plan-windows.md)),
+  once at start beside its high process class, so the conversion takes the GPU between a game's
+  draws instead of waiting for its frame. The band asks for the base-priority privilege, which the
+  system account holds; refused, the process's GPU work stays at normal priority and says so once.
+
+### Checked
+- **Live on an NVIDIA RTX 5060**, the host as the system account streaming a 2560x1440 display at
+  120 to the library's demo, a game stand-in rendering on the same GPU, the builds taking turns:
+  - in a window at 120 frames a second, 4.8 ms of GPU work each: the encode stage 5.3 to 7.7 ms at
+    the median and 7.8 to 8.5 at the 99th percentile without the band, 3.4 and 3.6 to 3.7 with it;
+    120 new pictures a second and the game at 120 either way.
+  - in exclusive fullscreen, uncapped: at 213 frames a second of 4.6 ms, the 99th percentile 7.7 to
+    7.8 ms without and 3.6 with, the game at 213.3 against 210.9; at about 870 frames a second of
+    1 ms, over twenty minutes in turns of five, 7.7 to 8.3 without and 3.9 to 4.3 with, the game at
+    867.6 against 856.8 on average.
+- **The conversion alone under 200 draws a frame**: with the band the direct frame left a whole game
+  frame behind -- 4.65 ms at the median under a 4.8 ms frame -- for 0.65; the high class bought
+  nothing. On an AMD Radeon RX 9060 XT neither class moved it: the conversion ended with the game's
+  frame.
+- **The display driver's own device raised to the realtime band**, which the display class has
+  offered since Windows 11 22H2, bought nothing in any of these, alone or beside the host's, and is
+  not taken.
+
+### Known
+- **Under a game rendering about 870 frames a second in exclusive fullscreen on the host's display,
+  the display sometimes hands over fewer new pictures**: as few as 65 a second over five seconds,
+  108.6 over a five-minute run, with or without the band. Not this change's; not yet chased.
+
 ## 2026-11-17 - A duplicated desktop takes the host's conversion on AMD's GPUs too
 
 ### Changed
