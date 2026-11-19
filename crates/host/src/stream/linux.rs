@@ -651,10 +651,36 @@ fn run_vendor(
         lowlat_common::log_error!("stream: encoder runtime unavailable");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    let Ok(session) = api.open_session(compute) else {
-        lowlat_common::log_error!("stream: encode session could not be opened");
-        return Exit::Failed(status::ENCODER_UNAVAILABLE);
+    let session = match api.open_session(compute) {
+        Ok(session) => session,
+        Err(error) => {
+            lowlat_common::log_error!("stream: encode session could not be opened, {error}");
+            // **A refusal that a reboot ends is said as that.** A driver
+            // package updated under a running kernel leaves the old module
+            // beside the new libraries, and this is where the two meet: seen
+            // with a 615.78.08 module and 620.70.06 libraries, every session
+            // refused and every guest ended on the encoder-unavailable
+            // reason, which sends a person looking at the encoder. Asked
+            // once and remembered, since the answer cannot change while the
+            // refusals continue and the loop comes back here twenty times a
+            // second through its grace.
+            if !shared.driver_stale()
+                && let Some(stale) = api.stale_driver()
+            {
+                shared.publish_driver_stale(true);
+                lowlat_common::log_error!(
+                    "stream: NVIDIA driver updated, reboot needed: the kernel module is {} and \
+                     the installed libraries are {}",
+                    stale.kernel,
+                    stale.library
+                );
+            }
+            return Exit::Failed(status::ENCODER_UNAVAILABLE);
+        }
     };
+    // **A session that opens is the two halves agreeing**, however that came
+    // about: a module reloaded by hand does it without a reboot.
+    shared.publish_driver_stale(false);
     // **The display decides the picture size when it is the source.** The
     // encoder is created before the source exists and its registration fixes
     // the shape, so asking the display first is the only way the two agree.

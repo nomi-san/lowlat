@@ -66,6 +66,88 @@ impl<'a> Api {
     }
 }
 
+/// A kernel module and a userspace library from two different driver releases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stale {
+    /// The release of the module the kernel has loaded.
+    pub kernel: String,
+    /// The release of the encoder library this process has mapped.
+    pub library: String,
+}
+
+/// Where the loaded kernel module says which release it is.
+const KERNEL_VERSION: &str = "/proc/driver/nvidia/version";
+
+/// The release a kernel module's version file names.
+///
+/// The line reads `NVRM version: NVIDIA UNIX Open Kernel Module for x86_64
+/// 620.70.06  Release Build ...`, and the closed module words it differently
+/// around the same number, so the number is found by its shape rather than by
+/// its place.
+fn kernel_release(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("NVRM version:"))?
+        .split_whitespace()
+        .find(|word| is_release(word))
+}
+
+/// The release of the encoder library in a process's memory map.
+///
+/// **Read off the map rather than off the disk**, because the map names the
+/// file the loader actually resolved the versioned alias to, which is the one
+/// the kernel module is refusing; a path looked up afresh is only what a new
+/// process would get.
+fn library_release(maps: &str) -> Option<&str> {
+    const NAME: &str = "libnvidia-encode.so.";
+    maps.lines().find_map(|line| {
+        let after = &line[line.find(NAME)? + NAME.len()..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(after.len());
+        let release = after[..end].trim_end_matches('.');
+        // **An alias is not a release.** A library mapped under `.so.1` says
+        // nothing about which driver it belongs to, and comparing that `1`
+        // with the module's number would call every such machine stale.
+        is_release(release).then_some(release)
+    })
+}
+
+/// Digits in at least two dotted groups, which is every release the vendor
+/// has numbered and no alias.
+fn is_release(word: &str) -> bool {
+    word.contains('.')
+        && word
+            .split('.')
+            .all(|group| !group.is_empty() && group.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+impl Api {
+    /// Whether the kernel module and this library are different releases, and
+    /// which two.
+    ///
+    /// **This is what a driver update without a reboot looks like.** The
+    /// package replaces the libraries at once and the module only at the next
+    /// boot, and the two refuse each other: seen with a 615.78.08 module under
+    /// 620.70.06 libraries, where the library loaded, the function table came
+    /// back, and every session refused to open with a status that names
+    /// neither number. Nothing but a reboot (or the module reloaded) ends it,
+    /// so it is worth telling apart from a device that is merely busy.
+    ///
+    /// A method of the loaded runtime because the library has to be mapped
+    /// for its release to be read. Nothing when either number cannot be
+    /// found, which is not evidence of anything.
+    pub fn stale_driver(&self) -> Option<Stale> {
+        let kernel = std::fs::read_to_string(KERNEL_VERSION).ok()?;
+        let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+        let kernel = kernel_release(&kernel)?;
+        let library = library_release(&maps)?;
+        (kernel != library).then(|| Stale {
+            kernel: kernel.to_string(),
+            library: library.to_string(),
+        })
+    }
+}
+
 impl<'a> Session<'a> {
     /// Configure the encoder for low latency and initialise it.
     pub fn initialize(
@@ -282,4 +364,64 @@ impl Encoder<'_> {
     /// Nothing to wait for before a teardown: what is still queued is
     /// unmapped as it stands.
     pub(super) fn settle(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{kernel_release, library_release};
+
+    /// **The number is found in both modules' wording**: the open module's
+    /// line as this machine prints it, and the closed module's, which puts
+    /// the architecture before the words instead of after.
+    #[test]
+    fn the_kernel_release_is_read_from_either_module() {
+        let open = "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  620.70.06  \
+                    Release Build  (root@)  \nGCC version:  gcc version 16.2.1 20260810 (GCC) \n";
+        assert_eq!(kernel_release(open), Some("620.70.06"));
+        let closed = "NVRM version: NVIDIA UNIX x86_64 Kernel Module  550.54.14  Thu Feb 22 \
+                      01:44:30 UTC 2024\n";
+        assert_eq!(kernel_release(closed), Some("550.54.14"));
+        assert_eq!(kernel_release("GCC version:  gcc version 16.2.1\n"), None);
+        assert_eq!(kernel_release(""), None);
+    }
+
+    /// **Both numbers are there to be read on a machine with the driver**,
+    /// which the two tests beside this cannot say: they read text written
+    /// here, and this reads what the kernel and the loader wrote.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn both_releases_are_found_on_this_machine() {
+        let _api = crate::nvenc::Api::load().expect("encoder runtime");
+        let kernel = std::fs::read_to_string(super::KERNEL_VERSION).expect("the module's file");
+        let maps = std::fs::read_to_string("/proc/self/maps").expect("the map");
+        let kernel = kernel_release(&kernel).expect("the module's release");
+        let library = library_release(&maps).expect("the library's release");
+        println!("kernel module {kernel}, library {library}");
+    }
+
+    /// **The mapped file's release, and never an alias's number**: a file
+    /// replaced underneath a running process is still named with its release,
+    /// and a library mapped as `.so.1` names none.
+    #[test]
+    fn the_library_release_is_read_from_the_map() {
+        let line = |path: &str| {
+            format!(
+                "7f10a0000000-7f10a0004000 r--p 00000000 00:1b 1234 {path}\n\
+                 7f10a0004000-7f10a0040000 r-xp 00004000 00:1b 1234 {path}\n"
+            )
+        };
+        assert_eq!(
+            library_release(&line("/usr/lib/libnvidia-encode.so.620.70.06")),
+            Some("620.70.06")
+        );
+        assert_eq!(
+            library_release(&line("/usr/lib/libnvidia-encode.so.615.78.08 (deleted)")),
+            Some("615.78.08")
+        );
+        assert_eq!(
+            library_release(&line("/usr/lib/libnvidia-encode.so.1")),
+            None
+        );
+        assert_eq!(library_release(&line("/usr/lib/libc.so.6")), None);
+    }
 }

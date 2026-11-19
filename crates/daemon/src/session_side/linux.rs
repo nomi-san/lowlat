@@ -228,6 +228,11 @@ fn follow_service(
                 // news.** What is there when the tray first looks is shown;
                 // what changes afterwards is what a person is told about.
                 let mut known: Option<Vec<tray::Guest>> = None;
+                // **A reboot owed is news even as a baseline**, unlike who is
+                // seated: a tray started into it is a person logging in to a
+                // machine that will refuse every guest, which they would
+                // otherwise learn from the guest.
+                let mut owed = false;
                 let mut body = Vec::new();
                 while channel::read_frame(&mut stream, &mut body).is_ok() {
                     if let Some(state) = channel::is_state(&body)
@@ -242,6 +247,13 @@ fn follow_service(
                             }
                         }
                         known = Some(shown.guests.clone());
+                        if shown.reboot_needed && !owed {
+                            bus.notify(
+                                tray::REBOOT_NEEDED,
+                                "Nobody can connect until this machine is restarted.",
+                            );
+                        }
+                        owed = shown.reboot_needed;
                     }
                     if let Some(reason) = channel::is_bye(&body) {
                         lowlat_common::log_info!("tray: sent away, reason={reason}");

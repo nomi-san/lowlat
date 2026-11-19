@@ -36,6 +36,9 @@ mod sys;
 #[path = "nvenc/windows.rs"]
 mod sys;
 
+#[cfg(target_os = "linux")]
+pub use sys::Stale;
+
 /// Versioned first. The unversioned alias belongs to the development package
 /// and is absent on a machine that merely has the driver.
 #[cfg(target_os = "linux")]

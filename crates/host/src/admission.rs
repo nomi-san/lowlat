@@ -1587,6 +1587,12 @@ impl Admission {
         self.stream.as_ref().map_or(0, Stream::captured)
     }
 
+    /// Whether nothing will encode until the machine is rebooted, the
+    /// vendor's driver having been updated underneath it.
+    pub fn driver_stale(&self) -> bool {
+        self.stream.as_ref().is_some_and(Stream::driver_stale)
+    }
+
     /// What the running encoder codes, or nothing before one exists.
     pub fn colour(&self) -> Option<(crate::stream::Codec, bool, bool)> {
         self.stream.as_ref().and_then(crate::stream::Stream::colour)
