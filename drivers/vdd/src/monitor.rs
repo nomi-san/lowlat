@@ -7,10 +7,18 @@
 //! a swapchain's teardown can call back again on another thread; each of those
 //! takes the lock, so every call that can lead to one is made between two
 //! holds of it.
+//!
+//! **An assignment and an unassignment of one monitor can run at once**: the
+//! system assigns a swapchain on its own thread -- after a mode change, a game
+//! leaving exclusive fullscreen -- while a departure on another unassigns it.
+//! The unassignment waits for the assignment to end, so the worker it stops is
+//! the one the assignment started; the system deletes the swapchain after the
+//! unassignment returns, so no worker may still be on it by then.
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread::ThreadId;
 
 use lowlat_common::{log_info, log_warn};
 use lowlat_drivers::d3d11::D3d11;
@@ -105,6 +113,11 @@ struct Slot {
     os_adapter_luid: u64,
     stats: Arc<Stats>,
     worker: Option<Worker>,
+    /// Its monitor is departing: a swapchain assigned to it meanwhile goes
+    /// with the monitor and gets no worker.
+    leaving: bool,
+    /// The thread assigning its monitor a swapchain, while one is.
+    assigning: Option<ThreadId>,
 }
 
 impl Slot {
@@ -122,6 +135,8 @@ impl Slot {
             os_adapter_luid: 0,
             stats: Arc::default(),
             worker: None,
+            leaving: false,
+            assigning: None,
         }
     }
 
@@ -157,6 +172,9 @@ impl State {
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+
+/// Notified, with the state's lock, whenever an assignment ends.
+static ASSIGNED: Condvar = Condvar::new();
 
 /// The state. A thread that panicked holding it ended the process, so a
 /// poisoned lock is still a consistent one.
@@ -680,6 +698,7 @@ pub(crate) fn replug(
             slot.monitor = Handle::NONE;
             slot.modes = Some(list);
             slot.committed = None;
+            slot.leaving = false;
         }
     }
     let (monitor, target, luid) = match arrive(adapter, index) {
@@ -740,6 +759,11 @@ fn depart(index: usize, monitor: Handle<IDDCX_MONITOR__>) {
 
 /// A monitor leaves the system; its slot stays as it is.
 fn leave(index: usize, monitor: Handle<IDDCX_MONITOR__>) {
+    // From here an assignment of this monitor starts no worker: the departure
+    // takes the swapchain with the monitor.
+    if let Some(slot) = lock().slots.get_mut(index) {
+        slot.leaving = true;
+    }
     // SAFETY: a monitor that arrived and has not departed.
     let status = unsafe { idd_monitor_departure(monitor.0) };
     if !nt_success(status) {
@@ -748,14 +772,15 @@ fn leave(index: usize, monitor: Handle<IDDCX_MONITOR__>) {
             status_word(status)
         );
     }
-    // A swapchain the departure did not unassign is stopped here, outside
-    // the lock, as an unassignment stops one.
-    let worker = lock()
-        .slots
-        .get_mut(index)
-        .and_then(|slot| slot.worker.take());
-    if let Some(worker) = worker {
-        worker.stop();
+    // The departure unassigned the swapchain, stopping its worker, or there was
+    // none to unassign: a worker still here ended by itself, or never had its
+    // swapchain unassigned. Either way the swapchain is gone with the monitor,
+    // so the worker is stopped without deleting it again.
+    if let Some((_, worker)) = detach_worker(monitor) {
+        if worker.running() {
+            log_warn!("vdd: a worker outlived its monitor's departure, slot={index}");
+        }
+        worker.stop_and_leave();
     }
 }
 
@@ -841,32 +866,83 @@ pub(crate) fn committed_refresh(index: usize) -> u32 {
         .map_or(0, |mode| mode.refresh_hz)
 }
 
-/// The slot and the counters a swapchain for this monitor reports into.
-pub(crate) fn stats_for(monitor: Handle<IDDCX_MONITOR__>) -> Option<(usize, Arc<Stats>)> {
-    let state = lock();
-    let index = find(&state, monitor)?;
-    Some((index, Arc::clone(&state.slots.get(index)?.stats)))
+/// What an assignment of a monitor may do.
+pub(crate) enum Assignment {
+    /// Start a worker for the slot, reporting into its counters; `stale` is a
+    /// worker still there, whose swapchain the system has taken back without
+    /// an unassignment here.
+    Proceed {
+        slot: usize,
+        stats: Arc<Stats>,
+        stale: Option<Worker>,
+    },
+    /// Not one of these monitors, or one departing.
+    Refused,
 }
 
-/// Keep the worker of this monitor's new swapchain, handing back one that was
-/// still there -- or this one, when the monitor is gone -- to be stopped
-/// outside the lock.
-pub(crate) fn attach_worker(monitor: Handle<IDDCX_MONITOR__>, worker: Worker) -> Option<Worker> {
+/// Begin assigning this monitor a swapchain on this thread. **Every
+/// assignment begun is ended** ([`end_assign`]): an unassignment waits for it.
+pub(crate) fn begin_assign(monitor: Handle<IDDCX_MONITOR__>) -> Assignment {
     let mut state = lock();
     let Some(index) = find(&state, monitor) else {
-        return Some(worker);
+        return Assignment::Refused;
     };
-    match state.slots.get_mut(index) {
-        Some(slot) => slot.worker.replace(worker),
-        None => Some(worker),
+    let Some(slot) = state.slots.get_mut(index) else {
+        return Assignment::Refused;
+    };
+    if slot.leaving {
+        return Assignment::Refused;
+    }
+    slot.assigning = Some(std::thread::current().id());
+    Assignment::Proceed {
+        slot: index,
+        stats: Arc::clone(&slot.stats),
+        stale: slot.worker.take(),
     }
 }
 
+/// End this monitor's assignment, keeping the worker it started. A worker
+/// handed back -- this one when the slot has gone, another one there -- is
+/// the caller's to stop, outside the lock.
+pub(crate) fn end_assign(
+    monitor: Handle<IDDCX_MONITOR__>,
+    worker: Option<Worker>,
+) -> Option<Worker> {
+    let mut state = lock();
+    let slot = match find(&state, monitor) {
+        Some(index) => state.slots.get_mut(index),
+        None => None,
+    };
+    let back = match slot {
+        Some(slot) => {
+            slot.assigning = None;
+            worker.and_then(|worker| slot.worker.replace(worker))
+        }
+        None => worker,
+    };
+    drop(state);
+    ASSIGNED.notify_all();
+    back
+}
+
 /// Take this monitor's worker and its slot, the worker to be stopped outside
-/// the lock.
+/// the lock -- **once an assignment of it on another thread has ended**, so
+/// the worker taken is the one that assignment started.
 pub(crate) fn detach_worker(monitor: Handle<IDDCX_MONITOR__>) -> Option<(usize, Worker)> {
     let mut state = lock();
-    let index = find(&state, monitor)?;
-    let worker = state.slots.get_mut(index)?.worker.take()?;
-    Some((index, worker))
+    let mut waited = false;
+    loop {
+        let index = find(&state, monitor)?;
+        let assigning = state.slots.get(index)?.assigning;
+        if assigning.is_some_and(|thread| thread != std::thread::current().id()) {
+            waited = true;
+            state = ASSIGNED.wait(state).unwrap_or_else(PoisonError::into_inner);
+            continue;
+        }
+        if waited {
+            log_info!("vdd: an unassignment waited for the assignment, slot={index}");
+        }
+        let worker = state.slots.get_mut(index)?.worker.take()?;
+        return Some((index, worker));
+    }
 }

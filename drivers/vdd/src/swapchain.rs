@@ -3,17 +3,23 @@
 //!
 //! The worker sets the device first and does the rest after, takes every
 //! picture, shares and publishes it where its monitor's frames were asked for
-//! (`frames`), finishes it at once, and deletes the swapchain on every way
-//! out. **Its stop is immediate**: the system cannot depart a monitor while a
-//! picture is held, so the wait for the next picture also waits on the stop.
-//! A swapchain's deletion may call the unassignment back on another thread
-//! and wait for it, so a worker is taken from its slot under the lock and
-//! stopped outside it, where that call finds nothing left to stop; for the
-//! same reason an assignment ends the swapchain still there before it starts
-//! the new one.
+//! (`frames`), finishes it at once, and deletes the swapchain on its way out
+//! -- **unless the system has taken it back already**: then it is stopped and
+//! leaves the swapchain alone. **Its stop is immediate**: the system cannot
+//! depart a monitor while a picture is held, so the wait for the next picture
+//! also waits on the stop. A swapchain's deletion may call the unassignment
+//! back on another thread and wait for it, so a worker is taken from its slot
+//! under the lock and stopped outside it, where that call finds nothing left
+//! to stop. **An unassignment waits for an assignment of the same monitor
+//! running on another thread** (`monitor::detach_worker`): the system deletes
+//! the swapchain once the unassignment returns, and the worker the assignment
+//! starts must be stopped by then. A worker still there when an assignment
+//! begins lost its swapchain without an unassignment: it is stopped leaving
+//! it, never deleting it inside the assignment, which the system makes holding
+//! a lock a deletion takes.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
 use lowlat_common::{log_debug, log_info, log_warn};
@@ -91,6 +97,11 @@ unsafe impl<T> Send for Moved<T> {}
 pub(crate) struct Worker {
     thread: Option<JoinHandle<()>>,
     stop: Arc<Event>,
+    /// Set before the stop when the system has taken the swapchain back:
+    /// the worker then leaves it undeleted.
+    left: Arc<AtomicBool>,
+    /// Set by the worker once it is done with its swapchain, deleted or left.
+    ended: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -113,12 +124,16 @@ impl Worker {
             })?;
         let stop =
             Arc::new(Event::new(true).ok_or(STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN)?);
+        let left = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
         let run = Moved(Run {
             slot,
             monitor,
             swapchain: Handle(args.hSwapChain),
             next: Handle(args.hNextSurfaceAvailable.cast()),
             stop: Arc::clone(&stop),
+            left: Arc::clone(&left),
+            ended: Arc::clone(&ended),
             device,
             stats,
         });
@@ -140,6 +155,8 @@ impl Worker {
         Ok(Self {
             thread: Some(thread),
             stop,
+            left,
+            ended,
         })
     }
 
@@ -155,6 +172,23 @@ impl Worker {
         }
         let _ = thread.join();
     }
+
+    /// Whether the worker is still on its swapchain: one that ended by itself
+    /// -- its swapchain refused its device or was lost -- deleted the
+    /// swapchain then, though its thread may not have returned yet.
+    pub(crate) fn running(&self) -> bool {
+        // Acquire: pairs with the worker's release once it is done.
+        !self.ended.load(Ordering::Acquire)
+    }
+
+    /// Stop the worker, which leaves its swapchain undeleted: the system has
+    /// taken it back already, with its monitor or after an unassignment that
+    /// found no worker. A worker that ended by itself deleted it before.
+    pub(crate) fn stop_and_leave(self) {
+        // Release: read by the worker after its stop, which is set after this.
+        self.left.store(true, Ordering::Release);
+        self.stop();
+    }
 }
 
 struct Run {
@@ -163,6 +197,8 @@ struct Run {
     swapchain: Handle<IDDCX_SWAPCHAIN__>,
     next: Handle<core::ffi::c_void>,
     stop: Arc<Event>,
+    left: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
     device: (Com<ID3D11Device>, Com<ID3D11DeviceContext>),
     stats: Arc<Stats>,
 }
@@ -203,8 +239,17 @@ impl Run {
             self.frames(cursor.as_mut());
             self.stats.assigned.store(false, Ordering::Relaxed);
         }
-        // SAFETY: the swapchain this worker owns, deleted once, on its way out.
-        unsafe { wdf_object_delete(self.swapchain.0.cast()) };
+        // Acquire: pairs with the release in `stop_and_leave`, before the stop
+        // this worker has seen.
+        if self.left.load(Ordering::Acquire) {
+            log_info!("vdd: swapchain left to the system, slot={slot}");
+        } else {
+            // SAFETY: the swapchain this worker owns, deleted once, on its way
+            // out, and not taken back by the system.
+            unsafe { wdf_object_delete(self.swapchain.0.cast()) };
+        }
+        // Release: the swapchain's deletion happens before this is seen.
+        self.ended.store(true, Ordering::Release);
         log_info!(
             "vdd: swapchain ended, slot={slot} frames={}",
             self.stats.frames.load(Ordering::Relaxed)
@@ -434,24 +479,30 @@ pub(crate) unsafe extern "C" fn assign(
     let Some(args) = (unsafe { args.as_ref() }) else {
         return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;
     };
-    // A swapchain still there ends first: its deletion may call the
-    // unassignment back, which must not find the new one.
-    if let Some((_, stale)) = monitor::detach_worker(monitor) {
-        stale.stop();
-    }
-    let Some((slot, stats)) = monitor::stats_for(monitor) else {
-        log_warn!("vdd: a swapchain for a monitor not known, abandoned");
-        return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;
-    };
-    match Worker::start(slot, monitor, args, stats) {
-        Ok(worker) => {
-            if let Some(stale) = monitor::attach_worker(monitor, worker) {
-                stale.stop();
-            }
-            STATUS_SUCCESS
+    // Begun before anything else, and ended on every way out below: an
+    // unassignment that comes meanwhile waits for the end and finds the
+    // worker started here.
+    let (slot, stats, stale) = match monitor::begin_assign(monitor) {
+        monitor::Assignment::Proceed { slot, stats, stale } => (slot, stats, stale),
+        monitor::Assignment::Refused => {
+            log_info!("vdd: a swapchain for a monitor not known or departing, abandoned");
+            return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;
         }
-        Err(status) => status,
+    };
+    if let Some(stale) = stale {
+        if stale.running() {
+            log_warn!("vdd: a worker outlived its swapchain, slot={slot}");
+        }
+        stale.stop_and_leave();
     }
+    let (status, worker) = match Worker::start(slot, monitor, args, stats) {
+        Ok(worker) => (STATUS_SUCCESS, Some(worker)),
+        Err(status) => (status, None),
+    };
+    if let Some(back) = monitor::end_assign(monitor, worker) {
+        back.stop_and_leave();
+    }
+    status
 }
 
 /// The class takes a monitor's swapchain away.
