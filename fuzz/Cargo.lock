@@ -707,6 +707,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-brand"
+version = "0.0.0"
+
+[[package]]
 name = "lowlat-client"
 version = "0.0.0"
 dependencies = [
@@ -791,6 +795,9 @@ dependencies = [
 [[package]]
 name = "lowlat-hid-proto"
 version = "0.0.0"
+dependencies = [
+ "lowlat-brand",
+]
 
 [[package]]
 name = "lowlat-net"
@@ -822,6 +829,7 @@ name = "lowlat-vdd-proto"
 version = "0.0.0"
 dependencies = [
  "loom",
+ "lowlat-brand",
 ]
 
 [[package]]
