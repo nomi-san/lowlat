@@ -7,29 +7,31 @@
 pub const INPUT_REPORT_ID: u8 = 1;
 pub const INPUT_REPORT_LEN: usize = 64;
 
-pub const DS4_DESCRIPTOR: &[u8] = include_bytes!("../../core/tests/data/pad/ds4/descriptor.bin");
-pub const DS5_DESCRIPTOR: &[u8] = include_bytes!("../../core/tests/data/pad/ds5/descriptor.bin");
+pub const DS4_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../crates/core/tests/data/pad/ds4/descriptor.bin");
+pub const DS5_DESCRIPTOR: &[u8] =
+    include_bytes!("../../../crates/core/tests/data/pad/ds5/descriptor.bin");
 
 /// A pad at rest, as a real one sends it: no button, the d-pad released and
 /// the sticks centred. The d-pad is a hat whose released value lies outside
 /// its range, so a report of zeroes would hold it up and pull both sticks into
 /// a corner.
 pub const DS4_NEUTRAL: &[u8; INPUT_REPORT_LEN] =
-    include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+    include_bytes!("../../../crates/core/tests/data/pad/ds4/input-idle.bin");
 pub const DS5_NEUTRAL: &[u8; INPUT_REPORT_LEN] =
-    include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+    include_bytes!("../../../crates/core/tests/data/pad/ds5/input-idle.bin");
 
 /// What a real pad answers before anybody sets it: its calibration, its
 /// firmware and its pairing, each identifier byte first.
 pub const DS4_FEATURES: [&[u8]; 3] = [
-    include_bytes!("../../core/tests/data/pad/ds4/feature-calibration.bin"),
-    include_bytes!("../../core/tests/data/pad/ds4/feature-firmware.bin"),
-    include_bytes!("../../core/tests/data/pad/ds4/feature-pairing.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds4/feature-calibration.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds4/feature-firmware.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds4/feature-pairing.bin"),
 ];
 pub const DS5_FEATURES: [&[u8]; 3] = [
-    include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin"),
-    include_bytes!("../../core/tests/data/pad/ds5/feature-firmware.bin"),
-    include_bytes!("../../core/tests/data/pad/ds5/feature-pairing.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds5/feature-calibration.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds5/feature-firmware.bin"),
+    include_bytes!("../../../crates/core/tests/data/pad/ds5/feature-pairing.bin"),
 ];
 
 #[cfg(test)]

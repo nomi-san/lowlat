@@ -18,12 +18,12 @@ members = [
     "crates/sdk",
     "crates/kessel",
     "crates/daemon",
-    "crates/brand",
-    "crates/vdd-proto",
-    "crates/vdd",
-    "crates/vdd-ctl",
-    "crates/hid-proto",
-    "crates/hid",
+    "drivers/brand",
+    "drivers/vdd-proto",
+    "drivers/vdd",
+    "drivers/vdd-ctl",
+    "drivers/hid-proto",
+    "drivers/hid",
 ]
 exclude = ["fuzz"]
 
@@ -51,10 +51,10 @@ lowlat-decode = { path = "crates/decode" }
 lowlat-client = { path = "crates/client" }
 lowlat-sdk = { path = "crates/sdk" }
 lowlat-kessel = { path = "crates/kessel" }
-lowlat-brand = { path = "crates/brand" }
-lowlat-vdd-proto = { path = "crates/vdd-proto" }
-lowlat-vdd-ctl = { path = "crates/vdd-ctl" }
-lowlat-hid-proto = { path = "crates/hid-proto" }
+lowlat-brand = { path = "drivers/brand" }
+lowlat-vdd-proto = { path = "drivers/vdd-proto" }
+lowlat-vdd-ctl = { path = "drivers/vdd-ctl" }
+lowlat-hid-proto = { path = "drivers/hid-proto" }
 
 libc = "0.2"
 getrandom = "0.2"

@@ -1,6 +1,6 @@
 # A company's own build of the drivers: build with
 #
-#   LOWLAT_BRAND=crates/brand/acme.brand cargo build -p lowlat-vdd -p lowlat-hid --release
+#   LOWLAT_BRAND=drivers/brand/acme.brand cargo build -p lowlat-vdd -p lowlat-hid --release
 #
 # or package them with scripts/package-vdd.sh and scripts/package-hid.sh under
 # the same variable, and build the library or the host the same way so their

@@ -30,7 +30,7 @@ done
 
 # Windows-form paths throughout: path conversion is off for the native tools.
 root="$(cd "$(dirname "$0")/.." && pwd -W)"
-out="$root/crates/vdd/src/ffi"
+out="$root/drivers/vdd/src/ffi"
 kit="${LOWLAT_WDK_DIR:-$("$py" "$root/scripts/fetch-wdk.py")}"
 kit="$(cygpath -m "$kit")/c"
 sdks="${WindowsSdkDir:-C:/Program Files (x86)/Windows Kits/10/}"

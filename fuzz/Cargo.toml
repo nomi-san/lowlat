@@ -28,9 +28,9 @@ lowlat-client = { path = "../crates/client" }
 # hold the gateway's address, so everything read back is parsed here first.
 lowlat-portmap = { path = "../crates/portmap" }
 # The display driver's settings file: any user writes it, the driver reads it.
-lowlat-vdd-proto = { path = "../crates/vdd-proto" }
+lowlat-vdd-proto = { path = "../drivers/vdd-proto" }
 # The input driver's requests and the reports it takes: its caller sends both.
-lowlat-hid-proto = { path = "../crates/hid-proto" }
+lowlat-hid-proto = { path = "../drivers/hid-proto" }
 
 [[bin]]
 name = "envelope"
