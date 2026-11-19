@@ -31,6 +31,13 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod brand;
+// Shared with the build script, which reads the brand file and generates the
+// driver's own EDID through them; the crate checks EDIDs with the second.
+#[cfg(test)]
+mod brand_file;
+mod edid_block;
+
 pub mod control;
 pub mod edid;
 pub mod frames;
@@ -51,23 +58,18 @@ pub struct Guid {
     pub data4: [u8; 8],
 }
 
-/// The control interface, which any interactive user may open.
-pub const CONTROL_INTERFACE: Guid = Guid {
-    data1: 0x4a91_4f53,
-    data2: 0x543f,
-    data3: 0x46f9,
-    data4: [0xb9, 0x9b, 0xd3, 0x49, 0xa5, 0xaa, 0xf3, 0xe5],
-};
+/// The control interface, which any interactive user may open: the brand's.
+pub const CONTROL_INTERFACE: Guid = brand::CONTROL_INTERFACE;
 
 /// A monitor's container, the same for a slot across replugs and reboots, so
-/// the system keeps the display's arrangement for it. The slot is the last
-/// byte.
+/// the system keeps the display's arrangement for it: the brand's, the slot
+/// its last byte.
 pub const fn container_id(slot: u8) -> Guid {
+    let base = brand::CONTAINER;
+    let [a, b, c, d, e, f, g, _] = base.data4;
     Guid {
-        data1: 0x3bb8_0aa8,
-        data2: 0x3343,
-        data3: 0x4e3d,
-        data4: [0x99, 0xd4, 0xcc, 0xc1, 0x66, 0xf4, 0x62, slot],
+        data4: [a, b, c, d, e, f, g, slot],
+        ..base
     }
 }
 
@@ -77,17 +79,16 @@ mod tests {
 
     #[test]
     fn a_slots_container_carries_the_slot_and_nothing_else_differs() {
-        let first = container_id(0);
-        assert_eq!(
-            (first.data1, first.data2, first.data3),
-            (0x3bb8_0aa8, 0x3343, 0x4e3d)
-        );
-        assert_eq!(
-            first.data4,
-            [0x99, 0xd4, 0xcc, 0xc1, 0x66, 0xf4, 0x62, 0x00]
-        );
-        let last = container_id(15);
-        assert_eq!(last.data4, [0x99, 0xd4, 0xcc, 0xc1, 0x66, 0xf4, 0x62, 0x0f]);
+        let base = brand::CONTAINER;
+        for slot in [0, 15] {
+            let id = container_id(slot);
+            assert_eq!(
+                (id.data1, id.data2, id.data3),
+                (base.data1, base.data2, base.data3)
+            );
+            assert_eq!(id.data4[..7], base.data4[..7]);
+            assert_eq!(id.data4[7], slot);
+        }
         assert_ne!(container_id(3), container_id(4), "each slot its own");
     }
 }

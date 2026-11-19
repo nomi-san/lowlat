@@ -18,7 +18,7 @@ use lowlat_vdd_proto::control::{Entry, Lifetime, List, Plug, Plugged};
 use lowlat_vdd_proto::edid::Edid;
 use lowlat_vdd_proto::modes::{Mode, ModeList};
 use lowlat_vdd_proto::settings::{GpuChoice, Pointer, Settings};
-use lowlat_vdd_proto::{MAX_MONITORS, container_id};
+use lowlat_vdd_proto::{MAX_MONITORS, brand, container_id};
 
 use crate::ffi::{
     DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL, GUID, IDARG_IN_ADAPTER_INIT,
@@ -181,7 +181,7 @@ unsafe impl Send for Edids {}
 
 fn edids() -> &'static Edids {
     static EDIDS: OnceLock<Edids> = OnceLock::new();
-    EDIDS.get_or_init(|| Edids(core::array::from_fn(|_| UnsafeCell::new(Edid::generated()))))
+    EDIDS.get_or_init(|| Edids(core::array::from_fn(|_| UnsafeCell::new(Edid::own()))))
 }
 
 /// Set a slot's EDID. The caller holds the lock, and the slot has no monitor.
@@ -245,8 +245,9 @@ const fn wide<const N: usize>(text: &str) -> [u16; N] {
     out
 }
 
-static NAME: [u16; 16] = wide("Lowlat");
-static MODEL: [u16; 32] = wide("Lowlat Virtual Display");
+/// The adapter's maker and its name: the brand's.
+static NAME: [u16; brand::PROVIDER.len() + 1] = wide(brand::PROVIDER);
+static MODEL: [u16; brand::DEVICE.len() + 1] = wide(brand::DEVICE);
 
 /// Initialise the adapter, once per device: the device's first power-up.
 pub(crate) fn start_adapter(device: Handle<WDFDEVICE__>) -> NTSTATUS {

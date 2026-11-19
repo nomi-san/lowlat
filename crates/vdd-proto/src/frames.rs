@@ -46,8 +46,9 @@ pub const PAGE: usize = 4096;
 /// The most buffers of one swapchain the page names.
 pub const MAX_BUFFERS: usize = 16;
 
-/// What the page's first word holds once the driver has prepared it.
-pub const MAGIC: u64 = u64::from_le_bytes(*b"lowlatfc");
+/// What the page's first word holds once the driver has prepared it: the
+/// brand's, `lowlatfc` for lowlat's own.
+pub const MAGIC: u64 = crate::brand::PAGE_MAGIC;
 
 // The page, word by word: the magic and the version, written once before any
 // reader can have the page; the sequence; the snapshot's words under it.

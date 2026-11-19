@@ -1,0 +1,29 @@
+# A company's own build of the display driver: build with
+#
+#   LOWLAT_VDD_BRAND=crates/vdd-proto/acme.brand cargo build -p lowlat-vdd --release
+#
+# or package it with scripts/package-vdd.sh under the same variable, and build
+# the library or the host the same way so their controller finds this driver
+# and no other (docs/11-drivers.md section 1.10). Every key is required; a
+# brand's identifiers are its own, never lowlat's, and the same across its
+# releases.
+
+# acme_idd.dll, acme-idd.inf and acme-idd.cat, Root\acme-vdd, AcmeVdd,
+# %ProgramData%\acme\display.
+id = acme
+
+provider = Acme
+device = Acme Virtual Display
+
+# Made once, for this brand alone.
+control = {1f34b69d-d67f-480d-b513-38ce689372c9}
+container = {b3aed726-5c15-462f-8185-45df320f6a00}
+
+# A dumped EDID, its raw bytes, its serial patched per slot: maker ACM,
+# product 0a01, "Acme Display", 2560x1440 at 60 its preferred timing. A build
+# without one names the generated block's instead:
+#
+#   edid-maker = ACM
+#   edid-product = 0a01
+#   edid-name = Acme Display
+edid = acme.edid

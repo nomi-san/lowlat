@@ -36,8 +36,9 @@ pub const MAX_FILE: usize = 16 * 1024;
 /// with room for spaces.
 const MAX_LINE: usize = 2 * edid::MAX_LEN + 32;
 /// The file's folder, under the system's program-data directory: users may
-/// write it, the driver's account read it.
-pub const FOLDER: &str = "lowlat\\display";
+/// write it, the driver's account read it. The brand's, `lowlat\display` for
+/// lowlat's own.
+pub const FOLDER: &str = crate::brand::FOLDER;
 /// The file's name, in that folder.
 pub const FILE_NAME: &str = "displays.conf";
 
@@ -326,9 +327,11 @@ impl Settings {
     }
 
     fn write_to(&self, out: &mut Out<'_>) -> fmt::Result {
-        out.write_str(
-            "# lowlat's virtual displays: written by `lowlat-vdd`, `lowlatd display`\n\
-             # and the library's controller, read by the display driver when it starts.\n",
+        writeln!(
+            out,
+            "# {}: written by the displays' controller, read by the display\n\
+             # driver when it starts.",
+            crate::brand::DEVICE
         )?;
         match self.gpu {
             Some(choice) => writeln!(out, "gpu {choice}")?,
@@ -378,7 +381,7 @@ mod tests {
         let mut settings = Settings {
             gpu: Some(RTX),
             pointer: Pointer::Drawn,
-            edid: Some(Edid::generated().for_slot(4)),
+            edid: Some(Edid::own().for_slot(4)),
             ..Settings::default()
         };
         assert!(settings.add_mode(Mode::new(3000, 2000, 120)));
@@ -536,7 +539,9 @@ mod tests {
 
     #[test]
     fn a_damaged_edid_is_refused_and_a_good_one_taken() {
-        let good = Edid::generated().for_slot(0);
+        // One block, whatever the brand's own carries.
+        let block = crate::edid_block::generate(b"ACM", 1, b"Acme").expect("a block");
+        let good = Edid::parse(&block).expect("valid").for_slot(0);
         let mut line = [0u8; 5 + 2 * edid::LEN];
         line[..5].copy_from_slice(b"edid ");
         for (i, byte) in good.as_slice().iter().enumerate() {

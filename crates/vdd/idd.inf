@@ -1,9 +1,9 @@
 ;
-; lowlat-idd.inf - the host's own virtual display (docs/11-drivers.md).
+; A virtual display: a user-mode indirect display driver (docs/11-drivers.md).
 ;
-; A user-mode indirect display driver. scripts/package-vdd.sh stamps the
-; driver's version and the framework's into a copy of this file, catalogues
-; the package and signs it.
+; The driver's build writes this file out with its brand's names in place of
+; the placeholders (section 1.10); scripts/package-vdd.sh stamps the driver's
+; version and the framework's into it, catalogues the package and signs it.
 ;
 
 [Version]
@@ -13,7 +13,7 @@ ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
 Class=Display
 ClassVer=2.0
 Provider=%ManufacturerName%
-CatalogFile=lowlat-idd.cat
+CatalogFile=@CATALOG@
 DriverVer=01/01/2026,0.0.0.0
 
 [Manufacturer]
@@ -22,38 +22,38 @@ DriverVer=01/01/2026,0.0.0.0
 ; Windows 10 1903 on: the first release whose display class names the GPU to
 ; render on.
 [Standard.NTamd64.10.0...18362]
-%DeviceName%=LowlatVdd_Install, Root\lowlat-vdd
+%DeviceName%=Vdd_Install, @HARDWARE_ID@
 
 [SourceDisksFiles]
-lowlat_idd.dll=1
+@LIBRARY@=1
 
 [SourceDisksNames]
 1=%DiskName%
 
 [DestinationDirs]
-LowlatVdd_Files=12,UMDF
+Vdd_Files=12,UMDF
 
 ; Copied aside when the old one is in use, so an update needs no restart.
-[LowlatVdd_Files]
-lowlat_idd.dll,,,0x00004000
+[Vdd_Files]
+@LIBRARY@,,,0x00004000
 
-[LowlatVdd_Install.NT]
-CopyFiles=LowlatVdd_Files
+[Vdd_Install.NT]
+CopyFiles=Vdd_Files
 
-[LowlatVdd_Install.NT.hw]
-AddReg=LowlatVdd_Hardware
+[Vdd_Install.NT.hw]
+AddReg=Vdd_Hardware
 
 ; The indirect display class's kernel half above the device; a host process
 ; group of the driver's own; and the device's access: the system account and
 ; administrators fully, any interactive user to read and write -- the control
 ; interface.
-[LowlatVdd_Hardware]
+[Vdd_Hardware]
 HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
-HKR,"WUDF","DeviceGroupId",%REG_SZ%,"LowlatVddGroup"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"@GROUP@"
 HKR,,"Security",,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
 
 ; The reflector, in the form Windows 10 accepts.
-[LowlatVdd_Install.NT.Services]
+[Vdd_Install.NT.Services]
 AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
 
 [WUDFRD_ServiceInstall]
@@ -65,21 +65,21 @@ ServiceBinary=%12%\WUDFRd.sys
 
 ; A host process of its own, never shared with another driver, so the process
 ; the host takes handles from holds this driver alone.
-[LowlatVdd_Install.NT.Wdf]
-UmdfService=LowlatVdd,LowlatVdd_Umdf
-UmdfServiceOrder=LowlatVdd
+[Vdd_Install.NT.Wdf]
+UmdfService=@SERVICE@,Vdd_Umdf
+UmdfServiceOrder=@SERVICE@
 UmdfKernelModeClientPolicy=AllowKernelModeClients
 UmdfHostProcessSharing=ProcessSharingDisabled
 
-[LowlatVdd_Umdf]
+[Vdd_Umdf]
 UmdfLibraryVersion=$UMDFVERSION$
-ServiceBinary=%12%\UMDF\lowlat_idd.dll
+ServiceBinary=%12%\UMDF\@LIBRARY@
 UmdfExtensions=IddCx0102
 
 [Strings]
-ManufacturerName="Lowlat"
-DiskName="Lowlat Virtual Display"
+ManufacturerName="@PROVIDER@"
+DiskName="@DEVICE@"
 WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
-DeviceName="Lowlat Virtual Display"
+DeviceName="@DEVICE@"
 REG_MULTI_SZ=0x00010000
 REG_SZ=0x00000000

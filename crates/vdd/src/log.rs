@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use lowlat_common::clock::{Time, elapsed_ms};
 use lowlat_common::log::Level;
+use lowlat_vdd_proto::brand;
 use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringA;
 
 static SINCE: OnceLock<Time> = OnceLock::new();
@@ -51,7 +52,8 @@ fn sink(level: Level, message: &str) {
     };
     let _ = write!(
         line,
-        "lowlat-vdd [{:9.3}] [{}] {}",
+        "{} [{:9.3}] [{}] {}",
+        brand::LOG,
         elapsed_ms(*since) / 1000.0,
         level.tag(),
         message
