@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-19 - The display driver no longer ends when a monitor leaves as it is given a swapchain
+
+### Fixed
+- **Unplugging a monitor right after a game left exclusive fullscreen on it ended the display
+  driver's process**, seven times in eight on either GPU ([11 §1.8](11-drivers.md)). Leaving
+  fullscreen sets a mode, and the system assigns the monitor a new swapchain on its own thread; the
+  departure's unassignment came while that assignment was still making its device, found no
+  worker and returned, the system deleted the swapchain, and the departure then stopped the worker
+  the assignment had started, which deleted it again. An unassignment now waits for an assignment
+  of the same monitor on another thread and stops the worker it started; a departing monitor
+  refuses a swapchain assigned to it meanwhile; a worker whose swapchain the system has taken back
+  already is stopped without deleting it. An assignment no longer waits for a worker that deletes,
+  which needs a lock the system holds through the assignment.
+
+### Checked
+- **32 games ended in exclusive fullscreen and their monitors unplugged at once**, 16 on an AMD
+  Radeon RX 9060 XT and 16 on an NVIDIA GeForce RTX 5060, over the fix's two builds: no swapchain
+  deleted twice; the unassignment waited for the assignment in 23 of them; a game presenting with
+  vsync on each GPU had its pictures throughout.
+
+### Known
+- **Once in those 32 a monitor plugged a few seconds after such an unplug got no swapchain from the
+  system**, which then ended the driver's process for a swapchain timeout on it. The unplug before
+  had caught an assignment and its unassignment in the same millisecond, and the new monitor had
+  the old one's target. The driver's process had ended at every such unplug before, which cleared
+  it; not yet chased.
+
 ## 2026-11-19 - The drivers in a folder of their own
 
 ### Changed

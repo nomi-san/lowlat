@@ -362,6 +362,20 @@ into targets of its own, by measurement.
   outside it, for the worker to delete its swapchain; an assignment first ends a worker still
   there, so a deletion that calls the unassignment back would find nothing. A replacement monitor is
   never created inside the old one's unassignment.
+  *Corrected 2026-11-19:* **an assignment and an unassignment of one monitor can run at once.** The
+  system assigns a swapchain on its own thread -- after a mode is set, as when a game leaves
+  exclusive fullscreen -- while a departure unassigns the monitor's swapchain on the departing
+  thread, and that unassignment can come while the assignment is still making its device, before
+  its worker is in the slot. It then found no worker; the system deleted the swapchain as the
+  assignment ended, and the departure, finding the worker the assignment had left, stopped it --
+  which deleted the swapchain a second time and ended the driver's process. Unplugging a monitor
+  right after a game left exclusive fullscreen on it did so seven times in eight, on either GPU.
+  Now **an unassignment waits for an assignment of the same monitor running on another thread**
+  and stops the worker it started, before the system deletes the swapchain; **a departing monitor
+  refuses a swapchain assigned to it meanwhile**, which goes with the monitor; and **a worker whose
+  swapchain the system has taken back already** -- still there when an assignment begins, or after
+  a departure -- is stopped without deleting it. An assignment no longer waits for a worker that
+  deletes: the system holds, through the assignment, a lock that a deletion takes.
 - A display switched off takes the monitor's path out of the topology; the host keeps the display
   awake while it captures.
   *Corrected 2026-10-16, at W3.5's review:* **a display asleep keeps the monitor's output** on
