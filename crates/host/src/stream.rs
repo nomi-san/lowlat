@@ -34,7 +34,7 @@
 //! flight, and every index lost that way is a pool slot that never comes back.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use lowlat_capture::synthetic::{Marker, Synthetic};
@@ -709,6 +709,15 @@ pub(crate) struct Shared {
     /// pass. Cleared when the captured output moves, because the next device
     /// is owed the question afresh.
     refused: AtomicU32,
+    /// Whether the last encode session was refused with the vendor's kernel
+    /// module and libraries at different releases: a driver updated and the
+    /// machine not yet rebooted.
+    ///
+    /// **Kept, not only logged, because the person it matters to is at the
+    /// desk and not reading the log.** A guest is told the encoder is
+    /// unavailable, which is all the protocol has a word for; the desk is
+    /// where the reboot happens. Cleared by the next session that opens.
+    driver_stale: AtomicBool,
 }
 
 /// The pointer as a guest needs to report it, in the captured picture's own
@@ -1050,6 +1059,18 @@ impl Shared {
     fn publish_picture(&self, width: u32, height: u32) {
         let packed = (width.min(0xFFFF) << 16) | height.min(0xFFFF);
         self.picture.store(packed, Ordering::Release);
+    }
+
+    /// Say whether the vendor's kernel module and libraries were found at
+    /// different releases behind a refused encode session.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn publish_driver_stale(&self, stale: bool) {
+        self.driver_stale.store(stale, Ordering::Relaxed);
+    }
+
+    /// Whether a refused encode session was last found to be that.
+    fn driver_stale(&self) -> bool {
+        self.driver_stale.load(Ordering::Relaxed)
     }
 
     /// Say which output is being captured.
@@ -1596,6 +1617,7 @@ impl Stream {
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
             refused: AtomicU32::new(0),
+            driver_stale: AtomicBool::new(false),
         });
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
@@ -1797,6 +1819,13 @@ impl Stream {
     /// Zero before a display has been opened. See [`Shared::captured`].
     pub fn captured(&self) -> u32 {
         self.shared.captured.load(Ordering::Acquire)
+    }
+
+    /// Whether nothing will encode until the machine is rebooted: the last
+    /// encode session was refused with the vendor's kernel module and
+    /// libraries at different releases. See [`Shared::driver_stale`].
+    pub fn driver_stale(&self) -> bool {
+        self.shared.driver_stale()
     }
 
     /// What the running encoder codes, or nothing before one exists.
@@ -2478,6 +2507,15 @@ fn run(
                         occupied_seats(shared),
                         reason
                     );
+                    // **Said again where the guests are ended**, once for each
+                    // attempt it cost, so the line above is never the last
+                    // word on a failure whose cause is already known.
+                    if shared.driver_stale() {
+                        lowlat_common::log_error!(
+                            "stream: NVIDIA driver updated, reboot needed; nothing will encode \
+                             until then"
+                        );
+                    }
                     kick_all(shared, &roster.active, reason);
                     // **Nobody could be served, and every guest was told.**
                     // The loop goes back to waiting rather than dying, but for
@@ -5871,6 +5909,7 @@ mod tests {
                 ten_bit: AtomicU32::new(0),
                 chroma_444: AtomicU32::new(0),
                 refused: AtomicU32::new(0),
+                driver_stale: AtomicBool::new(false),
             });
             let (joins, arrivals) = mpsc::channel();
             let forced = Arc::new(AtomicU32::new(0));
@@ -5966,6 +6005,7 @@ mod tests {
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
             refused: AtomicU32::new(0),
+            driver_stale: AtomicBool::new(false),
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
@@ -6564,6 +6604,7 @@ mod tests {
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
             refused: AtomicU32::new(0),
+            driver_stale: AtomicBool::new(false),
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
@@ -6979,6 +7020,7 @@ mod tests {
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
             refused: AtomicU32::new(0),
+            driver_stale: AtomicBool::new(false),
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {

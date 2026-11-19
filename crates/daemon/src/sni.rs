@@ -861,6 +861,7 @@ mod tests {
             bitrate_mbps: 20,
             quality: "latency".to_string(),
             cg_level: 1,
+            reboot_needed: false,
             guests: vec![
                 Guest {
                     number: 1,

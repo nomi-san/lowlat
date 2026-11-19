@@ -555,6 +555,9 @@ pub(crate) fn state(
         "bitrate": bitrate_mbps,
         "quality": quality_word(live.quality),
         "cgLevel": live.cg_level,
+        // The vendor's driver updated under a running kernel: nothing
+        // encodes until a reboot, and the desk is who can do that.
+        "rebootNeeded": seam.driver_stale(),
         "guests": guests,
     })
 }

@@ -678,6 +678,17 @@ A guest arriving or leaving is also a desktop notification, put up by the tray t
 session's notification service; it announces a media path coming up or going down, never a
 seat taken or an attempt abandoned, and never what was already there when the tray first looked.
 
+*Amended 2026-11-19:* **a tray also says when the machine has to be rebooted before anything
+will encode.** A driver package updated under a running kernel leaves the old kernel module
+beside the new libraries, and the vendor's encoder then refuses every session with a status
+that names neither. When a session is refused, the stream compares the release in
+`/proc/driver/nvidia/version` with the release of the encoder library it has mapped; if they
+differ it logs `NVIDIA driver updated, reboot needed` with both numbers and says so in the
+state (`rebootNeeded`), which a tray shows as its line and puts up once as a notification --
+this one also when it was already so as the tray first looked, since a person logging in to
+that machine is who can act on it. The guests are still ended on the encoder-unavailable
+reason, which is the only word the protocol has. The next session that opens clears it.
+
 *Amended 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **a tray also sets the
 frame-rate ceiling, the quality and the congestion level**, on both platforms. No guest's
 message carries the last two -- they are the hosting application's settings -- so these three

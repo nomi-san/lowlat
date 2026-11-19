@@ -23,8 +23,15 @@ pub(crate) struct Shown {
     /// One of [`QUALITIES`]' words.
     pub(crate) quality: String,
     pub(crate) cg_level: u32,
+    /// The graphics driver was updated under the running kernel, and nothing
+    /// will encode until the machine is rebooted.
+    pub(crate) reboot_needed: bool,
     pub(crate) guests: Vec<Guest>,
 }
+
+/// What the desk is told when the driver was updated and the machine not
+/// rebooted, in the log's own words so one finds the other.
+pub(crate) const REBOOT_NEEDED: &str = "NVIDIA driver updated, reboot needed";
 
 /// One seated guest, as a person would want it described.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -74,6 +81,10 @@ impl Shown {
         self.bitrate_mbps = number("bitrate");
         self.quality = text("quality");
         self.cg_level = number("cgLevel");
+        self.reboot_needed = state
+            .get("rebootNeeded")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         self.guests = state
             .get("guests")
             .and_then(serde_json::Value::as_array)
@@ -113,9 +124,15 @@ impl Shown {
     /// the frame rate, the quality and the level are each the marked entry of
     /// their own submenu, the guests each an entry of the menu, and the
     /// picture is on the guest's own screen.
+    ///
+    /// **A reboot owed is said before anything else the service says**: every
+    /// connection fails until it happens, so "idle" would be true and no use.
     pub(crate) fn line(&self) -> String {
         if !self.connected {
             return "lowlatd is not running".to_string();
+        }
+        if self.reboot_needed {
+            return REBOOT_NEEDED.to_string();
         }
         if self.guests.is_empty() {
             return "Idle, nobody connected".to_string();
@@ -463,6 +480,7 @@ mod tests {
             bitrate_mbps: 30,
             quality: "balanced".to_string(),
             cg_level: 2,
+            reboot_needed: false,
             guests: vec![Guest {
                 number: 1,
                 connected: true,
@@ -536,6 +554,21 @@ mod tests {
             frames.iter().find(|e| e.3 == Some(true)).map(|e| e.0),
             Some(FPS_AT + 144)
         );
+    }
+
+    /// **A reboot owed is the line, whoever is or is not seated**, and only
+    /// while there is a service saying so.
+    #[test]
+    fn a_reboot_owed_is_what_the_line_says() {
+        let mut shown = streaming();
+        shown.read(&serde_json::json!({ "rebootNeeded": true }));
+        assert_eq!(shown.line(), REBOOT_NEEDED);
+        assert_eq!(menu(&shown, false).children[0].label, REBOOT_NEEDED);
+        shown.connected = false;
+        assert_eq!(shown.line(), "lowlatd is not running");
+        shown.connected = true;
+        shown.read(&serde_json::json!({}));
+        assert_eq!(shown.line(), "Idle, nobody connected");
     }
 
     /// **Every entry asks for what it names, and only its own range answers**:

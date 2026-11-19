@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-19 - A driver updated without a reboot is said as that
+
+### Added
+- **An encode session the vendor's runtime refuses now logs the status it refused with** on
+  Linux, as Windows already did: `stream: encode session could not be opened, encoder runtime
+  returned status N`.
+- **A kernel module and libraries at different releases are named as the cause.** After an
+  `nvidia-utils` update without a reboot (module 615.78.08, libraries 620.70.06) every
+  connection ended with `encode session could not be opened` and reason -15000 and nothing
+  said why. On that refusal the release in `/proc/driver/nvidia/version` is compared with the
+  release of the mapped `libnvidia-encode`; a difference is logged as `NVIDIA driver updated,
+  reboot needed` with both numbers, again where the guests are ended, and carried in the tray's
+  state, where it is the status line, the tooltip and one notification
+  ([07-platforms.md](07-platforms.md) section 5).
+
+### Checked
+- Unit tests for both readers and the tray's line. On this machine, rebooted since (module and
+  libraries both 620.70.06), both releases are read and found equal.
+- **Not run against a mismatched driver**: the refusal itself and the tray's notice are as yet
+  unseen, and the status the runtime answers with there is still unknown.
+
 ## 2026-11-18 - The Windows host's GPU work at realtime priority
 
 ### Changed
