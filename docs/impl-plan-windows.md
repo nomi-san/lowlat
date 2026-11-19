@@ -2551,6 +2551,9 @@ a display gone past the wait for one and a refused mode of the host's display.
   unsigned**, catalogued, the library and the catalogue to be signed elsewhere in either order --
   the catalogue records the library's digest without its signature. A company's certificate sits
   on its own token, out of the build's reach.
+  *Amended 2026-11-19, at W4.4:* the brand file names the input driver too, read by a crate of the
+  brand's own, `crates/brand`, where lowlat's and the example's files now are; the variable is
+  `LOWLAT_BRAND`.
 
 ## Phase W4 - The host's input device
 
@@ -2869,6 +2872,38 @@ are through. The decisions are recorded once, here; the design they add up to is
   DualShock 4 the Xbox pad, as that client sends one. Owed, at W4's gate: the library's demo's
   DualShock 4 and DualSense, the setting changed mid-session and off, a game on the pads' maker's
   own PC library.
+- [x] **W4.4 a company's own build of the input driver**: W3.14's brand file names the input driver
+  too -- its device's name, its control interface and its devices' container, its files, hardware
+  ID, service and log prefix from the short name -- so one file brands both drivers; the reader,
+  the EDID's generator and both drivers' identities move to a crate of the brand's own,
+  `lowlat-brand`, which both protocols take them from; the variable becomes `LOWLAT_BRAND`. The
+  input driver's build writes its setup information with the brand's names and its package's
+  names, which its package, staging and install scripts read, as the display's do.
+  [11 §2.5](11-drivers.md) added, §1.10 amended; [07 §10](07-platforms.md) amended. Checked by the
+  reader's tests for the new keys and every refusal, lowlat's own input identity pinned to what it
+  was, the example's input driver built, packaged and scanned for this project's name, and live, a
+  company's input driver installed beside lowlat's display driver.
+  *Added 2026-11-19, after W4 closed (the maintainer's ask: the input driver to take the example's
+  brand as the display does).* Decided with it: **one brand file for both drivers**, a company
+  being one identity, with three keys of the input's own -- its device's name and its two GUIDs,
+  given, never derived, refused when lowlat's, and **the brand's four GUIDs four**: one given for
+  two keys would have a controller open the other driver, or two kinds of device share one
+  container. **A crate of the brand's own**: the input's protocol would otherwise take its names
+  from the display's, or read the file a second time. **The library built as `vhid.dll`**, so the
+  example's carries no other name inside it. **Each driver's install script keeps the certificate
+  while either of its brand's two drivers is left**, by the other's name in its package's names.
+  **What a device presents stays as it is**: the keyboard's and the mouse's shared open-source
+  vendor and test products, and the pads' own maker's, by which games know them, are no brand's.
+  *Built 2026-11-19*: lowlat's own input driver's every name and identifier pinned by a test, its
+  setup information differing from the last only in its sections' names; the reader tested on the
+  new keys and each refusal; the example's input driver built, packaged and catalogued, valid, its
+  library, setup information, catalogue and names free of this project's name.
+  *Checked live the same day*, on the development machine beside lowlat's display driver: the
+  example's input driver installed by its script from its package, listed as "Acme Virtual Input"
+  from the provider "Acme" under `Root\acme-hid`, `acme_hid.dll` in the system's driver folder, a
+  host process of its own logging `acme-hid`, the brand's control interface registered and
+  lowlat's nowhere; removed by the script with `-Remove`, no device, package, library or interface
+  of it left, the certificate's trust and the display driver as they were. *Closed 2026-11-19.*
 
 **Gate:** on the development machine, with established clients on macOS and Windows and the
 library's demo:
@@ -2897,6 +2932,9 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-19: W4.4 added, built, checked live and closed: the input driver's names and
+  identifiers from W3.14's brand file, read by a crate of the brand's own; the variable renamed
+  `LOWLAT_BRAND`; 11 §2.5 added, §1.10 amended, 07 §10 amended.
 - 2026-11-18: W3.14 added, built, checked live and closed: a company's own build of the display
   driver, its names, identifiers and EDID from a brand file named at build time, a monitor of its
   lit beside one of lowlat's own; 11 §1.10 added, §1.1, §1.3 and §1.4 amended, 06 §3c and 07 §10

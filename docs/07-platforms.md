@@ -965,7 +965,9 @@ After Gate B. The differences are contained:
   application switches a guest's keyboard and mouse onto it, the batch input call staying the
   default -- `lowlatd --virtual-input` at start (*built 2026-10-26 for the keyboard*, W4.1); the
   owner sets whether a pad sent as its reports is presented as its product; the Xbox 360 pad stays
-  on the virtual bus. The design is [11 §2](11-drivers.md).
+  on the virtual bus. The design is [11 §2](11-drivers.md). *Amended 2026-11-19:* a company builds
+  it under its own names and identifiers from the same brand file as the display driver
+  ([11 §2.5](11-drivers.md)).
 - **What needs a driver needs it installed** (*added 2026-10-22*). Nothing of the host installs
   its drivers -- not the service's install, not the host, not the library: the machine's
   administrator runs each driver's script, once, again to update it, and with `-Remove` to take it

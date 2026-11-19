@@ -450,29 +450,35 @@ a release signature ([07 §10](07-platforms.md)).
 display driver's identity from a brand file**, so a company ships the display under its own names,
 with no name of this project's in it, and its monitors with an EDID of its own. Without one a build
 is lowlat's own, every name and identifier as it was, so an installed driver updates in place and
-the system keeps its displays' arrangement. `LOWLAT_VDD_BRAND` names the file at build time, a
-path from the workspace's root or an absolute one; lowlat's own is `crates/vdd-proto/lowlat.brand`,
-and `crates/vdd-proto/acme.brand` a company's, its dumped EDID beside it in `acme.edid`, the raw
-bytes. One setting a line, `key = value`:
+the system keeps its displays' arrangement. `LOWLAT_BRAND` names the file at build time, a path
+from the workspace's root or an absolute one; lowlat's own is `crates/brand/lowlat.brand`, and
+`crates/brand/acme.brand` a company's, its dumped EDID beside it in `acme.edid`, the raw bytes.
+*Amended 2026-11-19, at W4.4:* **the brand file names the input driver too** (§2.5), one company
+one identity, and the variable took its name for both (it was `LOWLAT_VDD_BRAND`). One setting a
+line, `key = value`:
 
 | Key | What it names |
 |---|---|
-| `id` | the short name the rest derive from: the library `<id>_idd.dll`, the setup information and catalogue `<id>-idd.inf` and `<id>-idd.cat`, the hardware ID `Root\<id>-vdd`, the driver's service `<Id>Vdd` and its host process group, the settings folder `%ProgramData%\<id>\display`, and `<id>-vdd`, which each log line starts with |
-| `provider`, `device` | the driver's provider, who is also the adapter's maker; the adapter's name in the device list |
-| `control`, `container` | the control interface the controller opens the driver by; the monitors' container, the slot in its last byte |
+| `id` | the short name the rest derive from: the libraries `<id>_idd.dll` and `<id>_hid.dll`, the setup information and catalogues `<id>-idd.inf` and `<id>-hid.inf` with theirs, the hardware IDs `Root\<id>-vdd` and `Root\<id>-hid`, the services `<Id>Vdd` and `<Id>Hid` and the display's host process group, the settings folder `%ProgramData%\<id>\display`, and `<id>-vdd` and `<id>-hid`, which each driver's log lines start with |
+| `provider`, `device` | the drivers' provider, who is also the adapter's maker; the adapter's name in the device list |
+| `control`, `container` | the control interface the controller opens the display driver by; the monitors' container, the slot in its last byte |
 | `edid`, or `edid-maker`, `edid-product` and `edid-name` | the EDID every monitor starts from: a dumped one, one block or two, its path from the brand file's folder; or the generated block with that maker's three letters, product number and name of up to thirteen characters |
+| `input`, `input-control`, `input-container` | the input driver's device in the device list; the control interface the host opens it by; its devices' container, a device's kind and slot in its last two bytes |
 
-- **Read once, by the build of the crate the driver and its controller share**, and taken from
-  there by the driver, by the setup information its build writes, and by the controller in the
-  library, `lowlatd` and `lowlat-vdd`. So the library and the host find the driver of the brand
-  they were built with and no other, and a company builds them with the same file as its driver.
+- **Read once, by the build of a crate of the brand's own** (`lowlat-brand`), which both drivers'
+  protocols take it from, and from there by the drivers, by the setup information each build
+  writes, and by the controllers in the library, `lowlatd` and `lowlat-vdd`. So the library and
+  the host find the drivers of the brand they were built with and no other, and a company builds
+  them with the same file as its drivers.
 - **Every identifier is the brand's, not only the names a person sees**: two drivers on one
   machine must not share a file in the system's driver folder, a hardware ID, a service, an
   interface, a container or a settings folder. A brand that shares its short name, its control
   interface, its container, or its EDID's maker and product with lowlat's own fails the build, as
   does a key missing, unknown or given twice, a value out of its form, or an EDID that is not
-  valid -- nothing missing is filled from lowlat's. A company's identifiers stay the same across
-  its releases, since the system knows its monitors by them.
+  valid -- nothing missing is filled from lowlat's. *Amended 2026-11-19:* so does a brand sharing
+  either of the input driver's two GUIDs with lowlat's, or giving one GUID for two of its own four
+  keys. A company's identifiers stay the same across its releases, since the system knows its
+  monitors and devices by them.
 - **The library is built as `idd.dll` and packaged under the brand's name**, so a company's
   carries no other name inside it; the frame page's magic is the brand's too, `lowlatfc` for
   lowlat's own, and the serial's upper half the EDID's maker's first two letters (§1.3). The
@@ -494,8 +500,8 @@ bytes. One setting a line, `key = value`:
   build's is what a monitor carries when the file names none.
 - **The controller's programs and the library stay this project's** -- `lowlat-vdd`, `lowlatd
   display`, the library and its `lowlat_vdd_*` calls, which a person runs or an application links
-  rather than sees in the system's lists -- and so does the input driver (§2), which takes no
-  brand.
+  rather than sees in the system's lists. *Amended 2026-11-19:* the input driver, first left out,
+  takes the brand too (§2.5).
 
 ## §2 Input
 
@@ -698,6 +704,30 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   mouse -- so the next device, taken as listed at once, lost its first reports for as long; each
   new device came under handles raw input had not given before. A mouse's absolute collection was
   listed a few milliseconds after its relative one, and a position written between was lost.
+
+### §2.5 A company's own build
+
+*Added 2026-11-19, at W4.4 ([impl-plan-windows.md](impl-plan-windows.md)).* **The input driver
+takes its names and identifiers from the same brand file as the display** (§1.10): its device,
+listed by the brand's `input` name from the brand's provider; the library `<id>_hid.dll`, built
+as `vhid.dll` and named by the package; the setup information and catalogue `<id>-hid.inf` and
+`<id>-hid.cat`; the hardware ID `Root\<id>-hid`; its service `<Id>Hid`; `<id>-hid`, which its
+log lines start with, and the name the framework knows its handles' context by; the control
+interface the host opens it by; and its devices' container, whose last two bytes stay a device's
+kind and slot. lowlat's own keeps every one as it was. The host built with a brand opens that
+brand's input driver alone, and each driver's install script takes the certificate's trust back
+only when neither of its brand's two drivers is left.
+
+- **What a device presents to the system stays as it is**: the keyboard and the mouse carry the
+  shared open-source vendor and its test products, the pads their own maker's, by which games
+  know them (§2.3). The brand gives none of them.
+- *Checked 2026-11-19* on the example's build: neither its library, its setup information, its
+  catalogue nor its names carry this project's name anywhere; lowlat's own build's setup
+  information differs from the last only in its sections' names. And live, installed by its
+  script beside lowlat's display driver: listed as "Acme Virtual Input" from the provider "Acme"
+  under `Root\acme-hid`, its library in the system's driver folder, a host process of its own
+  whose log lines start `acme-hid`, and the brand's control interface registered where lowlat's
+  is not; removed by its script with `-Remove`, nothing of it left.
 
 ## §3 Verification status
 

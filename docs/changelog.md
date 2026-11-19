@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-19 - A company's own build of the input driver
+
+### Added
+- **The brand file names the Windows input driver too** ([11 §2.5](11-drivers.md), W4.4 in
+  [impl-plan-windows.md](impl-plan-windows.md)): three keys of its own -- `input`, the device's
+  name, and `input-control` and `input-container`, its two GUIDs -- beside the display's; its
+  library, setup information, catalogue, hardware ID, service and log prefix derive from the same
+  short name, `<id>_hid.dll` and `Root\<id>-hid`. The host built with the brand opens that input
+  driver alone. A brand giving one GUID for two of its keys fails the build.
+
+### Changed
+- **`LOWLAT_BRAND` names the brand file**, which was `LOWLAT_VDD_BRAND`, and the brand files and
+  their reader are a crate of their own, `crates/brand`, which both drivers' protocols take their
+  names from.
+- **The input driver's library is built as `vhid.dll`** and packaged under its brand's name,
+  `lowlat_hid.dll` for lowlat's own as before; its package carries `package.json`, which its
+  install and staging scripts read; `scripts/package-hid.sh` given no certificate leaves it
+  unsigned, as the display's does. The setup information's sections no longer carry the
+  project's name.
+
+### Checked
+- **lowlat's own input driver keeps every name and identifier it had** -- the files, the hardware
+  ID, the service, the control interface, the devices' container -- pinned by a test; its setup
+  information differs from the last only in its sections' names, and packages valid.
+- **The example brand's input driver built, packaged and catalogued**, its setup information
+  valid; no byte of its library, setup information, catalogue or names carries the project's
+  name.
+- **Live, installed by its script beside lowlat's display driver**: listed as "Acme Virtual Input"
+  from "Acme" under `Root\acme-hid`, in a host process of its own, the brand's control interface
+  registered and lowlat's nowhere; the script's `-Remove` left nothing of it.
+
 ## 2026-11-18 - A company's own build of the display driver
 
 ### Added
