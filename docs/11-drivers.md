@@ -451,8 +451,8 @@ display driver's identity from a brand file**, so a company ships the display un
 with no name of this project's in it, and its monitors with an EDID of its own. Without one a build
 is lowlat's own, every name and identifier as it was, so an installed driver updates in place and
 the system keeps its displays' arrangement. `LOWLAT_BRAND` names the file at build time, a path
-from the workspace's root or an absolute one; lowlat's own is `crates/brand/lowlat.brand`, and
-`crates/brand/acme.brand` a company's, its dumped EDID beside it in `acme.edid`, the raw bytes.
+from the workspace's root or an absolute one; lowlat's own is `drivers/brand/lowlat.brand`, and
+`drivers/brand/acme.brand` a company's, its dumped EDID beside it in `acme.edid`, the raw bytes.
 *Amended 2026-11-19, at W4.4:* **the brand file names the input driver too** (§2.5), one company
 one identity, and the variable took its name for both (it was `LOWLAT_VDD_BRAND`). One setting a
 line, `key = value`:

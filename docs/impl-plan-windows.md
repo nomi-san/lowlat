@@ -2552,7 +2552,7 @@ a display gone past the wait for one and a refused mode of the host's display.
   the catalogue records the library's digest without its signature. A company's certificate sits
   on its own token, out of the build's reach.
   *Amended 2026-11-19, at W4.4:* the brand file names the input driver too, read by a crate of the
-  brand's own, `crates/brand`, where lowlat's and the example's files now are; the variable is
+  brand's own, `drivers/brand`, where lowlat's and the example's files now are; the variable is
   `LOWLAT_BRAND`.
 
 ## Phase W4 - The host's input device

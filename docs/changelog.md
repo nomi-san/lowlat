@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-19 - The drivers in a folder of their own
+
+### Changed
+- **The Windows drivers and everything the brand file names moved from `crates/` to
+  `drivers/`**: `brand`, `vdd`, `vdd-proto`, `vdd-ctl`, `hid` and `hid-proto`, each folder under
+  its old name. The packages keep their names, so every `-p` and every dependency by name holds;
+  lowlat's brand file is `drivers/brand/lowlat.brand` and the example's
+  `drivers/brand/acme.brand` ([11 §1.10](11-drivers.md)). The folder sits beside `crates/`, its
+  crates two levels below the root as before, which the brand file's path, the driver kit's and
+  the crates' links to these documents are counted from. The scripts stay in `scripts/`.
+
+### Checked
+- **Both drivers built in release and linked against the kit**, as lowlat's own and under the
+  example brand named by its new path, each found by the packaging scripts' own search with the
+  brand's names; the old path is refused.
+- **The bindings generators wrote the committed bindings again**, byte for byte but the line
+  endings, into the drivers' new folders and nowhere else; every relative link under `drivers/`
+  resolves, and the fuzz targets' manifest resolves the moved crates.
+
 ## 2026-11-19 - A company's own build of the input driver
 
 ### Added
