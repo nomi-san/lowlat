@@ -10,7 +10,8 @@ built and checked live the same day; a guest's size and turn of any display put 
 built and checked live 2026-10-21, and a display read from its driver paced on the period it is
 handed pictures at (W3.12) built and checked live the same day; W3's gate to come. The input
 device (§2) planned 2026-10-22, at W4's interview; the driver built the same day (W4.0), and the
-host's keyboard on it with the switch 2026-10-26 (W4.1). Built by
+host's keyboard on it with the switch 2026-10-26 (W4.1). A company's own build of the display
+(§1.10) built 2026-11-18 (W3.14). Built by
 [impl-plan-windows.md](impl-plan-windows.md) W3 and W4,
 where the decisions and their reasons are recorded; this document is the design they add up to.
 
@@ -67,6 +68,9 @@ service, and whatever the host does on a driver needs it installed first.
   program is `lowlat-vdd` (§1.9): a program's debug symbols take its name with underscores, so a
   library of the same name would share one file with it. A person sees the adapter as "Lowlat
   Virtual Display", from the provider "Lowlat".
+  *Amended 2026-11-18, at W3.14:* **these are the names of lowlat's own build**, which a company's
+  build replaces with its brand's (§1.10); the library is built as `idd.dll` and the package names
+  it.
 
 ### §1.2 Two interfaces
 
@@ -120,9 +124,15 @@ thirteen characters its name field holds, where it said "lowlat" before. A diffe
 different monitor to the system, so the driver that brought the name made every slot a new
 monitor once, with nothing of the old one's arrangement.
 
+*Amended 2026-11-18, at W3.14:* **the driver's own EDID is its brand's** (§1.10) -- lowlat's
+the generated block above, unchanged to the byte, a company's dumped or generated with its own
+maker, product and name -- and the serial's upper half is that EDID's maker's first two letters,
+`LW` for lowlat's own as before.
+
 ### §1.4 What persists
 
-One file, `%ProgramData%\lowlat\display\displays.conf`, in a folder of its own, holds what
+One file, `%ProgramData%\lowlat\display\displays.conf` (*amended 2026-11-18:* the folder is the
+brand's, `%ProgramData%\<id>\display`, §1.10), in a folder of its own, holds what
 outlives the driver, a setting a line: the GPU the monitors render on (`gpu`), whether the
 pointer is drawn into the pictures (`pointer`), the custom modes (`mode`, §1.5), the kept
 monitors marked to come back, each at its slot and mode (`monitor`), and an optional EDID
@@ -433,6 +443,59 @@ same code, for a machine that runs no host; and a library built with the third h
 C interface for an application that wants displays and nothing else ([06 §3c](06-api.md)). Both
 ship with the host. A package of their own, with a command that installs the driver, waits for
 a release signature ([07 §10](07-platforms.md)).
+
+### §1.10 A company's own build
+
+*Added 2026-11-18, at W3.14 ([impl-plan-windows.md](impl-plan-windows.md)).* **A build takes the
+display driver's identity from a brand file**, so a company ships the display under its own names,
+with no name of this project's in it, and its monitors with an EDID of its own. Without one a build
+is lowlat's own, every name and identifier as it was, so an installed driver updates in place and
+the system keeps its displays' arrangement. `LOWLAT_VDD_BRAND` names the file at build time, a
+path from the workspace's root or an absolute one; lowlat's own is `crates/vdd-proto/lowlat.brand`,
+and `crates/vdd-proto/acme.brand` a company's, its dumped EDID beside it in `acme.edid`, the raw
+bytes. One setting a line, `key = value`:
+
+| Key | What it names |
+|---|---|
+| `id` | the short name the rest derive from: the library `<id>_idd.dll`, the setup information and catalogue `<id>-idd.inf` and `<id>-idd.cat`, the hardware ID `Root\<id>-vdd`, the driver's service `<Id>Vdd` and its host process group, the settings folder `%ProgramData%\<id>\display`, and `<id>-vdd`, which each log line starts with |
+| `provider`, `device` | the driver's provider, who is also the adapter's maker; the adapter's name in the device list |
+| `control`, `container` | the control interface the controller opens the driver by; the monitors' container, the slot in its last byte |
+| `edid`, or `edid-maker`, `edid-product` and `edid-name` | the EDID every monitor starts from: a dumped one, one block or two, its path from the brand file's folder; or the generated block with that maker's three letters, product number and name of up to thirteen characters |
+
+- **Read once, by the build of the crate the driver and its controller share**, and taken from
+  there by the driver, by the setup information its build writes, and by the controller in the
+  library, `lowlatd` and `lowlat-vdd`. So the library and the host find the driver of the brand
+  they were built with and no other, and a company builds them with the same file as its driver.
+- **Every identifier is the brand's, not only the names a person sees**: two drivers on one
+  machine must not share a file in the system's driver folder, a hardware ID, a service, an
+  interface, a container or a settings folder. A brand that shares its short name, its control
+  interface, its container, or its EDID's maker and product with lowlat's own fails the build, as
+  does a key missing, unknown or given twice, a value out of its form, or an EDID that is not
+  valid -- nothing missing is filled from lowlat's. A company's identifiers stay the same across
+  its releases, since the system knows its monitors by them.
+- **The library is built as `idd.dll` and packaged under the brand's name**, so a company's
+  carries no other name inside it; the frame page's magic is the brand's too, `lowlatfc` for
+  lowlat's own, and the serial's upper half the EDID's maker's first two letters (§1.3). The
+  driver's build writes the setup information with the brand's names, and `package.json`, the
+  names the package's files and the device take: the packaging script names the files by it and
+  the install script reads it beside them, so it installs and removes the brand the package was
+  built as and no other. A company signs the package with its own certificate (§1,
+  [07 §10](07-platforms.md)): given no certificate, the packaging script catalogues the package
+  and leaves the library and the catalogue unsigned for it. *Checked 2026-11-18* on the example's build: neither its library,
+  its setup information nor its names carry this project's name anywhere, the signatures aside,
+  which carry the signing certificate's. And live, installed beside lowlat's own on one machine:
+  the adapter listed as "Acme Virtual Display" from the provider "Acme", a host process of its
+  own whose log lines start `acme-vdd`, its settings read from its own folder; its monitor, held
+  through a controller built with its brand, listed as "Acme Display" under its EDID's maker and
+  product and handed its pictures, beside a monitor of lowlat's own on the same GPU; each
+  controller listing its own monitors alone; and removed by its own script with nothing of it
+  left in the store or the system's driver folder.
+- **The file's EDID (§1.4) still overrides the build's** for the monitors plugged after it; the
+  build's is what a monitor carries when the file names none.
+- **The controller's programs and the library stay this project's** -- `lowlat-vdd`, `lowlatd
+  display`, the library and its `lowlat_vdd_*` calls, which a person runs or an application links
+  rather than sees in the system's lists -- and so does the input driver (§2), which takes no
+  brand.
 
 ## §2 Input
 

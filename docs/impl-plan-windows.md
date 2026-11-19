@@ -2486,6 +2486,71 @@ a display gone past the wait for one and a refused mode of the host's display.
   not come back after the driver's update** while the host captured another output, so a guest
   could no longer ask for it until the host restarted ([06](06-api.md) `output`).
   *Closed 2026-10-25.*
+- [x] **W3.14 a company's own build of the display driver**: a brand file named at build time --
+  `LOWLAT_VDD_BRAND`, lowlat's own without it -- gives the driver's short name, its provider's and
+  adapter's names, its control interface and its monitors' container, and the EDID its monitors
+  start from, dumped or generated from a maker, a product and a name; the files, the hardware ID,
+  the service, the settings folder and the log's prefix derive from the short name; the driver's
+  build writes the setup information with the brand's names and the names the scripts read; the
+  controller in the library and the host opens the driver of the brand it was built with.
+  [11 §1.10](11-drivers.md) added and §1.1, §1.3 and §1.4 amended; [06 §3c](06-api.md) and
+  [07 §10](07-platforms.md) amended. Checked by the brand file's reader and the EDID's generator,
+  each check broken once; lowlat's own build's identity pinned to what it was; a company's brand
+  built, packaged and scanned for this project's name; and live, a company's driver installed
+  beside lowlat's on one machine, each plugging its own monitors.
+  *Added 2026-11-18, after W3 closed (the maintainer's ask: a company renames the driver and its
+  adapter when it builds them, with no name of this project's and no EDID of its own left in
+  them, and builds with an EDID of its own).* Decided with it: **every identifier, not only the
+  names a person sees** -- two drivers sharing a library name in the system's driver folder, a
+  hardware ID, a service, an interface, a container or a settings folder would take each other's
+  devices, files or monitors. **All derive from one short name**, as lowlat's own already did, so
+  nothing in the package, the scripts and the controller can name them two ways. **The
+  identifiers are given, never derived** -- the control interface and the container -- and kept
+  across a company's releases, since the system knows the monitors by them; **a brand sharing one
+  with lowlat's own fails the build**, the short name and the EDID's maker and product with them,
+  and **nothing missing is filled from lowlat's**: a key missing, unknown or given twice fails it
+  too. **Read once, by the build script of the crate the driver and its controller share**, the
+  setup information and the scripts taking the names from the build's output. **The library is
+  built as `idd.dll`** and the package names it, and the frame page's magic and the serial's
+  upper half follow the brand, so a company's binary carries no other name; lowlat's own keeps
+  `lowlatfc` and `LW`. **The file's EDID still overrides the build's.** **The controller's
+  programs, the library's names and the input driver stay this project's.**
+  *Built 2026-11-18*, its live check still to run: lowlat's own build's every name, identifier and
+  EDID byte pinned by a test, and its setup information differing from the last only in comments
+  and section names; the brand file's reader and the EDID's generator tested on every form and
+  every refusal; the example brand -- a dumped EDID, 2560x1440 at 60 its preferred timing -- built,
+  packaged, catalogued and signed, valid, its library, setup information and names free of this
+  project's name but for the signatures' certificate; a brand reusing lowlat's control interface
+  or EDID maker and product, a misspelled key and an EDID one byte short each failed the build,
+  saying which.
+  *Checked live 2026-11-18*, on the development machine beside lowlat's own driver: the example
+  installed by the install script from its package, listed as "Acme Virtual Display" from the
+  provider "Acme", its library beside lowlat's in the system's driver folder, its own host process
+  group and process, whose log lines start `acme-vdd`; it read its own settings folder and rendered
+  on the GPU named there. A monitor held through a controller built with the brand came up at
+  2560x1440 as "Acme Display", `ACM0A01`, and was handed 236 pictures in 45 seconds; lowlat's
+  controller listed no display meanwhile, and the brand's listed its own alone. Removed by the
+  install script with `-Remove`: no device, package or library of it left, the certificate's
+  trust and lowlat's driver as they were. **Not shown, and not the brand's**: lowlat's own
+  monitors, rendered on the RTX 5060, would not light -- plugged, the system never set a mode --
+  at any slot, through the committed build's controller as well, with the example installed,
+  after it was removed and after a restart of lowlat's device: the GPU had been lost to the
+  system since two bus-reset recoveries of its driver half an hour before the install, its own
+  tool saying a reboot recovers it -- and the restart that recovered it ended in the system's
+  stop on that GPU's removal, nothing of this project's on it.
+  *Checked again the same evening*, lowlat's display moved off the RTX to the RX 9060 XT -- its
+  file's GPU changed with nothing plugged, its device restarted -- and lit there at once; the
+  example installed again on the same GPU, its install restarting lowlat's device, which read its
+  own file again. **A monitor of each held together**: the example's at 2560x1440 and lowlat's at
+  1920x1080, each mode set within 30 ms, both handed pictures for the 35 seconds they overlapped
+  (342 and 193 in all), each listed by its own controller alone and by the system under its own
+  EDID, `ACM0A01` "Acme Display" and `LWL0001` "LowlatDisplay"; both unplugged cleanly, and the
+  example removed again with nothing left. *Closed 2026-11-18.*
+  *Added after it, the same evening (the maintainer's ask: a company's build, signed with its own
+  code-signing certificate):* **the packaging script given no certificate leaves the package
+  unsigned**, catalogued, the library and the catalogue to be signed elsewhere in either order --
+  the catalogue records the library's digest without its signature. A company's certificate sits
+  on its own token, out of the build's reach.
 
 ## Phase W4 - The host's input device
 
@@ -2832,6 +2897,10 @@ pads' maker's own PC library.
 
 ## Change log
 
+- 2026-11-18: W3.14 added, built, checked live and closed: a company's own build of the display
+  driver, its names, identifiers and EDID from a brand file named at build time, a monitor of its
+  lit beside one of lowlat's own; 11 §1.10 added, §1.1, §1.3 and §1.4 amended, 06 §3c and 07 §10
+  amended.
 - 2026-11-18: W2.1: `lowlatd`'s host puts its process's GPU work in the system's realtime band,
   measured on NVIDIA under a game on the same GPU (the encode stage's 99th percentile halved, the
   game about 1 % slower) and of no effect on AMD's RX 9060 XT; 05 §3 and 02 §1 amended.

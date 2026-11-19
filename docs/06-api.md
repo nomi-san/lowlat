@@ -1112,7 +1112,9 @@ lowlat_status lowlat_vdd_debug_panic(lowlat_vdd *vdd);
 ([11](11-drivers.md) §1), for any application to plug its own. The driver must be installed,
 by its own script and never by the library ([07 §10](07-platforms.md));
 without it the open answers `LOWLAT_ERR_VDD_ABSENT`, and a driver of another version
-`LOWLAT_ERR_VDD_VERSION`, since the two ship together.
+`LOWLAT_ERR_VDD_VERSION`, since the two ship together. *Amended 2026-11-18:* **the driver of
+the brand the library was built with** ([11 §1.10](11-drivers.md)) -- a company's, built with its
+brand file, or lowlat's own, built without -- and a driver of another brand is absent to it.
 
 **A library carrying this half alone** (*added 2026-10-17*) is the C interface for an
 application that wants virtual displays and nothing else: built with neither of the other

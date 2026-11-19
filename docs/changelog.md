@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-18 - A company's own build of the display driver
+
+### Added
+- **A brand file names the Windows display driver at build time** ([11 §1.10](11-drivers.md),
+  W3.14 in [impl-plan-windows.md](impl-plan-windows.md)): `LOWLAT_VDD_BRAND` names a file giving
+  the driver's short name, its provider's and adapter's names, its control interface and its
+  monitors' container, and the EDID its monitors start from -- a dumped one, or the block
+  generated with a maker, a product and a name of the company's. The driver's files, hardware ID,
+  service, settings folder and log prefix derive from the short name, and the library, `lowlatd`
+  and `lowlat-vdd` built with the same file open that driver and no other.
+  `crates/vdd-proto/acme.brand` is one, with a dumped EDID in `acme.edid`. A brand sharing an
+  identifier with lowlat's own, a key missing, unknown or given twice, or an EDID that is not
+  valid fails the build.
+
+### Changed
+- **The display driver's library is built as `idd.dll`** and packaged under its brand's name,
+  `lowlat_idd.dll` for lowlat's own as before. The package carries `package.json`, the names its
+  files and its device take, which the install and staging scripts read; the setup information's
+  sections no longer carry the project's name, and the settings file's first line names the
+  adapter.
+- **`scripts/package-vdd.sh` given no certificate leaves the package unsigned**, catalogued, for a
+  company to sign the library and the catalogue with its own.
+
+### Checked
+- **lowlat's own build keeps every name and identifier it had** -- the files, the hardware ID, the
+  service, the interfaces, the settings folder, the frame page's magic, and each monitor's EDID to
+  the byte -- pinned by a test; its setup information differs from the last only in comments and
+  section names, and packages valid.
+- **The example brand built, packaged, catalogued and signed**, its setup information valid; no
+  byte of its library, setup information or names carries the project's name, the signing
+  certificate's own in the signatures aside. A brand reusing lowlat's control interface, or its
+  EDID's maker and product, a misspelled key and an EDID one byte short each failed the build,
+  saying why.
+- **Live, beside lowlat's own driver on one machine**: the example installed from its package, its
+  adapter listed as "Acme Virtual Display" from "Acme" in a host process of its own; a monitor
+  held through a controller built with the brand came up at 2560x1440 as "Acme Display", maker
+  and product its EDID's, and **a monitor of lowlat's own beside it**, both on one GPU and both
+  handed their pictures for the 35 seconds they overlapped, each listed by its own controller
+  alone; the install script's `-Remove` left nothing of the example.
+
 ## 2026-11-18 - The Windows host's GPU work at realtime priority
 
 ### Changed

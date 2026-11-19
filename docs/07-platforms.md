@@ -953,7 +953,9 @@ After Gate B. The differences are contained:
   users may write and the driver's account may read, beside the host's configuration that only
   the system account and administrators read. An arrangement of displays that only the virtual
   one can satisfy is never saved, or a later boot waits on the driver. The design is
-  [11](11-drivers.md).
+  [11](11-drivers.md). *Amended 2026-11-18:* a company builds it under its own names, identifiers
+  and EDID, from a brand file named at build time, and signs its package with its own certificate
+  ([11 §1.10](11-drivers.md)).
 - An input driver of the host's own (*planned 2026-10-22*,
   [impl-plan-windows.md](impl-plan-windows.md) W4): a user-mode filter above the system's virtual
   HID framework, presenting a keyboard, a mouse, a DualShock 4 and a DualSense whose input the
