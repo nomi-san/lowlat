@@ -8,5 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# The names and identifiers the build's brand gives the input driver.
+[dependencies]
+lowlat-brand.workspace = true
+
 [lints]
 workspace = true

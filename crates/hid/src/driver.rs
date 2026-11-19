@@ -42,7 +42,7 @@ unsafe impl Sync for ContextType {}
 #[allow(clippy::cast_possible_truncation)] // a structure of five words
 static FILE_CONTEXT: ContextType = ContextType(WDF_OBJECT_CONTEXT_TYPE_INFO {
     Size: core::mem::size_of::<WDF_OBJECT_CONTEXT_TYPE_INFO>() as ULONG,
-    ContextName: c"lowlat-hid handle".as_ptr(),
+    ContextName: lowlat_hid_proto::brand::CONTEXT.as_ptr(),
     ContextSize: core::mem::size_of::<*mut File>(),
     UniqueType: &raw const FILE_CONTEXT.0,
     EvtDriverGetUniqueContextType: None,

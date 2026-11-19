@@ -8,7 +8,7 @@
 #
 #   scripts/package-vdd.sh [<thumbprint>]
 #
-# The brand is the build's: lowlat's own, or the file LOWLAT_VDD_BRAND names
+# The brand is the build's: lowlat's own, or the file LOWLAT_BRAND names
 # (docs/11-drivers.md section 1.10). In development the certificate is the
 # machine's own test certificate (scripts/vdd-test-cert.ps1); a release is
 # signed from CI's build instead. Without a thumbprint the package is

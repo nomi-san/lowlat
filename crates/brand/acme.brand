@@ -1,0 +1,36 @@
+# A company's own build of the drivers: build with
+#
+#   LOWLAT_BRAND=crates/brand/acme.brand cargo build -p lowlat-vdd -p lowlat-hid --release
+#
+# or package them with scripts/package-vdd.sh and scripts/package-hid.sh under
+# the same variable, and build the library or the host the same way so their
+# controllers find these drivers and no others (docs/11-drivers.md section
+# 1.10). Every key is required; a brand's identifiers are its own, never
+# lowlat's, and the same across its releases.
+
+# acme_idd.dll and acme_hid.dll, acme-idd.inf and acme-hid.inf with their
+# catalogues, Root\acme-vdd and Root\acme-hid, AcmeVdd and AcmeHid,
+# %ProgramData%\acme\display.
+id = acme
+
+provider = Acme
+device = Acme Virtual Display
+
+# Made once, for this brand alone.
+control = {1f34b69d-d67f-480d-b513-38ce689372c9}
+container = {b3aed726-5c15-462f-8185-45df320f6a00}
+
+# A dumped EDID, its raw bytes, its serial patched per slot: maker ACM,
+# product 0a01, "Acme Display", 2560x1440 at 60 its preferred timing. A build
+# without one names the generated block's instead:
+#
+#   edid-maker = ACM
+#   edid-product = 0a01
+#   edid-name = Acme Display
+edid = acme.edid
+
+# The input driver: its device's name, and its own two GUIDs, the container's
+# last two bytes a device's kind and slot.
+input = Acme Virtual Input
+input-control = {2c52881e-d0b2-41db-8b53-020c5d32a340}
+input-container = {69d1b83b-a177-4c6b-b1f4-b7085f6a0000}

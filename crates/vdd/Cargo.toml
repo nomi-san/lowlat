@@ -45,7 +45,7 @@ windows-sys = { version = "0.61", features = [
 # The brand's names, which the build writes into the package's setup
 # information.
 [build-dependencies]
-lowlat-vdd-proto.workspace = true
+lowlat-brand.workspace = true
 
 [lints]
 workspace = true

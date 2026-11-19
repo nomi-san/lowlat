@@ -1,10 +1,10 @@
-//! A brand file: the display driver's identity as a build names it
+//! A brand file: the drivers' identity as a build names it
 //! (docs/11-drivers.md section 1.10).
 //!
 //! **Shared with the build script**, which reads the file the build names
-//! here and writes what it says as the constants of the crate's `brand`
-//! module; the crate's tests read brand files of their own through it. So
-//! nothing here names the crate, and nothing allocates.
+//! here and writes what it says as the crate's constants; the crate's tests
+//! read brand files of their own through it. So nothing here names the crate,
+//! and nothing allocates.
 //!
 //! One setting a line, `key = value`, the value running to the line's end; a
 //! line starting `#` is a comment, a blank line nothing. **Every key is
@@ -14,7 +14,7 @@
 
 use core::fmt;
 
-use super::edid_block;
+use super::edid;
 
 /// A GUID as the file writes it: `{4a914f53-543f-46f9-b99b-d349a5aaf3e5}`,
 /// the braces optional.
@@ -54,6 +54,13 @@ pub(crate) struct Brand<'a> {
     /// The monitors' container, the slot in its last byte.
     pub(crate) container: Guid,
     pub(crate) monitor: Monitor<'a>,
+    /// The input device's name.
+    pub(crate) input: &'a str,
+    /// The input driver's control interface.
+    pub(crate) input_control: Guid,
+    /// The input devices' container, a device's kind and slot in its last
+    /// two bytes.
+    pub(crate) input_container: Guid,
 }
 
 /// Why a brand file was refused.
@@ -71,6 +78,8 @@ pub(crate) enum Error<'a> {
     Invalid(&'static str),
     /// A dumped EDID and the generated block's settings both, or neither.
     Edid,
+    /// A GUID the brand already gives another of its keys.
+    Shared(&'static str),
 }
 
 impl fmt::Display for Error<'_> {
@@ -84,11 +93,12 @@ impl fmt::Display for Error<'_> {
             Self::Edid => f.write_str(
                 "the EDID is `edid` alone, or `edid-maker`, `edid-product` and `edid-name` together",
             ),
+            Self::Shared(key) => write!(f, "`{key}` is a GUID the brand gives another key"),
         }
     }
 }
 
-const KEYS: [&str; 9] = [
+const KEYS: [&str; 12] = [
     "id",
     "provider",
     "device",
@@ -98,6 +108,9 @@ const KEYS: [&str; 9] = [
     "edid-maker",
     "edid-product",
     "edid-name",
+    "input",
+    "input-control",
+    "input-container",
 ];
 
 /// The longest provider's or adapter's name.
@@ -140,6 +153,25 @@ pub(crate) fn read(text: &str) -> Result<Brand<'_>, Error<'_>> {
     checked("device", name_valid(device))?;
     let control = guid(required("control")?).ok_or(Error::Invalid("control"))?;
     let container = guid(required("container")?).ok_or(Error::Invalid("container"))?;
+    let input = required("input")?;
+    checked("input", name_valid(input))?;
+    let input_control = guid(required("input-control")?).ok_or(Error::Invalid("input-control"))?;
+    let input_container =
+        guid(required("input-container")?).ok_or(Error::Invalid("input-container"))?;
+    // Each GUID names one thing: one copied into another's key would have a
+    // controller open the other driver, or two kinds of device share one
+    // container.
+    let guids = [
+        ("control", control),
+        ("container", container),
+        ("input-control", input_control),
+        ("input-container", input_container),
+    ];
+    for (at, (key, one)) in guids.iter().enumerate() {
+        if guids.iter().take(at).any(|(_, earlier)| earlier == one) {
+            return Err(Error::Shared(key));
+        }
+    }
     let monitor = match (
         value("edid"),
         value("edid-maker"),
@@ -151,8 +183,8 @@ pub(crate) fn read(text: &str) -> Result<Brand<'_>, Error<'_>> {
             Monitor::Dumped(file)
         }
         (None, Some(maker), Some(product), Some(name)) => {
-            checked("edid-maker", edid_block::maker_valid(maker.as_bytes()))?;
-            checked("edid-name", edid_block::name_valid(name.as_bytes()))?;
+            checked("edid-maker", edid::maker_valid(maker.as_bytes()))?;
+            checked("edid-name", edid::name_valid(name.as_bytes()))?;
             let product = hex(product, 4)
                 .and_then(|value| u16::try_from(value).ok())
                 .ok_or(Error::Invalid("edid-product"))?;
@@ -171,6 +203,9 @@ pub(crate) fn read(text: &str) -> Result<Brand<'_>, Error<'_>> {
         control,
         container,
         monitor,
+        input,
+        input_control,
+        input_container,
     })
 }
 
@@ -178,19 +213,27 @@ impl Brand<'_> {
     /// What of another brand's identity this one shares, if anything: an
     /// identifier the system or the controller knows a driver by, which two
     /// drivers on one machine must not have in common. A container that
-    /// differs only in its last byte is the same, since the slot replaces
-    /// that byte.
+    /// differs only in the bytes its devices replace -- the display's last,
+    /// the input's last two -- is the same.
     pub(crate) fn shared_with(&self, other: &Brand<'_>) -> Option<&'static str> {
-        let base = |guid: Guid| {
+        let display = |guid: Guid| {
             let [a, b, c, d, e, f, g, _] = guid.data4;
-            (guid.data1, guid.data2, guid.data3, [a, b, c, d, e, f, g])
+            (guid.data1, guid.data2, guid.data3, [a, b, c, d, e, f, g, 0])
+        };
+        let input = |guid: Guid| {
+            let [a, b, c, d, e, f, _, _] = guid.data4;
+            (guid.data1, guid.data2, guid.data3, [a, b, c, d, e, f, 0, 0])
         };
         if self.id == other.id {
             Some("id")
         } else if self.control == other.control {
             Some("control interface")
-        } else if base(self.container) == base(other.container) {
+        } else if display(self.container) == display(other.container) {
             Some("container")
+        } else if self.input_control == other.input_control {
+            Some("input control interface")
+        } else if input(self.input_container) == input(other.input_container) {
+            Some("input container")
         } else {
             None
         }
@@ -266,6 +309,9 @@ device = Acme Display Adapter (virtual)
 
 control = 6f1c2b7e-3a51-4f0e-9d2a-7c4b8e1f0a63
 container = {E2A4C6D8-1B3D-4F5A-8C7E-9A0B2C4D6E00}
+input = Acme Input Devices
+input-control = {0b6c9a1e-7d42-4c3a-9f18-2e5d7a6b4c11}
+input-container = 9e8d7c6b-5a49-4382-a1b0-c9d8e7f60000
 edid = monitors/acme.edid
 ";
 
@@ -301,6 +347,25 @@ edid = monitors/acme.edid
                 name: "LowlatDisplay"
             }
         );
+        assert_eq!(own.input, "Lowlat Virtual Input");
+        assert_eq!(
+            own.input_control,
+            Guid {
+                data1: 0x32e3_9bbb,
+                data2: 0xdbe3,
+                data3: 0x4fb6,
+                data4: [0xab, 0x8c, 0x78, 0x3e, 0x5b, 0x21, 0x4f, 0xed],
+            }
+        );
+        assert_eq!(
+            own.input_container,
+            Guid {
+                data1: 0x5234_c8de,
+                data2: 0xc3e9,
+                data3: 0x4480,
+                data4: [0x8d, 0x9c, 0xf7, 0x55, 0x4c, 0x66, 0x00, 0x00],
+            }
+        );
     }
 
     #[test]
@@ -316,6 +381,12 @@ edid = monitors/acme.edid
         );
         assert_eq!(acme.container.data2, 0x1b3d, "upper-case digits, braces");
         assert_eq!(acme.monitor, Monitor::Dumped("monitors/acme.edid"));
+        assert_eq!(acme.input, "Acme Input Devices");
+        assert_eq!(acme.input_control.data1, 0x0b6c_9a1e);
+        assert_eq!(
+            acme.input_container.data4[..6],
+            [0xa1, 0xb0, 0xc9, 0xd8, 0xe7, 0xf6]
+        );
         let own = read(OWN).expect("lowlat's own");
         assert_eq!(acme.shared_with(&own), None);
         assert_eq!(own.shared_with(&own), Some("id"));
@@ -349,6 +420,45 @@ edid = monitors/acme.edid
             read(&container).expect("read").shared_with(&own),
             Some("container")
         );
+        let input_control = copy(
+            "{0b6c9a1e-7d42-4c3a-9f18-2e5d7a6b4c11}",
+            "{32e39bbb-dbe3-4fb6-ab8c-783e5b214fed}",
+        );
+        assert_eq!(
+            read(&input_control).expect("read").shared_with(&own),
+            Some("input control interface")
+        );
+        let input_container = copy(
+            "9e8d7c6b-5a49-4382-a1b0-c9d8e7f60000",
+            "5234c8de-c3e9-4480-8d9c-f7554c6604ff",
+        );
+        assert_eq!(
+            read(&input_container).expect("read").shared_with(&own),
+            Some("input container"),
+            "only the kind and slot bytes differ"
+        );
+    }
+
+    /// **A brand's four GUIDs are four**: one given for two keys is refused
+    /// at the second, whichever two they are.
+    #[test]
+    fn a_guid_given_twice_in_one_brand_is_refused() {
+        let control = "6f1c2b7e-3a51-4f0e-9d2a-7c4b8e1f0a63";
+        let twice = ACME.replace("{0b6c9a1e-7d42-4c3a-9f18-2e5d7a6b4c11}", control);
+        assert_eq!(
+            read(&twice).map(|_| ()),
+            Err(Error::Shared("input-control"))
+        );
+        let container = ACME.replace(
+            "9e8d7c6b-5a49-4382-a1b0-c9d8e7f60000",
+            "{E2A4C6D8-1B3D-4F5A-8C7E-9A0B2C4D6E00}",
+        );
+        assert_eq!(
+            read(&container).map(|_| ()),
+            Err(Error::Shared("input-container"))
+        );
+        let crossed = ACME.replace("{E2A4C6D8-1B3D-4F5A-8C7E-9A0B2C4D6E00}", control);
+        assert_eq!(read(&crossed).map(|_| ()), Err(Error::Shared("container")));
     }
 
     #[test]
@@ -371,7 +481,22 @@ edid = monitors/acme.edid
     /// the file has, broken once.
     #[test]
     fn a_value_out_of_its_form_is_refused_by_key() {
-        let cases: [(&str, &str, Error<'_>); 22] = [
+        let cases: [(&str, &str, Error<'_>); 25] = [
+            (
+                "input = Acme Input Devices",
+                "input = Acme \"Input\"",
+                Error::Invalid("input"),
+            ),
+            (
+                "input-control = {0b6c9a1e-7d42-4c3a-9f18-2e5d7a6b4c11}",
+                "input-control = {0b6c9a1e-7d42-4c3a-9f18}",
+                Error::Invalid("input-control"),
+            ),
+            (
+                "input-container = 9e8d7c6b-5a49-4382-a1b0-c9d8e7f60000",
+                "input-container = 9e8d7c6b-5a49-4382-a1b0-c9d8e7f6000g",
+                Error::Invalid("input-container"),
+            ),
             ("id = acme2", "id = Acme", Error::Invalid("id")),
             ("id = acme2", "id = 2acme", Error::Invalid("id")),
             ("id = acme2", "id = acme-corp", Error::Invalid("id")),
@@ -478,12 +603,14 @@ edid = monitors/acme.edid
     fn a_file_out_of_its_shape_is_refused() {
         let missing = ACME.replace("device = Acme Display Adapter (virtual)\n", "");
         assert_eq!(read(&missing).map(|_| ()), Err(Error::Missing("device")));
+        let no_input = ACME.replace("input = Acme Input Devices\n", "");
+        assert_eq!(read(&no_input).map(|_| ()), Err(Error::Missing("input")));
         let twice = format!("{ACME}id = acme3\n");
         assert_eq!(read(&twice).map(|_| ()), Err(Error::Twice("id")));
         let unknown = format!("{ACME}colour = blue\n");
         assert_eq!(read(&unknown).map(|_| ()), Err(Error::Unknown("colour")));
         let line = format!("{ACME}\njust words\n");
-        assert_eq!(read(&line).map(|_| ()), Err(Error::Line(10)));
+        assert_eq!(read(&line).map(|_| ()), Err(Error::Line(13)));
         let both = format!("{ACME}edid-maker = ACM\nedid-product = 1\nedid-name = Acme\n");
         assert_eq!(read(&both).map(|_| ()), Err(Error::Edid));
         let neither = ACME.replace("edid = monitors/acme.edid\n", "");

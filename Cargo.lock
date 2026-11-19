@@ -908,6 +908,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-brand"
+version = "0.0.0"
+
+[[package]]
 name = "lowlat-capture"
 version = "0.0.0"
 dependencies = [
@@ -1009,6 +1013,7 @@ dependencies = [
 name = "lowlat-hid"
 version = "0.0.0"
 dependencies = [
+ "lowlat-brand",
  "lowlat-common",
  "lowlat-hid-proto",
  "windows-sys 0.61.2",
@@ -1017,6 +1022,9 @@ dependencies = [
 [[package]]
 name = "lowlat-hid-proto"
 version = "0.0.0"
+dependencies = [
+ "lowlat-brand",
+]
 
 [[package]]
 name = "lowlat-host"
@@ -1127,6 +1135,7 @@ dependencies = [
 name = "lowlat-vdd"
 version = "0.0.0"
 dependencies = [
+ "lowlat-brand",
  "lowlat-common",
  "lowlat-drivers",
  "lowlat-vdd-proto",
@@ -1148,6 +1157,7 @@ name = "lowlat-vdd-proto"
 version = "0.0.0"
 dependencies = [
  "loom",
+ "lowlat-brand",
 ]
 
 [[package]]

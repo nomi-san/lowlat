@@ -91,9 +91,9 @@ function Copy-DriverPackage([string]$Package, [string[]]$Parts, [string]$Folder,
     Write-Host "  $Folder\$Certificate ($($signer.Thumbprint))"
 }
 
-# The display driver's files are named by its brand, as its build wrote them
-# into the package's package.json (docs/11-drivers.md section 1.10), which
-# the install script reads beside them.
+# Each driver's files are named by its brand, as its build wrote them into
+# the package's package.json (docs/11-drivers.md section 1.10), which the
+# install script reads beside them.
 $vddPackage = Join-Path $root "target\vdd-package"
 $vddNames = Join-Path $vddPackage "package.json"
 $vdd = if (Test-Path $vddNames) { Get-Content -Raw $vddNames | ConvertFrom-Json } else { $null }
@@ -101,5 +101,10 @@ $vddParts = if ($vdd) { @($vdd.library, $vdd.inf, $vdd.catalog, "package.json") 
 $vddCertificate = if ($vdd) { $vdd.certificate } else { "" }
 Copy-DriverPackage $vddPackage $vddParts "driver" "scripts\vdd-install.ps1" "install-driver.ps1" `
     $vddCertificate $Portable "scripts/package-vdd.sh"
-Copy-DriverPackage (Join-Path $root "target\hid-package") @("lowlat_hid.dll", "lowlat-hid.inf", "lowlat-hid.cat") `
-    "input-driver" "scripts\hid-install.ps1" "install-input-driver.ps1" "lowlat-hid.cer" $false "scripts/package-hid.sh"
+$hidPackage = Join-Path $root "target\hid-package"
+$hidNames = Join-Path $hidPackage "package.json"
+$hid = if (Test-Path $hidNames) { Get-Content -Raw $hidNames | ConvertFrom-Json } else { $null }
+$hidParts = if ($hid) { @($hid.library, $hid.inf, $hid.catalog, "package.json") } else { @("package.json") }
+$hidCertificate = if ($hid) { $hid.certificate } else { "" }
+Copy-DriverPackage $hidPackage $hidParts "input-driver" "scripts\hid-install.ps1" "install-input-driver.ps1" `
+    $hidCertificate $false "scripts/package-hid.sh"

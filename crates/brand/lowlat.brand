@@ -1,0 +1,37 @@
+# The drivers' identity: lowlat's own, which a build takes unless LOWLAT_BRAND
+# names another file of this form (docs/11-drivers.md section 1.10). One
+# setting a line, `key = value`; every key is required.
+
+# The short name the drivers' files, hardware IDs, services and the display's
+# settings folder are named from: lowlat_idd.dll and lowlat_hid.dll,
+# lowlat-idd.inf and lowlat-hid.inf with their catalogues, Root\lowlat-vdd and
+# Root\lowlat-hid, LowlatVdd and LowlatHid, %ProgramData%\lowlat\display.
+# Lower-case letters and digits, a letter first, at most 32.
+id = lowlat
+
+# The drivers' provider, which is also the adapter's maker, and the display
+# adapter's name in the device list: printable ASCII without " % \ or @, at
+# most 64.
+provider = Lowlat
+device = Lowlat Virtual Display
+
+# The interface the controller opens the display driver by, and the monitors'
+# container, whose last byte carries the slot. A brand's own, and the same
+# across its releases: the system knows the monitors by them.
+control = {4a914f53-543f-46f9-b99b-d349a5aaf3e5}
+container = {3bb80aa8-3343-4e3d-99d4-ccc166f46200}
+
+# The EDID every monitor starts from, its serial patched per slot: a dumped
+# one, `edid = FILE` -- one block or two, the path from this file's folder --
+# or one generated for a maker's three letters, a product number in
+# hexadecimal and the name a person sees, at most 13 characters.
+edid-maker = LWL
+edid-product = 0001
+edid-name = LowlatDisplay
+
+# The input driver's device in the device list; the interface the host opens
+# it by; and its devices' container, whose last two bytes carry a device's
+# kind and slot.
+input = Lowlat Virtual Input
+input-control = {32e39bbb-dbe3-4fb6-ab8c-783e5b214fed}
+input-container = {5234c8de-c3e9-4480-8d9c-f7554c660000}

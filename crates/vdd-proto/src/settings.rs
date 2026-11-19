@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn a_damaged_edid_is_refused_and_a_good_one_taken() {
         // One block, whatever the brand's own carries.
-        let block = crate::edid_block::generate(b"ACM", 1, b"Acme").expect("a block");
+        let block = lowlat_brand::edid::generate(b"ACM", 1, b"Acme").expect("a block");
         let good = Edid::parse(&block).expect("valid").for_slot(0);
         let mut line = [0u8; 5 + 2 * edid::LEN];
         line[..5].copy_from_slice(b"edid ");

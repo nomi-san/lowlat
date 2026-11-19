@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# The names and identifiers the build's brand gives the display driver.
+[dependencies]
+lowlat-brand.workspace = true
+
 # The frame page's sequence lock is model checked (AGENTS.md 6.9).
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"

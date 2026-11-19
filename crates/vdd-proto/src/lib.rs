@@ -31,12 +31,11 @@
 #[cfg(test)]
 extern crate std;
 
-pub mod brand;
-// Shared with the build script, which reads the brand file and generates the
-// driver's own EDID through them; the crate checks EDIDs with the second.
-#[cfg(test)]
-mod brand_file;
-mod edid_block;
+/// A GUID in the system's layout.
+pub use lowlat_brand::Guid;
+/// The display driver's names and identifiers, as the build's brand gives them
+/// (docs/11-drivers.md section 1.10).
+pub use lowlat_brand::display as brand;
 
 pub mod control;
 pub mod edid;
@@ -47,16 +46,6 @@ pub mod settings;
 /// How many monitors the adapter carries, each a slot (docs/11-drivers.md
 /// section 1.3).
 pub const MAX_MONITORS: usize = 16;
-
-/// A GUID in the system's layout.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Guid {
-    pub data1: u32,
-    pub data2: u16,
-    pub data3: u16,
-    pub data4: [u8; 8],
-}
 
 /// The control interface, which any interactive user may open: the brand's.
 pub const CONTROL_INTERFACE: Guid = brand::CONTROL_INTERFACE;

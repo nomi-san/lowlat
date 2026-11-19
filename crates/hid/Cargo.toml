@@ -12,10 +12,11 @@ authors.workspace = true
 # loads (docs/11-drivers.md section 2). Built for Windows alone; elsewhere it
 # is empty.
 [lib]
-# The file the system loads is `lowlat_hid.dll`. No program may be named
-# `lowlat-hid`: a program's debug symbols take its name with underscores, and
-# the two would write one `lowlat_hid.pdb`.
-name = "lowlat_hid"
+# Built as `vhid.dll` and packaged under its brand's name, `lowlat_hid.dll` for
+# lowlat's own (docs/11-drivers.md section 1.10), so a company's driver carries
+# no other name inside it. No program may be named `vhid`: a program's debug
+# symbols take its name, and the two would write one `vhid.pdb`.
+name = "vhid"
 crate-type = ["cdylib"]
 # What can be tested without the driver host -- the kinds, their reports, the
 # requests -- is lowlat-hid-proto's and tested there. This crate is the glue
@@ -32,6 +33,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Threading",
 ] }
+
+# The brand's names, which the build writes into the package's setup
+# information.
+[build-dependencies]
+lowlat-brand.workspace = true
 
 [lints]
 workspace = true

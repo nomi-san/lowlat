@@ -7,8 +7,14 @@
 # In a staged folder (scripts/stage-windows.ps1) this is install-input-driver.ps1,
 # and the package, nefcon and the certificate the package is signed with are in
 # input-driver\ beside it. That machine may never have seen the certificate, so
-# it is trusted first; -Remove takes the trust back only when no lowlat driver
-# package is left, the display driver being signed with the same certificate.
+# it is trusted first; -Remove takes the trust back only when no package of
+# this driver or of its brand's display driver is left, the display driver
+# being signed with the same certificate.
+#
+# The driver's names -- its files, its hardware ID -- are its brand's, as its
+# build wrote them into the package's package.json (docs/11-drivers.md section
+# 1.10), so this installs and removes whichever brand the package was built as,
+# and no other.
 #
 # An update or a removal while the lowlat service runs stops the service first
 # and starts it again after, so the host's devices go before the driver does.
@@ -22,20 +28,29 @@ param([switch]$Remove)
 
 $ErrorActionPreference = 'Stop'
 $package = Join-Path $PSScriptRoot 'input-driver'
-if (Test-Path (Join-Path $package 'nefconc.exe')) {
+$staged = Test-Path (Join-Path $package 'nefconc.exe')
+if ($staged) {
     $nefcon = Join-Path $package 'nefconc.exe'
-    $certificate = Join-Path $package 'lowlat-hid.cer'
 } else {
     $root = Split-Path -Parent $PSScriptRoot
     $nefcon = (& python.exe (Join-Path $root 'scripts\fetch-nefcon.py')).Trim()
     $package = Join-Path $root 'target\hid-package'
-    $certificate = $null
 }
-$hwid = 'Root\lowlat-hid'
+$names = Join-Path $package 'package.json'
+if (-not (Test-Path $names)) { throw "no package at $package; run scripts/package-hid.sh first" }
+$brand = Get-Content -Raw $names | ConvertFrom-Json
+$certificate = if ($staged) { Join-Path $package $brand.certificate } else { $null }
+$hwid = $brand.hardware_id
 $className = 'System'
 $classGuid = '4d36e97d-e325-11ce-bfc1-08002be10318'
-$inf = Join-Path $package 'lowlat-hid.inf'
+$inf = Join-Path $package $brand.inf
 $stores = @('Root', 'TrustedPublisher')
+# The packages of this driver in the store, and of its brand's display
+# driver: lowlat's own was `lowlat-vdd.inf` before its files took the name
+# `lowlat-idd`.
+$builtAs = [regex]::Escape($brand.inf)
+$companion = [regex]::Escape($brand.companion_inf)
+if ($brand.id -eq 'lowlat') { $companion = 'lowlat-[iv]dd\.inf' }
 $serviceName = 'lowlatd'
 
 function Invoke-Nefcon {
@@ -52,7 +67,7 @@ function Test-Present {
         Where-Object { $_.HardwareID -contains $hwid })
 }
 
-# The packages of lowlat's drivers in the store, by the names they were built as.
+# The packages in the store whose original names the pattern matches.
 function Get-Packages([string]$Pattern) {
     $text = (pnputil /enum-drivers) -join "`n"
     foreach ($block in ($text -split "`n\s*`n")) {
@@ -83,13 +98,13 @@ if ($Remove) {
         if (Test-Present) {
             Invoke-Nefcon --remove-device-node --hardware-id $hwid --class-guid $classGuid
         }
-        if (Get-Packages 'lowlat-hid\.inf') {
-            Invoke-Nefcon --remove-driver-store-package --inf-name 'lowlat-hid.inf'
+        if (Get-Packages $builtAs) {
+            Invoke-Nefcon --remove-driver-store-package --inf-name $brand.inf
         }
     } finally {
         Start-Host
     }
-    if ($certificate -and -not (Get-Packages 'lowlat-(idd|vdd|hid)\.inf')) {
+    if ($certificate -and -not (Get-Packages "($builtAs|$companion)")) {
         $thumbprint = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $certificate).Thumbprint
         foreach ($store in $stores) {
             Remove-Item "Cert:\LocalMachine\$store\$thumbprint" -ErrorAction SilentlyContinue

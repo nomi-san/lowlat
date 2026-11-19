@@ -73,7 +73,7 @@ if ($Remove) {
     foreach ($published in (Get-Packages $builtAs)) {
         pnputil /delete-driver $published /uninstall /force
     }
-    if ($certificate -and -not (Get-Packages "($builtAs|lowlat-hid\.inf)")) {
+    if ($certificate -and -not (Get-Packages "($builtAs|$([regex]::Escape($brand.companion_inf)))")) {
         $thumbprint = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $certificate).Thumbprint
         foreach ($store in $stores) {
             Remove-Item "Cert:\LocalMachine\$store\$thumbprint" -ErrorAction SilentlyContinue

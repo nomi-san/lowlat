@@ -1,16 +1,17 @@
 //! An EDID's blocks: what makes one valid, and the block a build generates
 //! for a brand that dumps none (docs/11-drivers.md sections 1.3 and 1.10).
 //!
-//! **Shared with the build script**, which generates the driver's own block
-//! here and checks a dumped one; the crate checks every EDID a file or a
-//! request hands it with the same code. So nothing here names the crate.
+//! **Shared with the build script**, which generates the display driver's own
+//! block here and checks a dumped one; the display's protocol checks every
+//! EDID a file or a request hands it with the same code. So nothing here names
+//! the crate.
 
 use core::ops::Range;
 
 /// One block.
-pub(crate) const LEN: usize = 128;
+pub const LEN: usize = 128;
 /// The most an EDID here carries: the base block and one extension.
-pub(crate) const MAX_LEN: usize = 2 * LEN;
+pub const MAX_LEN: usize = 2 * LEN;
 
 const HEADER: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
 /// The maker's three letters, packed into two bytes.
@@ -58,14 +59,14 @@ const TEMPLATE: [u8; LEN] = [
 ];
 
 /// The sum of a block's bytes, which a valid block's checksum makes zero.
-pub(crate) fn sum(block: &[u8]) -> u8 {
+pub fn sum(block: &[u8]) -> u8 {
     block.iter().fold(0u8, |sum, b| sum.wrapping_add(*b))
 }
 
 /// Whether these bytes are an EDID of one block or two: the header first,
 /// each block's checksum right, and the extension count saying how many
 /// follow.
-pub(crate) fn valid(bytes: &[u8]) -> bool {
+pub fn valid(bytes: &[u8]) -> bool {
     (bytes.len() == LEN || bytes.len() == MAX_LEN)
         && bytes.get(..HEADER.len()) == Some(&HEADER[..])
         && bytes.chunks(LEN).all(|block| sum(block) == 0)
@@ -75,21 +76,18 @@ pub(crate) fn valid(bytes: &[u8]) -> bool {
 }
 
 /// Whether a maker is three capital letters, as a block packs them.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn maker_valid(letters: &[u8]) -> bool {
+pub fn maker_valid(letters: &[u8]) -> bool {
     letters.len() == 3 && letters.iter().all(u8::is_ascii_uppercase)
 }
 
 /// Whether a name fits its descriptor: one to thirteen printable characters.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn name_valid(name: &[u8]) -> bool {
+pub fn name_valid(name: &[u8]) -> bool {
     (1..=MAX_NAME).contains(&name.len()) && name.iter().all(|c| (0x20..=0x7e).contains(c))
 }
 
 /// The three letters a block's maker packs, five bits each, or `None` where
 /// one is not a letter.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn maker(block: &[u8]) -> Option<[u8; 3]> {
+pub fn maker(block: &[u8]) -> Option<[u8; 3]> {
     let packed = u16::from_be_bytes(block.get(MAKER)?.try_into().ok()?);
     let letter = |shift: u16| {
         let value = u8::try_from((packed >> shift) & 31).ok()?;
@@ -100,8 +98,7 @@ pub(crate) fn maker(block: &[u8]) -> Option<[u8; 3]> {
 
 /// Whether two EDIDs name the same monitor to the system: the same maker and
 /// product.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn same_monitor(a: &[u8], b: &[u8]) -> bool {
+pub fn same_monitor(a: &[u8], b: &[u8]) -> bool {
     let range = MAKER.start..PRODUCT.end;
     a.get(range.clone())
         .is_some_and(|a| Some(a) == b.get(range))
@@ -111,8 +108,7 @@ pub(crate) fn same_monitor(a: &[u8], b: &[u8]) -> bool {
 /// right; `None` for a maker or a name [`maker_valid`] or [`name_valid`]
 /// refuses. A name shorter than its field ends with a line feed, the rest
 /// spaces.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn generate(maker: &[u8], product: u16, name: &[u8]) -> Option<[u8; LEN]> {
+pub fn generate(maker: &[u8], product: u16, name: &[u8]) -> Option<[u8; LEN]> {
     if !maker_valid(maker) || !name_valid(name) {
         return None;
     }

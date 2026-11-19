@@ -1,0 +1,17 @@
+[package]
+name = "lowlat-brand"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The drivers' identity a build names (docs/11-drivers.md section 1.10): read
+# from a brand file by the build script and written as the constants both
+# drivers, their packages and their controllers take their names from. No
+# dependencies, no platform code: everything that names a driver compiles it.
+
+[lints]
+workspace = true

@@ -13,7 +13,9 @@
 //! is a different monitor to the system, with nothing of the old one's
 //! arrangement.
 
-use crate::{MAX_MONITORS, brand, edid_block};
+use lowlat_brand::edid as edid_block;
+
+use crate::{MAX_MONITORS, brand};
 
 /// One block.
 pub const LEN: usize = edid_block::LEN;
@@ -109,7 +111,7 @@ impl Edid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edid_block::sum;
+    use lowlat_brand::edid::sum;
 
     const HEADER: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
     const EXTENSIONS: usize = 126;
@@ -151,7 +153,7 @@ mod tests {
     #[test]
     fn the_serial_carries_the_makers_first_two_letters_and_the_slot() {
         let block = Edid::own().for_slot(7);
-        let maker = crate::edid_block::maker(block.as_slice()).expect("three letters");
+        let maker = lowlat_brand::edid::maker(block.as_slice()).expect("three letters");
         assert_eq!(
             &block.as_slice()[SERIAL],
             &[7, 0, maker[1], maker[0]],
@@ -191,7 +193,7 @@ mod tests {
     fn dumped() -> [u8; MAX_LEN] {
         let mut bytes = [0u8; MAX_LEN];
         bytes[..LEN].copy_from_slice(
-            &crate::edid_block::generate(b"DEL", 0x1234, b"Dell").expect("a block"),
+            &lowlat_brand::edid::generate(b"DEL", 0x1234, b"Dell").expect("a block"),
         );
         bytes[8..12].copy_from_slice(&[0x10, 0xac, 0x34, 0x12]);
         bytes[12..16].copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);

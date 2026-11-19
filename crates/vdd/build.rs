@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lowlat_vdd_proto::brand;
+use lowlat_brand::display as brand;
 
 const KIT: &str = "10.0.26100.6584";
 
@@ -89,7 +89,8 @@ fn package() {
     // allows: quotes and backslashes escaped.
     let names = format!(
         "{{\n  \"id\": {:?},\n  \"library\": {:?},\n  \"inf\": {:?},\n  \"catalog\": {:?},\n  \
-         \"certificate\": {:?},\n  \"hardware_id\": {:?},\n  \"folder\": {:?}\n}}\n",
+         \"certificate\": {:?},\n  \"hardware_id\": {:?},\n  \"folder\": {:?},\n  \
+         \"companion_inf\": {:?}\n}}\n",
         brand::ID,
         brand::LIBRARY,
         brand::INF,
@@ -97,6 +98,7 @@ fn package() {
         brand::CERTIFICATE,
         brand::HARDWARE_ID,
         brand::FOLDER,
+        brand::COMPANION_INF,
     );
     let path = out.join("package.json");
     std::fs::write(&path, names).unwrap_or_else(|error| fail(&path, error));

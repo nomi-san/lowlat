@@ -18,6 +18,7 @@ members = [
     "crates/sdk",
     "crates/kessel",
     "crates/daemon",
+    "crates/brand",
     "crates/vdd-proto",
     "crates/vdd",
     "crates/vdd-ctl",
@@ -50,6 +51,7 @@ lowlat-decode = { path = "crates/decode" }
 lowlat-client = { path = "crates/client" }
 lowlat-sdk = { path = "crates/sdk" }
 lowlat-kessel = { path = "crates/kessel" }
+lowlat-brand = { path = "crates/brand" }
 lowlat-vdd-proto = { path = "crates/vdd-proto" }
 lowlat-vdd-ctl = { path = "crates/vdd-ctl" }
 lowlat-hid-proto = { path = "crates/hid-proto" }
