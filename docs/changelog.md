@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-20 - W5.3: the application's own sound
+
+### Built
+- **A held guest hears the application alone**, on Windows ([05 §9.7](05-host.md)): while the
+  guests are held to an application, every seat hears the application's own processes in place
+  of the output's mix -- each process that sounds captured with the processes it started, unless
+  its parent's capture already holds it, so each sound is taken once -- and silence while none of
+  them sounds. Which processes sound is followed by the system's sessions on every output, as
+  their streams are made and started; a process is the application's when it or a live ancestor
+  runs one of its executables, by the question the host's scope asks of a window's process; a
+  capture is kept for as long as its process runs, the process held open. Setting or clearing the
+  scope moves the capture between the two, live.
+- **The mix keeps the captures' own clock**: every packet placed by its timestamp on one
+  timeline, a frame handed on as soon as every capture has filled it, a step in a capture's stamps
+  left as silence of its length; a capture alone has the timeline follow it.
+- The sound interface's bindings gain the sessions of an output and the capture of a process
+  (`scripts/gen-wasapi-bindings.sh`).
+
+### Measured
+- **The system tells of a session as a process's stream is made and again as it starts**, and a
+  session lives from the process's first stream to its exit; a capture opens in under half a
+  millisecond; the capturing process is given sessions of its own wherever its targets play.
+- **An output's own level and mute are behind a capture of a process**, and a program holding an
+  output in exclusive mode is in no capture: the captures go on with silence.
+
+### Checked
+- Offline: the mix's placement and its steps, late frames, an empty room, a capture fallen behind
+  and the choice of captures, each broken once and seen to fail.
+- On the development machine, as the signed-in user and elevated, with test processes playing
+  tones -- the application's executable, its child and grandchild running a helper's executable,
+  and the application's executable copied to another folder: the three heard once each at their
+  own level and the copy never; the mix 4 to 7 ms behind each process's own capture at the median;
+  its frame count on the clock with its loop held up 50 ms every 2 s; the scope cleared and set
+  again live. A session with a client is not run yet.
+- **Found on the way, by the held-up loop**: a frame due during the hold-up went out as silence
+  before the captures were read again, and a capture alone then moved the timeline back to the
+  packet it read late -- a frame too many each time, which a guest's queue would have taken in.
+  Such a frame now waits for the captures, and the timeline moves by the rounding to a mark
+  alone.
+
 ## 2026-11-20 - W5.2: the application's window as the picture
 
 ### Built

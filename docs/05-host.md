@@ -1483,6 +1483,10 @@ application runs as the signed-in user**, elevated so its input reaches an appli
 elevated ([impl-plan-windows.md](impl-plan-windows.md) W5); a host of the system account
 holding its guests to an application shows them the canvas black.
 
+*Built 2026-11-20* ([impl-plan-windows.md](impl-plan-windows.md) W5.3): **and a held guest hears
+the application alone** -- its own processes' sound in place of the output's mix, by the same
+question of each process (§9.7).
+
 ## §8 Cursor
 
 The cursor travels out of band, not composited into the frame. That is a protocol property and
@@ -1868,6 +1872,55 @@ through one decoder produce sound that is neither guest's.
 queue would evict the events; and sound that arrives late is worth less than the sound behind
 it, which is the same reason the downlink never retransmits. What was dropped travels with the
 next delivery.
+
+### §9.7 An application's own sound
+
+*Built 2026-11-20, on Windows alone* ([impl-plan-windows.md](impl-plan-windows.md) W5.3). While
+the guests are held to an application (§7.4), every seat hears the application's own processes in
+place of the output's mix -- the owner too, as for the picture -- and the guests are sent silence,
+on time, while nothing of it sounds. Setting or clearing the scope moves the capture between the
+two on the same thread and into the same stream, live, with a gap of about 20 ms.
+
+**Which processes sound is the system's sessions' to say.** An output keeps a session for each
+process that has opened a stream on it, from that first stream to the process's exit, and the
+system tells of a session as its stream is made and again as it starts (measured), so a capture
+opened on the notice runs before the first sample does. **A process is the application's when it
+runs one of the application's executables, or when one of its live ancestors does**: a client
+built on a browser plays from a helper of its window's process. A process is the application's
+by the same question that §7.4 asks of a window's process, so what a guest hears and what it sees
+and steers are the application's by one rule.
+
+**A capture takes a process and the processes that process started, one level and no deeper**
+(measured), so each sound is taken once: a process that sounds is captured unless its parent is,
+whose capture already holds it. A parent that begins to sound after its child takes the child's
+sound into its own capture and the child's is closed; a grandchild then gets a capture of its own.
+**A capture is kept for as long as its process runs**, the host holding the process open so that
+its number cannot pass to another process under the capture, and closed when it exits.
+
+**The mix keeps the captures' own clock.** Each capture delivers 10 ms packets at exactly the
+sample rate on the performance counter, each at a phase of its own and holding not much more than
+a packet (measured), so each is read on its own event as it delivers. Every packet is placed by
+its timestamp on one timeline: after the packet before it while the stamps run on, otherwise at
+the earliest 10 ms mark it reaches in time. A frame is handed on as soon as every capture has
+filled it, and 4 ms past its end at the latest. **A step in a capture's stamps is a pause in what
+it delivered**, left as silence of its length. A capture alone has the timeline follow it, so it
+adds nothing past the 20 ms frame; beside another it waits less than a packet for the rest. A loop
+held up loses what its captures could not hold, and nothing else: a frame due while it was held
+waits until the captures have been read again, so the frames handed on keep to the clock.
+
+**The output's own level and mute are behind the capture** (measured): the volume at the desk
+changes nothing a guest hears, the application's own level in the system's mixer does, and the
+speakers are silenced as §9.4 says while that is asked for. **A program that takes an output in
+exclusive mode is not heard**: its stream never reaches the system's mix, and the captures go on
+with silence.
+
+**What it costs**: a capture of a process arrives 10 to 40 ms after the capture of the whole mix,
+on a sawtooth every capture shares, and misses the first few tens of milliseconds of each stream
+its process starts ([impl-plan-windows.md](impl-plan-windows.md) W5.0). The mix trails each
+process's own capture by 4 to 7 ms at the median and 13 to 14 at p95 -- the 20 ms frame against
+the capture's 10 ms packet -- and its frame count keeps to the clock: 998 frames in 19.96 s with
+processes three deep coming and going, 1198 in 23.96 s with its loop held up 50 ms every 2 s.
+The host reports no sound device while an application's sound is captured.
 
 ## §10 Latency budget and instrumentation
 

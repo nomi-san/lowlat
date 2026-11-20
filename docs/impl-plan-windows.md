@@ -3112,12 +3112,39 @@ The decisions are recorded once, here.
   arrival (W5's measurement); the client's native menu in the picture; **with another program in
   front, the picture stayed on the client and its stamps went on**. A session with a client is
   W5's gate.
-- [ ] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
+- [x] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
   followed as its processes open and close their sound; each one's process held, so its number
   cannot pass to another process under the capture, and the capture closed when it exits; read
   within 10 ms, a step in a capture's timestamps filled with silence of its length; their mix, and
   silence while none of them sounds. Checked by test processes three deep, one outside, and a
   reader held up.
+  *Measured first, 2026-11-20*, as the signed-in user and from its elevated token alike: the
+  system tells of a session as a process's stream is made and again as it starts; **a session
+  lives from the process's first stream to its exit**, so a capture follows its process from its
+  first sound to its exit; the capturing process is given sessions of its own wherever its targets
+  play; a capture opens in under half a millisecond; an output's own level and mute are behind a
+  capture of a process; and a program holding an output in exclusive mode is in no capture, the
+  captures going on with silence.
+  *Built and checked 2026-11-20* ([05 §9.7](05-host.md)): every output's sessions followed by the
+  system's notices and read again every 2 s; each process judged once while it lives -- its
+  executable, or a live ancestor's, by the question the host's scope answers -- under a held
+  handle; a capture per process that sounds unless its parent's holds it, opened without holding
+  up the loop; every packet placed by its stamp on one timeline, a frame handed on once every
+  capture has filled it or 4 ms past its end, a step left as silence; the scope's setting moving
+  the capture between the application and the output's mix, live. **Run**: the mix's placement,
+  its steps, late frames, an empty room, a lane fallen behind and the choice of captures, each
+  broken once and seen to fail; on the development machine, as the user and elevated, test
+  processes playing tones -- the application's executable, its child and grandchild running a
+  helper's, and the application's executable copied to another folder: **the three heard once
+  each at their own level, the copy never**; the child's sound moving into its parent's capture
+  as the parent began to sound, the grandchild then given its own; the mix 4 to 7 ms behind each
+  process's own capture at the median; 998 frames in 19.96 s; **the loop held up 50 ms every 2 s:
+  1198 frames in 23.96 s and every burst kept**; the scope cleared and set again live, the copy
+  heard only between. **Found and fixed on the way**: a frame due while the loop was held up was
+  handed on as silence before the captures were read again, and a capture alone then moved the
+  timeline back to the packet it read late -- a frame too many for each hold-up, which a guest's
+  queue would have taken in; such a frame now waits for the captures to be read, and the timeline
+  moves by the rounding to a mark alone. A session with a client is W5's gate.
 - [ ] **W5.4 the C interface**: the scope as a live setting of the host, declared on Windows alone
   as the input configuration is; [06](06-api.md).
 - [ ] **W5.5 `lowlatd`**: applications' definitions -- a name, a launch command, a working
@@ -3132,6 +3159,9 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-20: W5.3 built and checked: a held guest hears the application alone -- a capture per
+  process of it that sounds, unless its parent's holds it, followed by the system's sessions and
+  mixed on the captures' own clock; the scope moves it live.
 - 2026-11-20: W5.2 built and checked: the application's window as the display's source, drawn at
   its place on its output's canvas, following the front; the host for an application decided to
   run as the signed-in user, the system's capture of a window refused to the system account.
