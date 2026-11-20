@@ -255,6 +255,68 @@ internal sealed class Host
                 + $", pads on the driver={back.VirtualPads}");
         }
     }
+
+    /// The executables `LOWLAT_SCOPE` names, each a full path, a `|` between
+    /// them: a character no Windows path may hold.
+    public static string[] ScopeFromEnvironment() =>
+        (Environment.GetEnvironmentVariable("LOWLAT_SCOPE") ?? "")
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// Hold every guest but the owner to the application `paths` names, or let
+    /// them all go with none, and say what the host now holds. **A scope this
+    /// process cannot show is taken all the same**: the guests are held and
+    /// shown black, and the status says why.
+    public Status Scope(string[] paths)
+    {
+        unsafe
+        {
+            var scope = new HostScope
+            {
+                Size = (uint)sizeof(HostScope),
+                PathCount = (uint)paths.Length,
+            };
+            var all = (Span<byte>)scope.Paths;
+            for (var i = 0; i < paths.Length && i < Sizes.ScopePaths; i++)
+            {
+                Text.Put(all.Slice(i * Sizes.ScopePath, Sizes.ScopePath), paths[i]);
+            }
+            var set = Native.lowlat_host_set_scope(handle, &scope);
+            var held = Held();
+            Console.WriteLine(set switch
+            {
+                Status.Ok => $"scope: {held.Length} executable(s) held to",
+                Status.ScopeNoPicture =>
+                    $"scope: {held.Length} executable(s) held to, shown black ({Text.Describe(set)})",
+                _ => $"scope: refused ({Text.Describe(set)}), {held.Length} executable(s) held to",
+            });
+            return set;
+        }
+    }
+
+    /// The executables the host holds its guests to now, none while nobody is
+    /// held.
+    public string[] Held()
+    {
+        unsafe
+        {
+            var scope = new HostScope { Size = (uint)sizeof(HostScope) };
+            if (Native.lowlat_host_get_scope(handle, &scope) != Status.Ok)
+            {
+                return [];
+            }
+            var all = (ReadOnlySpan<byte>)scope.Paths;
+            var held = new string[scope.PathCount];
+            for (var i = 0; i < held.Length; i++)
+            {
+                held[i] = Text.Take(all.Slice(i * Sizes.ScopePath, Sizes.ScopePath));
+            }
+            return held;
+        }
+    }
+
+    /// `s` while it runs: the guests held to `LOWLAT_SCOPE`'s executables, or
+    /// let go.
+    public void ToggleScope() => Scope(Held().Length == 0 ? ScopeFromEnvironment() : []);
 #endif
 
     public HostStatus State()
@@ -499,6 +561,32 @@ internal sealed class Host
         // output or rate.
         AppProtocol.OnMessage(this, guest, 11, described.ToJsonString());
         AppProtocol.SendRoster(this);
+
+#if WINDOWS
+        // **The scope**, on Windows alone: taken -- and shown black, where this
+        // process cannot capture a window -- read back as the host keeps it,
+        // then cleared. `LOWLAT_SCOPE` names the application, this program
+        // itself where it names none.
+        var scope = ScopeFromEnvironment();
+        if (scope.Length == 0)
+        {
+            scope = [Environment.ProcessPath ?? throw new InvalidOperationException("no path of this process")];
+        }
+        var scoped = Scope(scope);
+        if (scoped != Status.Ok && scoped != Status.ScopeNoPicture)
+        {
+            throw new InvalidOperationException($"set_scope: {Text.Describe(scoped)}");
+        }
+        if (Held().Length != scope.Length)
+        {
+            throw new InvalidOperationException("the scope did not read back as set");
+        }
+        Expect(Scope([]), "set_scope");
+        if (Held().Length != 0)
+        {
+            throw new InvalidOperationException("a scope cleared is still held");
+        }
+#endif
 
         // Whatever the seam raised on the way through, drained rather than
         // discarded: the queue outlives the session that filled it.

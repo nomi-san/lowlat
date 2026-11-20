@@ -65,7 +65,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 38
+#define LOWLAT_ABI_MINOR 39
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// How many reflexive servers a seam may be given, and how long each may be.
@@ -116,6 +116,17 @@
 
 /// The longest fingerprint.
 #define LOWLAT_FINGERPRINT_MAX 112
+#endif
+
+#if ((defined(LOWLAT_HOST) && !defined(__APPLE__)) && defined(_WIN32))
+/// The most executables a scope names (minor 39; Windows alone).
+#define LOWLAT_SCOPE_PATHS_MAX 16
+
+/// The longest path a scope holds, in bytes of UTF-8 with its terminator
+/// (minor 39; Windows alone): any path within the system's usual limit fits,
+/// at three bytes a character. One longer is refused rather than cut short,
+/// since a path cut short is the image of no process.
+#define LOWLAT_SCOPE_PATH_MAX 1024
 #endif
 
 #if (defined(LOWLAT_HOST) && !defined(__APPLE__))
@@ -210,6 +221,13 @@ typedef enum lowlat_status LOWLAT_ENUM_BASE(int32_t) {
     LOWLAT_OK = 0,
     /// No event arrived within the timeout. Not an error.
     LOWLAT_TIMEOUT = 1,
+    /// The scope was taken and this process cannot capture a window, so every
+    /// guest but the owner is held and every seat is shown black (minor 39;
+    /// Windows alone). The system serves the capture of a window per signed-in
+    /// user and refuses a host of the system account: run the host as that
+    /// user. Not an error, since nothing asked for was refused; in the
+    /// display's range, as the other conditions of the picture are.
+    LOWLAT_SCOPE_NO_PICTURE = 200,
     /// A fault was contained at the boundary. The handle no longer runs.
     LOWLAT_ERR_INTERNAL = -1,
     /// An argument was missing, out of range, or contradicted another.
@@ -1499,6 +1517,9 @@ typedef struct lowlat_host_status {
     /// **What it landed on, not what was asked for.** An empty request means
     /// the default output's monitor, and the sound server can move a stream
     /// while it runs, so this is the only place the two can be compared.
+    /// **Empty while the guests are held to an application** (minor 39;
+    /// Windows alone), whose sound is read from its own processes rather than
+    /// from an output, `audio_active` staying set.
     char audio_device[LOWLAT_OUTPUT_MAX];
 } lowlat_host_status;
 
@@ -1576,6 +1597,34 @@ typedef struct lowlat_metrics {
     lowlat_channel_metrics audio;
     lowlat_channel_metrics video;
 } lowlat_metrics;
+#endif
+
+#if ((defined(LOWLAT_HOST) && !defined(__APPLE__)) && defined(_WIN32))
+/// The application every guest but the owner is held to, on Windows alone
+/// (minor 39; docs/05-host.md section 7.4): its executables, each by the full
+/// path the system names the image a process runs by.
+///
+/// **A live setting with no settled half**: set and read back through its own
+/// pair of calls while a host runs, and no part of what a host starts with. No
+/// guest is seated before the application approves it, so a scope set after
+/// the start and before the first approval holds every guest from its
+/// admission. A host stopped lets it go with everything else.
+///
+/// **A fixed array and a count**, as the reflexive servers are, so the
+/// structure stays one block with nothing in it to free.
+typedef struct lowlat_host_scope {
+    /// Set by the caller to `sizeof(lowlat_host_scope)`.
+    uint32_t size;
+    /// How many of `paths` are set, at most `LOWLAT_SCOPE_PATHS_MAX`. **Zero
+    /// is no scope**: nobody held, and every seat shown its output.
+    uint32_t path_count;
+    /// Each executable by its full path, UTF-8 and terminated: from a drive or
+    /// a share, **never a name alone**, which any program copied under that
+    /// name would pass. Letters compare without regard to case, as the file
+    /// system's do, and either separator is taken; read back with the
+    /// system's.
+    char paths[LOWLAT_SCOPE_PATHS_MAX][LOWLAT_SCOPE_PATH_MAX];
+} lowlat_host_scope;
 #endif
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
@@ -2959,6 +3008,52 @@ lowlat_status lowlat_host_set_input_config(lowlat_host *hl,
 /// `lowlat_host_input_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_get_input_config(lowlat_host *hl,
                                            lowlat_host_input_config *out) LOWLAT_NOEXCEPT;
+
+/// Hold every guest but the owner to one application, or let them all go,
+/// while a host runs (minor 39; Windows alone; docs/05-host.md section 7.4).
+///
+/// **A held guest sees, hears and steers the application alone**: its keys,
+/// its motion and its pads go in only while one of the application's windows
+/// is in front, its clicks and its wheel only over one; every seat, the
+/// owner's too, is shown the application's window on black, and hears its own
+/// processes. Each seated guest takes it at once, and one approved later from
+/// its admission. **The owner is never held.**
+///
+/// **Taken even where this process cannot capture a window, and said so.**
+/// The system serves the capture of a window per signed-in user, so a host of
+/// the system account is refused it and every seat is shown black; the guests
+/// are held all the same, since a refusal an application did not read would
+/// leave them steering the whole desktop. Run such a host as the signed-in
+/// user, elevated where the application runs elevated.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[in] scope One `lowlat_host_scope` whose `size` says how much of it is set;
+/// a `path_count` of zero lets every guest go.
+/// @returns `LOWLAT_OK`; `LOWLAT_SCOPE_NO_PICTURE` for a scope taken that this
+/// process cannot show; `LOWLAT_ERR_INVALID_ARGUMENT` for a path that is not a full
+/// one, not terminated or not UTF-8, more paths than `LOWLAT_SCOPE_PATHS_MAX`, a
+/// `size` shorter than the structure, or a host that is not running, nothing changed.
+///
+/// @attention `hl` came from `lowlat_host_create`, and `scope` points to one
+/// `lowlat_host_scope` whose `size` says how much of it is set.
+lowlat_status lowlat_host_set_scope(lowlat_host *hl,
+                                    const lowlat_host_scope *scope) LOWLAT_NOEXCEPT;
+
+/// The application every guest but the owner is held to now (minor 39;
+/// Windows alone).
+///
+/// **The setting and not the state**: the paths as the host keeps them, each
+/// separator the system's, and a `path_count` of zero while nobody is held.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[out] out One `lowlat_host_scope` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` for a `size` shorter than
+/// the structure or a host that is not running.
+///
+/// @attention `hl` came from `lowlat_host_create`, and `out` points to one
+/// `lowlat_host_scope` whose `size` says how much of it is set.
+lowlat_status lowlat_host_get_scope(lowlat_host *hl,
+                                    lowlat_host_scope *out) LOWLAT_NOEXCEPT;
 #endif
 
 #if (defined(LOWLAT_HOST) && !defined(__APPLE__))

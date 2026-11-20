@@ -78,6 +78,13 @@ pub enum lowlat_status {
     LOWLAT_OK = 0,
     /// No event arrived within the timeout. Not an error.
     LOWLAT_TIMEOUT = 1,
+    /// The scope was taken and this process cannot capture a window, so every
+    /// guest but the owner is held and every seat is shown black (minor 39;
+    /// Windows alone). The system serves the capture of a window per signed-in
+    /// user and refuses a host of the system account: run the host as that
+    /// user. Not an error, since nothing asked for was refused; in the
+    /// display's range, as the other conditions of the picture are.
+    LOWLAT_SCOPE_NO_PICTURE = 200,
     /// A fault was contained at the boundary. The handle no longer runs.
     LOWLAT_ERR_INTERNAL = -1,
     /// An argument was missing, out of range, or contradicted another.
@@ -189,7 +196,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 38;
+pub const LOWLAT_ABI_MINOR: u32 = 39;
 
 /// Major and minor, packed.
 ///
@@ -258,9 +265,13 @@ pub extern "C" fn lowlat_features() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 42] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 43] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
+    (
+        LOWLAT_SCOPE_NO_PICTURE,
+        c"the scope is held and this process cannot capture a window",
+    ),
     (
         LOWLAT_ERR_INTERNAL,
         c"a fault was contained at the boundary",
@@ -618,6 +629,7 @@ mod tests {
         for status in [
             LOWLAT_OK,
             LOWLAT_TIMEOUT,
+            LOWLAT_SCOPE_NO_PICTURE,
             LOWLAT_ERR_INTERNAL,
             LOWLAT_ERR_INVALID_ARGUMENT,
             LOWLAT_ERR_TOO_SMALL,

@@ -290,6 +290,46 @@ pub struct lowlat_host_input_config {
     pub reserved: [u8; 2],
 }
 
+/// The most executables a scope names (minor 39; Windows alone).
+#[cfg(windows)]
+pub const LOWLAT_SCOPE_PATHS_MAX: usize = 16;
+
+/// The longest path a scope holds, in bytes of UTF-8 with its terminator
+/// (minor 39; Windows alone): any path within the system's usual limit fits,
+/// at three bytes a character. One longer is refused rather than cut short,
+/// since a path cut short is the image of no process.
+#[cfg(windows)]
+pub const LOWLAT_SCOPE_PATH_MAX: usize = 1024;
+
+/// The application every guest but the owner is held to, on Windows alone
+/// (minor 39; docs/05-host.md section 7.4): its executables, each by the full
+/// path the system names the image a process runs by.
+///
+/// **A live setting with no settled half**: set and read back through its own
+/// pair of calls while a host runs, and no part of what a host starts with. No
+/// guest is seated before the application approves it, so a scope set after
+/// the start and before the first approval holds every guest from its
+/// admission. A host stopped lets it go with everything else.
+///
+/// **A fixed array and a count**, as the reflexive servers are, so the
+/// structure stays one block with nothing in it to free.
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_host_scope {
+    /// Set by the caller to `sizeof(lowlat_host_scope)`.
+    pub size: u32,
+    /// How many of `paths` are set, at most [`LOWLAT_SCOPE_PATHS_MAX`]. **Zero
+    /// is no scope**: nobody held, and every seat shown its output.
+    pub path_count: u32,
+    /// Each executable by its full path, UTF-8 and terminated: from a drive or
+    /// a share, **never a name alone**, which any program copied under that
+    /// name would pass. Letters compare without regard to case, as the file
+    /// system's do, and either separator is taken; read back with the
+    /// system's.
+    pub paths: [[c_char; LOWLAT_SCOPE_PATH_MAX]; LOWLAT_SCOPE_PATHS_MAX],
+}
+
 /// Where a report pad's reports go: which side holds the virtual device for
 /// a DualShock 4 or a DualSense a guest sends as its own reports
 /// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
@@ -1856,6 +1896,9 @@ pub struct lowlat_host_status {
     /// **What it landed on, not what was asked for.** An empty request means
     /// the default output's monitor, and the sound server can move a stream
     /// while it runs, so this is the only place the two can be compared.
+    /// **Empty while the guests are held to an application** (minor 39;
+    /// Windows alone), whose sound is read from its own processes rather than
+    /// from an output, `audio_active` staying set.
     pub audio_device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
@@ -2435,6 +2478,157 @@ pub unsafe extern "C" fn lowlat_host_get_input_config(
             slot.virtual_input = seam.virtual_input();
             slot.virtual_pads = seam.virtual_pads();
             slot.reserved = [0; 2];
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Hold every guest but the owner to one application, or let them all go,
+/// while a host runs (minor 39; Windows alone; docs/05-host.md section 7.4).
+///
+/// **A held guest sees, hears and steers the application alone**: its keys,
+/// its motion and its pads go in only while one of the application's windows
+/// is in front, its clicks and its wheel only over one; every seat, the
+/// owner's too, is shown the application's window on black, and hears its own
+/// processes. Each seated guest takes it at once, and one approved later from
+/// its admission. **The owner is never held.**
+///
+/// **Taken even where this process cannot capture a window, and said so.**
+/// The system serves the capture of a window per signed-in user, so a host of
+/// the system account is refused it and every seat is shown black; the guests
+/// are held all the same, since a refusal an application did not read would
+/// leave them steering the whole desktop. Run such a host as the signed-in
+/// user, elevated where the application runs elevated.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[in] scope One [`lowlat_host_scope`] whose `size` says how much of it is set;
+/// a `path_count` of zero lets every guest go.
+/// @returns [`LOWLAT_OK`]; [`LOWLAT_SCOPE_NO_PICTURE`] for a scope taken that this
+/// process cannot show; [`LOWLAT_ERR_INVALID_ARGUMENT`] for a path that is not a full
+/// one, not terminated or not UTF-8, more paths than [`LOWLAT_SCOPE_PATHS_MAX`], a
+/// `size` shorter than the structure, or a host that is not running, nothing changed.
+///
+/// # Safety
+///
+/// `hl` came from [`lowlat_host_create`], and `scope` points to one
+/// [`lowlat_host_scope`] whose `size` says how much of it is set.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_set_scope(
+    hl: *mut lowlat_host,
+    scope: *const lowlat_host_scope,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            if scope.is_null() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            // Its size first: a reference to the whole would say the caller
+            // wrote all of it.
+            let size = core::ptr::addr_of!((*scope).size).read_unaligned();
+            if (size as usize) < core::mem::size_of::<lowlat_host_scope>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            scoped(handle, &*scope, ::lowlat_host::display::shows_windows)
+        })
+    }
+}
+
+/// Hold the guests to what `scope` names, `shows` asked whether this process
+/// can show a window -- **after the paths are checked and before the handle is
+/// locked**, since the system's capture runtime answers it, and never for a
+/// scope cleared.
+#[cfg(windows)]
+fn scoped(
+    handle: &lowlat_host,
+    scope: &lowlat_host_scope,
+    shows: impl FnOnce() -> bool,
+) -> lowlat_status {
+    let Some(paths) = scope_paths(scope) else {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    };
+    let shown = paths.is_empty() || shows();
+    let mut held = handle.held();
+    let Some(seam) = held.seam.as_mut() else {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    };
+    seam.set_scope((!paths.is_empty()).then(|| lowlat_inject::Scope::new(&paths)));
+    if shown {
+        return LOWLAT_OK;
+    }
+    lowlat_common::log_warn!(
+        "abi: the guests held to an application are shown black, this process cannot capture a window (the system account is refused it)"
+    );
+    LOWLAT_SCOPE_NO_PICTURE
+}
+
+/// The executables a scope names, each as the host compares it: terminated,
+/// UTF-8, and a full path -- from a drive or a share -- since a name alone
+/// never matches the image a process runs. Nothing when any is not, or when
+/// more are counted than the structure holds.
+#[cfg(windows)]
+fn scope_paths(scope: &lowlat_host_scope) -> Option<Vec<&str>> {
+    let count = scope.path_count as usize;
+    if count > LOWLAT_SCOPE_PATHS_MAX {
+        return None;
+    }
+    scope
+        .paths
+        .iter()
+        .take(count)
+        .map(|field| taken(field).filter(|path| std::path::Path::new(path).is_absolute()))
+        .collect()
+}
+
+/// The application every guest but the owner is held to now (minor 39;
+/// Windows alone).
+///
+/// **The setting and not the state**: the paths as the host keeps them, each
+/// separator the system's, and a `path_count` of zero while nobody is held.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[out] out One [`lowlat_host_scope`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a `size` shorter than
+/// the structure or a host that is not running.
+///
+/// # Safety
+///
+/// `hl` came from [`lowlat_host_create`], and `out` points to one
+/// [`lowlat_host_scope`] whose `size` says how much of it is set.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_scope(
+    hl: *mut lowlat_host,
+    out: *mut lowlat_host_scope,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            if out.is_null() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let size = core::ptr::addr_of!((*out).size).read_unaligned();
+            if (size as usize) < core::mem::size_of::<lowlat_host_scope>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            // Every field past the count cleared, so nothing of a scope read
+            // into the same structure before is left there.
+            let slot = &mut *out;
+            slot.path_count = 0;
+            for field in &mut slot.paths {
+                field.fill(0);
+            }
+            for (field, path) in slot.paths.iter_mut().zip(
+                seam.scope()
+                    .into_iter()
+                    .flat_map(lowlat_inject::Scope::paths),
+            ) {
+                put(field, &path);
+                slot.path_count += 1;
+            }
             LOWLAT_OK
         })
     }
@@ -3766,6 +3960,261 @@ mod start_tests {
             input_refused(Error::Refused(31)),
             LOWLAT_ERR_INPUT_DRIVER_IO
         );
+    }
+
+    #[cfg(windows)]
+    fn scope_of(paths: &[&str]) -> lowlat_host_scope {
+        let mut scope = lowlat_host_scope {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_scope>()).unwrap(),
+            path_count: u32::try_from(paths.len()).unwrap(),
+            paths: [[0; LOWLAT_SCOPE_PATH_MAX]; LOWLAT_SCOPE_PATHS_MAX],
+        };
+        for (field, path) in scope.paths.iter_mut().zip(paths) {
+            put(field, path);
+        }
+        scope
+    }
+
+    /// The scope a host holds, read back into a structure that held another:
+    /// its paths in order, every field past the count found cleared.
+    #[cfg(windows)]
+    fn scope_read(handle: *mut lowlat_host) -> Vec<String> {
+        let mut back = scope_of(&[r"C:\left\over.exe"; LOWLAT_SCOPE_PATHS_MAX]);
+        assert_eq!(
+            unsafe { lowlat_host_get_scope(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        let count = back.path_count as usize;
+        assert!(
+            back.paths
+                .iter()
+                .skip(count)
+                .all(|field| field.iter().all(|byte| *byte == 0)),
+            "a path read before was left past the count"
+        );
+        back.paths
+            .iter()
+            .take(count)
+            .map(|field| taken(field).expect("a path read back").to_owned())
+            .collect()
+    }
+
+    /// **One block**: the size, the count, then the paths, at the offsets the
+    /// header gives them.
+    #[cfg(windows)]
+    #[test]
+    fn the_scope_is_its_count_and_then_its_paths() {
+        assert_eq!(core::mem::offset_of!(lowlat_host_scope, path_count), 4);
+        assert_eq!(core::mem::offset_of!(lowlat_host_scope, paths), 8);
+        assert_eq!(core::mem::size_of::<lowlat_host_scope>(), 16_392);
+    }
+
+    /// **A scope set is the one read back and the one the host holds to**:
+    /// none at the start; two executables taken -- with the word, where this
+    /// process cannot capture a window, that the held guests are shown black
+    /// -- read back with the system's separator, and an image of either judged
+    /// as the file system compares names; another scope replacing it whole; a
+    /// count of zero letting everyone go.
+    #[cfg(windows)]
+    #[test]
+    fn a_scope_set_is_the_one_read_back_and_held_to() {
+        let handle = handle();
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        assert!(
+            scope_read(handle).is_empty(),
+            "a host starts holding nobody"
+        );
+
+        let taken_as = if ::lowlat_host::display::shows_windows() {
+            LOWLAT_OK
+        } else {
+            LOWLAT_SCOPE_NO_PICTURE
+        };
+        let scope = scope_of(&[
+            "C:/Games/Example/game.exe",
+            r"\\server\share\Example\launcher.exe",
+        ]);
+        assert_eq!(
+            unsafe { lowlat_host_set_scope(handle, &raw const scope) },
+            taken_as
+        );
+        assert_eq!(
+            scope_read(handle),
+            [
+                r"C:\Games\Example\game.exe",
+                r"\\server\share\Example\launcher.exe"
+            ]
+        );
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        {
+            let held = unsafe { &*handle }.held();
+            let kept = held
+                .seam
+                .as_ref()
+                .and_then(|seam| seam.scope())
+                .expect("the host holds the scope");
+            assert!(kept.holds(&wide(r"c:\games\example\GAME.EXE")));
+            assert!(kept.holds(&wide(r"\\SERVER\share\example\launcher.exe")));
+            assert!(!kept.holds(&wide(r"D:\copy\game.exe")), "a copy passed");
+        }
+
+        let other = scope_of(&[r"E:\Other\other.exe"]);
+        assert_eq!(
+            unsafe { lowlat_host_set_scope(handle, &raw const other) },
+            taken_as
+        );
+        assert_eq!(
+            scope_read(handle),
+            [r"E:\Other\other.exe"],
+            "not replaced whole"
+        );
+
+        let none = scope_of(&[]);
+        assert_eq!(
+            unsafe { lowlat_host_set_scope(handle, &raw const none) },
+            LOWLAT_OK
+        );
+        assert!(scope_read(handle).is_empty(), "not everyone let go");
+        assert!(
+            unsafe { &*handle }
+                .held()
+                .seam
+                .as_ref()
+                .is_some_and(|seam| seam.scope().is_none()),
+            "the host still holds a scope"
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **A scope the host could never match, or cannot read, is refused with
+    /// nothing changed**: a name alone, a path from a drive's current folder
+    /// or from no drive, an empty one, one not terminated, one not UTF-8, more
+    /// than the structure holds, a short structure or none, and a host not
+    /// running. A stop lets the scope go with the host.
+    #[cfg(windows)]
+    #[test]
+    fn a_scope_the_host_could_never_match_is_refused_and_changes_nothing() {
+        let handle = handle();
+        let kept = scope_of(&[r"C:\Games\Example\game.exe"]);
+        assert_eq!(
+            unsafe { lowlat_host_set_scope(handle, &raw const kept) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a host not running"
+        );
+        let mut back = scope_of(&[]);
+        assert_eq!(
+            unsafe { lowlat_host_get_scope(handle, &raw mut back) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a host not running"
+        );
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        assert_ne!(
+            unsafe { lowlat_host_set_scope(handle, &raw const kept) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+
+        let mut unterminated = scope_of(&[]);
+        unterminated.path_count = 1;
+        unterminated.paths[0].fill(b'a' as c_char);
+        let mut not_utf8 = scope_of(&[]);
+        not_utf8.path_count = 1;
+        not_utf8.paths[0][0] = 0xff_u8 as c_char;
+        let mut too_many = scope_of(&[r"C:\a.exe"; LOWLAT_SCOPE_PATHS_MAX]);
+        too_many.path_count += 1;
+        let mut short = scope_of(&[r"C:\a.exe"]);
+        short.size -= 1;
+        for (refused, why) in [
+            (scope_of(&["game.exe"]), "a name alone"),
+            (
+                scope_of(&["C:game.exe"]),
+                "a path from a drive's current folder",
+            ),
+            (scope_of(&[r"\Games\game.exe"]), "a path from no drive"),
+            (scope_of(&[""]), "an empty path"),
+            (
+                scope_of(&[r"C:\a.exe", "b.exe"]),
+                "a name alone after a path",
+            ),
+            (unterminated, "a path not terminated"),
+            (not_utf8, "a path not UTF-8"),
+            (too_many, "more paths than the structure holds"),
+            (short, "a short structure"),
+        ] {
+            assert_eq!(
+                unsafe { lowlat_host_set_scope(handle, &raw const refused) },
+                LOWLAT_ERR_INVALID_ARGUMENT,
+                "{why} was taken"
+            );
+            assert_eq!(
+                scope_read(handle),
+                [r"C:\Games\Example\game.exe"],
+                "{why} changed the scope"
+            );
+        }
+        assert_eq!(
+            unsafe { lowlat_host_set_scope(handle, core::ptr::null()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        back.size = 4;
+        assert_eq!(
+            unsafe { lowlat_host_get_scope(handle, &raw mut back) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lowlat_host_get_scope(handle, core::ptr::null_mut()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        assert!(scope_read(handle).is_empty(), "a scope outlived its host");
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **A scope this process cannot show is held all the same, and says so**:
+    /// a refusal an application did not read would leave every guest on the
+    /// whole desktop. A scope cleared asks nothing.
+    #[cfg(windows)]
+    #[test]
+    fn a_scope_this_process_cannot_show_is_held_all_the_same() {
+        let handle = handle();
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let host = unsafe { &*handle };
+        let scope = scope_of(&[r"C:\Games\Example\game.exe"]);
+        assert_eq!(scoped(host, &scope, || false), LOWLAT_SCOPE_NO_PICTURE);
+        assert_eq!(
+            scope_read(handle),
+            [r"C:\Games\Example\game.exe"],
+            "the guests were let go"
+        );
+        assert_eq!(scoped(host, &scope, || true), LOWLAT_OK);
+        let asked = core::cell::Cell::new(false);
+        let none = scope_of(&[]);
+        assert_eq!(
+            scoped(host, &none, || {
+                asked.set(true);
+                false
+            }),
+            LOWLAT_OK
+        );
+        assert!(!asked.get(), "clearing asked whether a window can be shown");
+        assert!(scope_read(handle).is_empty());
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A configuration nobody filled in is not a zeroed one.**

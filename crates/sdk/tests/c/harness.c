@@ -362,6 +362,57 @@ static int host_half(library lib, const char *(*status_string)(lowlat_status))
         fprintf(stderr, "harness: an input structure of no size was accepted\n");
         return 1;
     }
+
+    /* The scope, live, on Windows alone: none at the start; two executables
+     * taken -- with the word, where this process cannot capture a window, that
+     * the held guests are shown black -- and read back with the system's
+     * separator; a name alone refused with nothing changed; a count of zero
+     * letting everyone go. Static, being sixteen kilobytes each. */
+    lowlat_status (*set_scope)(lowlat_host *, const lowlat_host_scope *);
+    lowlat_status (*get_scope)(lowlat_host *, lowlat_host_scope *);
+    RESOLVE(set_scope, lib, "lowlat_host_set_scope");
+    RESOLVE(get_scope, lib, "lowlat_host_get_scope");
+    static lowlat_host_scope scope, scope_back;
+    memset(&scope_back, 0, sizeof scope_back);
+    scope_back.size = (uint32_t) sizeof scope_back;
+    scope_back.path_count = 7;
+    if (get_scope(hl, &scope_back) != LOWLAT_OK || scope_back.path_count != 0) {
+        fprintf(stderr, "harness: a host started holding nobody read back a scope\n");
+        return 1;
+    }
+    memset(&scope, 0, sizeof scope);
+    scope.size = (uint32_t) sizeof scope;
+    scope.path_count = 2;
+    snprintf(scope.paths[0], sizeof scope.paths[0], "%s", "C:/Games/Example/game.exe");
+    snprintf(scope.paths[1], sizeof scope.paths[1], "%s", "C:\\Games\\Example\\launcher.exe");
+    lowlat_status scoped = set_scope(hl, &scope);
+    if (scoped != LOWLAT_OK && scoped != LOWLAT_SCOPE_NO_PICTURE) {
+        fprintf(stderr, "harness: a scope of two full paths answered %d (%s)\n",
+                (int) scoped, status_string(scoped));
+        return 1;
+    }
+    if (get_scope(hl, &scope_back) != LOWLAT_OK || scope_back.path_count != 2 ||
+        strcmp(scope_back.paths[0], "C:\\Games\\Example\\game.exe") != 0 ||
+        strcmp(scope_back.paths[1], "C:\\Games\\Example\\launcher.exe") != 0) {
+        fprintf(stderr, "harness: the scope did not read back as set\n");
+        return 1;
+    }
+    snprintf(scope.paths[1], sizeof scope.paths[1], "%s", "launcher.exe");
+    if (set_scope(hl, &scope) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a name alone was taken into a scope\n");
+        return 1;
+    }
+    if (get_scope(hl, &scope_back) != LOWLAT_OK || scope_back.path_count != 2 ||
+        strcmp(scope_back.paths[1], "C:\\Games\\Example\\launcher.exe") != 0) {
+        fprintf(stderr, "harness: a refused scope changed the one held\n");
+        return 1;
+    }
+    scope.path_count = 0;
+    if (set_scope(hl, &scope) != LOWLAT_OK || get_scope(hl, &scope_back) != LOWLAT_OK ||
+        scope_back.path_count != 0) {
+        fprintf(stderr, "harness: a count of zero did not let everyone go\n");
+        return 1;
+    }
 #endif
 
     /* Enumerating sound outputs, which answers before a host is started and

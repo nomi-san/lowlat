@@ -20,6 +20,9 @@ internal enum Status
 {
     Ok = 0,
     Timeout = 1,
+    /// The scope was taken and this process cannot capture a window: the
+    /// guests are held and shown black (minor 39; Windows alone).
+    ScopeNoPicture = 200,
     ErrInternal = -1,
     ErrInvalidArgument = -2,
     ErrTooSmall = -3,
@@ -92,6 +95,8 @@ internal static class Sizes
     public const int Fingerprint = 112;
     public const int Servers = 4;
     public const int Server = 64;
+    public const int ScopePaths = 16;
+    public const int ScopePath = 1024;
 }
 
 /// **Plain bytes, not `bool`.** A C# `bool` is a four-byte Win32 BOOL to the
@@ -198,6 +203,18 @@ internal struct HostInputConfig
         get => VirtualPadsByte != 0;
         set => VirtualPadsByte = value ? (byte)1 : (byte)0;
     }
+}
+
+/// The application every guest but the owner is held to (minor 39; Windows
+/// alone): its executables by their full paths, `ScopePath` bytes each, a
+/// count of zero holding nobody.
+[StructLayout(LayoutKind.Sequential)]
+internal struct HostScope
+{
+    public uint Size;
+    public uint PathCount;
+    [InlineArray(Sizes.ScopePaths * Sizes.ScopePath)] public struct PathList { private byte first; }
+    public PathList Paths;
 }
 #endif
 
@@ -499,6 +516,12 @@ internal static partial class Native
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_get_input_config(
         IntPtr handle, HostInputConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_set_scope(IntPtr handle, HostScope* scope);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_get_scope(IntPtr handle, HostScope* scope);
 #endif
 
     [LibraryImport(Library)]

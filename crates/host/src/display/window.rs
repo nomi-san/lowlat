@@ -54,6 +54,18 @@ struct Followed {
     capture: Window,
 }
 
+/// Whether this process can show an application's window as its picture.
+/// **Not a host of the system account**: the system serves the capture of a
+/// window per signed-in user and refuses every other account, and a system
+/// older than the capture has none. **Asked of the system once**, since
+/// neither answer moves while a process runs and the question costs 7 ms
+/// (measured 2026-11-20).
+#[must_use]
+pub fn shows_windows() -> bool {
+    static SHOWS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SHOWS.get_or_init(|| Wgc::load().is_ok_and(|wgc| matches!(window::supported(&wgc), Ok(true))))
+}
+
 /// The output the application shows a window on, by the output's name: its
 /// window in front, else its topmost on the screen; nothing while it shows
 /// none. What a stream holding its guests to the application is built on.
