@@ -1426,7 +1426,8 @@ window runs one of them**: a child a helper process draws into belongs to the wi
 and a popup of the application's own -- a menu, a tooltip, a dialog -- is its own root. **The
 owner is never held.** The setting is live: each seated guest takes it at once, a guest admitted
 later from its admission; `lowlatd --scope PATH`, once for each executable, holds the guests from
-its start.
+its start, and an application sets and clears it through `lowlat_host_set_scope`
+([06 §3](06-api.md), *added 2026-11-20*).
 
 For a held guest:
 
@@ -1481,7 +1482,8 @@ held guest sees**, and while the scope is set a request for another output waits
 cleared: a held guest could otherwise move the picture off the application. **A host showing an
 application runs as the signed-in user**, elevated so its input reaches an application that runs
 elevated ([impl-plan-windows.md](impl-plan-windows.md) W5); a host of the system account
-holding its guests to an application shows them the canvas black.
+holding its guests to an application shows them the canvas black, and the C interface says so as
+the scope is set, holding the guests all the same ([06 §3](06-api.md)).
 
 *Built 2026-11-20* ([impl-plan-windows.md](impl-plan-windows.md) W5.3): **and a held guest hears
 the application alone** -- its own processes' sound in place of the output's mix, by the same

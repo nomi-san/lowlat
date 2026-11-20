@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-20 - W5.4: the scope through the C interface (minor 39)
+
+### Built
+- **An application holds the guests to an application through the library**, on Windows
+  ([06 §3](06-api.md)): `lowlat_host_scope` -- a count and up to sixteen executables by their full
+  paths -- set and read back by `lowlat_host_set_scope` and `lowlat_host_get_scope` while a host
+  runs, declared on Windows alone as the input configuration is, and no part of the start
+  configuration: no guest is seated before the application approves one, so a scope set after the
+  start holds every guest from its admission. A count of zero lets everyone go.
+- **A path the host could never match is refused**, nothing changed: a name alone, a path from a
+  drive's current folder, an empty one, one not terminated or not UTF-8, and more paths than the
+  structure holds.
+- **A scope this process cannot show is taken, and the call says so**: `LOWLAT_SCOPE_NO_PICTURE`,
+  a positive status. A host of the system account is refused the capture of a window and shows
+  black; its guests stay held, since a refusal an application did not read would leave them on the
+  whole desktop.
+- The C# reference host binds both calls, sets and clears the scope in its offline drive, and
+  holds the guests to `LOWLAT_SCOPE`'s executables on its `s` key.
+
+### Measured
+- **Asking the system's capture runtime costs 7 ms**, so the first set in a process asks it once
+  -- 11 to 13 ms -- and keeps the answer; a set after it costs 0.014 to 0.018 ms at the median, as
+  the signed-in user and elevated.
+
+### Checked
+- The layout, the round trip, every refusal, a scope held where nothing can be shown and nothing
+  asked as one is cleared, each broken once and seen to fail; the shipped library driven from C;
+  the header compiled alone and after the platform's headers, as C and as C++.
+- On the development machine, a program of the tree's own set the test applications' executables
+  as the scope while they ran, as the signed-in user and elevated: taken, read back as set,
+  cleared. The same run as the system account, and a session with a client, are not run yet.
+
 ## 2026-11-20 - W5.3: the application's own sound
 
 ### Built

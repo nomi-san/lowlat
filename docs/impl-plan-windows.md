@@ -3145,8 +3145,26 @@ The decisions are recorded once, here.
   timeline back to the packet it read late -- a frame too many for each hold-up, which a guest's
   queue would have taken in; such a frame now waits for the captures to be read, and the timeline
   moves by the rounding to a mark alone. A session with a client is W5's gate.
-- [ ] **W5.4 the C interface**: the scope as a live setting of the host, declared on Windows alone
+- [x] **W5.4 the C interface**: the scope as a live setting of the host, declared on Windows alone
   as the input configuration is; [06](06-api.md).
+  *Built and checked 2026-11-20* ([06 §3](06-api.md), minor 39): `lowlat_host_scope` -- a count
+  and up to sixteen full paths, each under 1024 bytes of UTF-8 -- set and read back by
+  `lowlat_host_set_scope` and `lowlat_host_get_scope`, no part of the start configuration; a name
+  alone, a path from a drive's current folder, one not terminated or not UTF-8, a count past the
+  bound and a short structure refused with nothing changed; a count of zero letting everyone go.
+  **Decided at its review: a scope this process cannot show is taken all the same**, the guests
+  held and the call answering `LOWLAT_SCOPE_NO_PICTURE`, a positive status, since a refusal an
+  application did not read would leave every guest on the whole desktop. **The first set in a
+  process asks the system's capture runtime**, 11 to 13 ms measured, and keeps the answer: a set
+  after it costs 0.014 to 0.018 ms at the median, where asking every time cost 7. **Run**: the
+  layout, the round trip, every refusal, a scope held where nothing can be shown and nothing asked
+  as one is cleared, each broken once and seen to fail; the shipped library from C, the header
+  compiled alone and after the platform's headers in both languages; the C# reference host's
+  binding, its offline drive and a key that sets the scope live. On the development machine, an
+  application of the tree's own set the test applications' executables as the scope while they
+  ran, as the signed-in user and elevated: taken, read back as set, cleared. Owed: the same run as
+  the system account, which should answer `LOWLAT_SCOPE_NO_PICTURE`. A session with a client is
+  W5's gate.
 - [ ] **W5.5 `lowlatd`**: applications' definitions -- a name, a launch command, a working
   directory, the paths -- launched in the signed-in session, the scope set and cleared from the
   tray and the command line; the window placed once it appears, where asked.
@@ -3159,6 +3177,9 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-20: W5.4 built and checked: the scope through the C interface, a live setting on Windows
+  alone; a scope this process cannot show is taken and answered with a status of its own rather
+  than refused, so an unread refusal cannot leave the guests on the whole desktop.
 - 2026-11-20: W5.3 built and checked: a held guest hears the application alone -- a capture per
   process of it that sounds, unless its parent's holds it, followed by the system's sessions and
   mixed on the captures' own clock; the scope moves it live.

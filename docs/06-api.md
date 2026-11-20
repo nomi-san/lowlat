@@ -145,6 +145,10 @@ lowlat_status lowlat_host_get_audio_config(lowlat_host *hl, lowlat_host_audio_co
 lowlat_status lowlat_host_set_input_config(lowlat_host *hl, const lowlat_host_input_config *cfg);
 lowlat_status lowlat_host_get_input_config(lowlat_host *hl, lowlat_host_input_config *out);
 
+/* Windows alone (minor 39) */
+lowlat_status lowlat_host_set_scope(lowlat_host *hl, const lowlat_host_scope *scope);
+lowlat_status lowlat_host_get_scope(lowlat_host *hl, lowlat_host_scope *out);
+
 uint32_t      lowlat_host_get_guests(lowlat_host *hl, lowlat_guest *out, uint32_t *count);
 lowlat_status lowlat_host_kick_guest(lowlat_host *hl, uint32_t guest_id, int32_t reason);
 lowlat_status lowlat_host_set_permissions(lowlat_host *hl, uint32_t guest_id,
@@ -429,6 +433,47 @@ neither carry nor re-send the stream's fields.
 |---|---|
 | `virtual_input` | Whether a guest's keyboard and mouse go through HID devices of the host's own input driver rather than the batch input call ([05 §7](05-host.md), [11 §2](11-drivers.md)). **Off by default**, zero included. Switching it on with no driver installed refuses the call and changes nothing; a driver lost while it is on gives the guests the batch input call again. The devices exist only while it is on, made for each seated guest on its next pass, and a switch either way first releases everything held on the old path. (*Built 2026-10-26, minor 32, the keyboard; the mouse the same day, W4.2*. A driver that cannot be used is refused with a status of its own, `LOWLAT_ERR_INPUT_DRIVER_ABSENT`, `_VERSION`, `_DENIED` or `_IO` ([§7](#7-status-codes)): an application can tell a driver to install from a process the driver does not admit, which is any but the system account and an administrator elevated. **A start asking for it is not refused for it**, as sound's is not for its server: the host says why once, keeps the batch input call, and reads back off; `lowlatd` asks for it with `--virtual-input`. A guest's keys wait the few milliseconds until the system takes its keyboard, and go through the batch input call where it never does; its pointer waits for its mouse the same way. **A position on any display but the primary goes through the batch input call even so**, the mouse's positions spanning the primary alone; its buttons, wheels and motion stay on the mouse.) |
 | `virtual_pads` | Whether a DualShock 4 or a DualSense a guest sends as its reports is presented as that product on the host's input driver ([05 §7.2](05-host.md)). **Off by default**: off, the pad is played as the Xbox pad from its whole states, since a HID pad never reaches a game that reads only the Xbox pad's interface. **A change applies to the pads plugged after it**: a pad keeps the family its first message fixed. The pad sink set to the application takes the reports whatever this says. On Linux a pad sent as its reports is always presented as its product ([00 §D12](00-overview.md)). (*Planned for W4.3's minor*, in one of the reserved bytes. *Amended 2026-10-26, at W4.3's review*: switching it on where the input driver is not installed, or does not admit the process, is refused with the input driver's statuses and changes nothing, as `virtual_input` is; a start asking for it is not refused for it, says why once and reads back off; `lowlatd` asks for it with `--virtual-pads`. A pad whose device never comes, or goes, plays on as the Xbox pad from its own reports. A library of an earlier minor ignores the byte and reads it back zero, so an application reads the minor first. *Built 2026-10-26, minor 33.*) |
+
+**The scope is a live setting of its own, on Windows alone** (*planned 2026-11-19*, W5; *built
+2026-11-20, minor 39*): `lowlat_host_scope`, set and read back through `lowlat_host_set_scope` and
+`lowlat_host_get_scope`, holds every guest but the owner to one application
+([05 §7.4](05-host.md)) -- its keys, motion and pads in only while the application is in front, its
+clicks and wheel only over its windows, and every seat, the owner's too, shown the application's
+window on black and hearing its own processes. The structure, its bounds and its calls are declared
+where the header is compiled for Windows and nowhere else, as the input configuration is.
+
+- **The application is its executables, each by its full path** in UTF-8 -- from a drive or a
+  share, as the system names the image a process runs -- at most `LOWLAT_SCOPE_PATHS_MAX` (16) of
+  them, each under `LOWLAT_SCOPE_PATH_MAX` (1024) bytes with its terminator, which holds any path
+  within the system's usual limit in any script. **A name alone is refused**, as is a path from a
+  drive's current folder: neither ever matches a process's image, and a name alone would pass any
+  program copied under it. A count of zero lets every guest go; one past the bound, a path not
+  terminated or not UTF-8, and a `size` short of the structure are refused, nothing changed. Read
+  back, the paths are as the host keeps them, each separator the system's.
+- **No part of the start configuration.** The scope has no settled half, and no guest is seated
+  before the application approves it, so a scope set after the start and before the first approval
+  holds every guest from its admission. Nested in `lowlat_host_config` it would add sixteen
+  kilobytes to every Windows host's start and refuse every application built against minor 38 by
+  its size. A host stopped lets the scope go with everything else; one started again holds nobody
+  until it is set again.
+- **A scope this process cannot show is taken all the same, and the call says so**:
+  `LOWLAT_SCOPE_NO_PICTURE`, a positive status. The system serves the capture of a window per
+  signed-in user, so a host of the system account is refused it and every seat is shown black
+  (measured 2026-11-20, [impl-plan-windows.md](impl-plan-windows.md) W5.2). A refusal would be the
+  usual answer for something the host cannot use, as the input driver's switch is refused where the
+  driver cannot be used; here a refusal an application did not read would leave every guest
+  steering the whole desktop, so the guests are held and the condition is named instead. Such a
+  host is run as the signed-in user, elevated where the application runs elevated
+  ([impl-plan-windows.md](impl-plan-windows.md) W5).
+- **The first set in a process asks the system's capture runtime** whether this process can capture
+  a window, before the handle is locked: 11 to 13 ms measured, as the signed-in user and elevated.
+  The answer is kept, since neither the account nor the system moves while a process runs, and a
+  set after it costs what the lock and the copy do, 0.014 to 0.018 ms at the median. Clearing asks
+  nothing.
+- **What the scope does is the host's to report**: while it holds the guests, the sound is read from
+  the application's processes rather than from an output, so the status's `audio_device` reads empty
+  while `audio_active` stays set; the picture's size is the application's output's, as for any
+  output.
 
 Starting a host that is already running is refused rather than quietly reconfiguring, because a
 second configuration that looks accepted and is not is a host running settings nobody can see.
@@ -1428,7 +1473,10 @@ interface before committing.
 ## §7 Status codes
 
 A single `lowlat_status` enum spans success, warnings, and errors. Zero is success; negative
-values are errors; positive values are non-fatal conditions such as `LOWLAT_TIMEOUT`.
+values are errors; positive values are non-fatal conditions such as `LOWLAT_TIMEOUT`. *Amended
+2026-11-20 (minor 39):* a positive value also says a call did what was asked and what it was for
+cannot be had: `LOWLAT_SCOPE_NO_PICTURE`, a scope taken by a process that cannot show it
+([§3](#3-host)), in the display's range as the display's errors are.
 
 **An enumeration for the names, and never a parameter.** Grouping the codes under a type is
 what tells a reader that `LOWLAT_TIMEOUT` is a status and `LOWLAT_ATTEMPT_MAX` is a size, which
@@ -1464,6 +1512,8 @@ Signaling outcomes are typed rather than collapsed into a generic failure
 - **The third half's calls wait for the system's display configuration**
   ([§3c](#3c-virtual-displays)), within about three seconds: the one place a call waits on
   something other than a lock, and only on a `lowlat_vdd` handle.
+- **The first scope set in a process asks the system's capture runtime** ([§3](#3-host), minor
+  39), 11 to 13 ms measured, before the lock is taken; the answer is kept and no later call asks.
 - **The SDK never calls into the application** except through the log callback. There is no
   reentrancy contract to violate.
 - **The SDK owns all its threads.** The application never provides one, and never runs our
@@ -1787,6 +1837,11 @@ vendor's decoder first and then on the first render node whose open decoder lend
 application that asks for handles on an open decoder's row gets frames of this kind from this
 minor on, where it got planes before**: a renderer that imports only the vendor's descriptor asks
 for planes when the kind is not its own.
+
+**Minor 39** (2026-11-20) is the scope ([§3](#3-host)): `lowlat_host_scope` with
+`LOWLAT_SCOPE_PATHS_MAX` and `LOWLAT_SCOPE_PATH_MAX`, and `lowlat_host_set_scope` and
+`lowlat_host_get_scope`, on Windows alone; the status `LOWLAT_SCOPE_NO_PICTURE` (200), on every
+platform as every status is. Nothing moves: the scope is no part of `lowlat_host_config`.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
