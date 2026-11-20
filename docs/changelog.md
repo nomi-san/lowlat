@@ -45,7 +45,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   a lone Alt opened no menu there. **Every pointer move through the batch input call was refused
   while it ran, on the whole machine**, absolute and relative, whatever was in front; buttons went
   in, and the moves came back once it had exited ([05 §7](05-host.md)). Such a game takes a guest's
-  pointer through the input driver's mouse alone, which is still to be measured under it.
+  pointer through the input driver's mouse alone, and the driver reaches it: with the driver
+  installed, its keyboard's keys reached the game, its mouse's positions landed at the pixel asked
+  and its buttons acted there.
 
 ## 2026-11-19 - The display driver no longer ends when a monitor leaves as it is given a swapchain
 

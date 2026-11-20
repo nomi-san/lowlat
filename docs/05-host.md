@@ -1020,7 +1020,9 @@ one anti-cheat runs, the system refuses every pointer move made through the batc
 on the whole machine -- absolute and relative, with the game in front or anything else -- the call
 failing with an invalid parameter; keys and buttons still go in and reach the game, and the moves
 work again once the game has exited. On such a host a guest's pointer moves through the input
-driver's mouse or not at all, and on the primary display alone.
+driver's mouse or not at all, and on the primary display alone. *Measured the same day:* **the
+input driver's keyboard and mouse reach the game under its anti-cheat** -- keys, positions at the
+pixel asked, relative moves and buttons -- so such a game is played with `virtual_input` on.
 
 - **Batches are expanded and injected as a unit.** The wire delivers input batches; expansion
   to device events is a pure, unit-tested function with no device dependency, so the mapping

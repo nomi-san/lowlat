@@ -3063,8 +3063,12 @@ The decisions are recorded once, here.
   pointer move through the batch input call was refused, on the whole machine** -- absolute and
   relative, with the game in front and with another program in front -- the buttons going in, and
   the moves working again once the game had exited ([05 §7](05-host.md)). **Such a game is played
-  through the input driver's mouse or not at all**; that, under the anti-cheat, is owed to W5's
-  gate.
+  through the input driver's mouse or not at all.** *Measured the same day with the input driver
+  installed*, the guest's keys and pointer on it as `virtual_input` puts them: its keyboard's keys
+  reached the game, its mouse's absolute positions landed at the pixel asked, its relative moves
+  moved the pointer and its buttons acted in the game -- once, at the very start of a match, an
+  absolute move did not land and the next one did. **So such a game is played with
+  `virtual_input` on, on the primary display.**
 - [ ] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
   in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
   its place on the canvas by the conversion, following the foreground; black before the
@@ -3093,8 +3097,8 @@ recorded figures as W5.0 and W5.2 measure them.
 
 - 2026-11-20: W5.1 amended: a process that opens but cannot be named is asked about again. A game
   under its anti-cheat measured: named and judged in front, keys in, every pointer move through the
-  batch input call refused machine-wide while it runs; its play through the input driver owed to
-  W5's gate.
+  batch input call refused machine-wide while it runs; the input driver's keyboard and mouse reach
+  it, so such a game is played with `virtual_input` on.
 - 2026-11-20: W5.1 checked and closed on the development machine; a key refused under Alt types
   the unassigned virtual key after it, so the Alt is not the window's menu key.
 - 2026-11-20: W5.1 built, unticked: a guest held to one application, its window in front and
