@@ -257,12 +257,23 @@ impl Judge {
         // **A process that cannot be opened is not the application's, and is
         // asked about again next time**: its answer, held by no handle, could
         // outlive it.
-        let Some(process) = Process::open(pid) else {
+        match Process::open(pid) {
+            Some(process) => self.judge_opened(pid, process),
+            None => false,
+        }
+    }
+
+    /// The answer for a process just opened, kept under its handle. **One that
+    /// opened but cannot be named is not the application's either, and is
+    /// asked about again** rather than kept: a handle given fewer rights than
+    /// were asked for -- by a process another program protects -- names
+    /// nothing, and an answer kept for it would hold the guest away from the
+    /// application for as long as the application runs.
+    fn judge_opened(&mut self, pid: u32, process: Process) -> bool {
+        let Some(image) = process.image() else {
             return false;
         };
-        let holds = process
-            .image()
-            .is_some_and(|image| self.scope.holds(&image));
+        let holds = self.scope.holds(&image);
         if self.known.len() >= KNOWN_MAX {
             self.known.remove(0);
         }
@@ -336,5 +347,28 @@ mod tests {
         let mut other = Judge::new(Arc::new(Scope::new([r"C:\nowhere\none.exe"])));
         assert!(!other.holds_process(pid));
         assert!(!other.holds_process(0), "the idle process passed");
+    }
+
+    /// **A process opened with fewer rights than asked for names nothing, and
+    /// its answer is not kept**: a handle that may only wait, as a process
+    /// another program protects may hand out, is not the application's, and
+    /// the process is asked about again.
+    #[test]
+    fn a_process_that_cannot_be_named_is_asked_about_again() {
+        let me = std::env::current_exe().expect("this test's own path");
+        let mut judge = Judge::new(Arc::new(Scope::new([me.as_os_str()])));
+        let pid = std::process::id();
+        // SAFETY: a right the system defines, not inherited; checked below.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "this process could not be opened to wait on"
+        );
+        assert!(!judge.judge_opened(pid, Process(handle)));
+        assert!(judge.known.is_empty(), "an answer with no name was kept");
+        assert!(
+            judge.holds_process(pid),
+            "the process was not asked about again"
+        );
     }
 }
