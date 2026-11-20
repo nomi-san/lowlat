@@ -3004,7 +3004,10 @@ The decisions are recorded once, here.
   user's host the scope is still set and cleared live, the whole desktop duplicated while none is
   set, with no secure screens and no attention chord. **Elevated for its input alone**: the batch
   input call does not reach a window of a higher integrity, and some applications run elevated;
-  the application it launches is launched unelevated. A process of the user's capturing beside a
+  and the host's input driver, which a game under an anti-cheat needs for its pointer, admits an
+  administrator only elevated (*measured 2026-11-20*, [11 §2.2](11-drivers.md)), so a signed-in
+  user who is no administrator plays such a game with no pointer. The application it launches is
+  launched unelevated. A process of the user's capturing beside a
   host of the system account was weighed and not taken: a process and a channel more, for screens
   the scope does not use.
 
@@ -3162,9 +3165,11 @@ The decisions are recorded once, here.
   compiled alone and after the platform's headers in both languages; the C# reference host's
   binding, its offline drive and a key that sets the scope live. On the development machine, an
   application of the tree's own set the test applications' executables as the scope while they
-  ran, as the signed-in user and elevated: taken, read back as set, cleared. Owed: the same run as
-  the system account, which should answer `LOWLAT_SCOPE_NO_PICTURE`. A session with a client is
-  W5's gate.
+  ran, as the signed-in user and elevated: taken, read back as set, cleared; **as the system
+  account, `LOWLAT_SCOPE_NO_PICTURE` on every set**, the scope read back as set and cleared. The
+  same program switched the input driver on through the input configuration: refused to the
+  signed-in user unelevated (`LOWLAT_ERR_INPUT_DRIVER_DENIED`), taken from its elevated token and
+  from the system account ([11 §2.2](11-drivers.md)). A session with a client is W5's gate.
 - [ ] **W5.5 `lowlatd`**: applications' definitions -- a name, a launch command, a working
   directory, the paths -- launched in the signed-in session, the scope set and cleared from the
   tray and the command line; the window placed once it appears, where asked.

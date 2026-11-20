@@ -562,7 +562,13 @@ then, since a HID pad never reaches the system's Xbox pad interface.
   and its elevation prompts, and lands on the console session's input desktop whoever made it, so
   a user who could open the driver could type into a consent prompt or into another person's
   session. The display's control interface admits interactive users (§1.9); this one does not.
-  An administrator matches only elevated.
+  An administrator matches only elevated. *Measured 2026-11-20*
+  ([impl-plan-windows.md](impl-plan-windows.md) W5.4): the installed device's descriptor grants
+  full access to the system account and the administrators' group and nothing else; through the
+  host's own switch, the signed-in administrator's unelevated process was refused
+  (`LOWLAT_ERR_INPUT_DRIVER_DENIED`), its elevated token and the system account admitted. **A
+  host run as the signed-in user is run elevated** to use it ([impl-plan-windows.md](impl-plan-windows.md)
+  W5).
 - **No C interface.** The host is the driver's one user, and an application embedding the host
   half reaches it through the host; an application that holds its own pads takes their reports
   through the pad sink ([05 §7.2](05-host.md)) and keeps its own device.

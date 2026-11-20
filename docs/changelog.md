@@ -33,7 +33,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the header compiled alone and after the platform's headers, as C and as C++.
 - On the development machine, a program of the tree's own set the test applications' executables
   as the scope while they ran, as the signed-in user and elevated: taken, read back as set,
-  cleared. The same run as the system account, and a session with a client, are not run yet.
+  cleared; as the system account, `LOWLAT_SCOPE_NO_PICTURE` on every set, the scope held and read
+  back. A session with a client is not run yet.
+- **The input driver admits an administrator only elevated** ([11 §2.2](11-drivers.md)): the
+  same program, switching the driver on through the input configuration, was refused as the
+  signed-in user unelevated and taken from its elevated token and the system account -- so a host
+  run as the signed-in user is run elevated to use it.
 
 ## 2026-11-20 - W5.3: the application's own sound
 
