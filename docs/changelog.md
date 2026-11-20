@@ -24,6 +24,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   dropped, the Alt was let go alone, which the system takes as the window's menu key, and the
   window's menu loop took the keys after it. A key refused under Alt is followed by one keystroke
   of the system's unassigned virtual key.
+- **A process that opened but could not be named was kept as not the application's** for as long
+  as the host held its handle: a game whose anti-cheat hands out handles with fewer rights than
+  asked for would have held every guest away from it. It is asked about again now.
 
 ### Checked
 - Offline: the expander's seven checks and the judge's two, each broken once and seen to fail. On
@@ -37,6 +40,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   pass; the Windows key and the switching chords dropped with the front unchanged; a click beside
   the application dropped; the owner and an unscoped guest unheld. The menu key above was found
   there, and the second run lost nothing.
+- With a game under its anti-cheat, from the system account in the console session: its process
+  opened and named in full and judged in front; keys through the batch input call reached it, and
+  a lone Alt opened no menu there. **Every pointer move through the batch input call was refused
+  while it ran, on the whole machine**, absolute and relative, whatever was in front; buttons went
+  in, and the moves came back once it had exited ([05 §7](05-host.md)). Such a game takes a guest's
+  pointer through the input driver's mouse alone, which is still to be measured under it.
 
 ## 2026-11-19 - The display driver no longer ends when a monitor leaves as it is given a swapchain
 

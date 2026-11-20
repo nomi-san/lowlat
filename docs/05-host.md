@@ -1015,7 +1015,12 @@ pointer the expansion sent it to, the wheels in the units the peer counted; a po
 primary display rides its absolute collection, at the pixel the batch input call would have
 named, and **a position on any other display goes through the batch input call**, the absolute
 collection spanning the primary alone ([11 §2.3](11-drivers.md)). A switch either way first
-releases the keys and the buttons held on the old way.
+releases the keys and the buttons held on the old way. *Measured 2026-11-20:* **while a game under
+one anti-cheat runs, the system refuses every pointer move made through the batch input call**,
+on the whole machine -- absolute and relative, with the game in front or anything else -- the call
+failing with an invalid parameter; keys and buttons still go in and reach the game, and the moves
+work again once the game has exited. On such a host a guest's pointer moves through the input
+driver's mouse or not at all, and on the primary display alone.
 
 - **Batches are expanded and injected as a unit.** The wire delivers input batches; expansion
   to device events is a pure, unit-tested function with no device dependency, so the mapping
@@ -1435,7 +1440,9 @@ for the window in front, two for the window under the pointer (measured 2026-11-
 system account as well). What is kept is each process's answer, for as long as the host holds
 that process's handle -- which keeps its number from passing to another process -- and dropped
 once it has exited; a process that cannot be opened is not the application's, and is asked about
-again.
+again. *Amended 2026-11-20:* **so is one that opens but cannot be named** -- a handle given fewer
+rights than were asked for, as a process another program protects may hand out -- since an answer
+kept for it would hold the guest away from the application for as long as it runs.
 
 **Off the desktop that takes input nothing is in front**, and the pointer cannot be read. A
 guest's thread left on the desktop the lock screen or an elevation prompt had is moved to the
