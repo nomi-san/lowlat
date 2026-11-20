@@ -1392,6 +1392,53 @@ the desktop that takes input, and where it cannot be read both count as held.
 There is no general "inject these keys" call behind this. Input comes from guests; this is the
 one chord a guest is unable to send for itself.
 
+### §7.4 A session held to one application
+
+*Built 2026-11-20, on Windows alone* ([impl-plan-windows.md](impl-plan-windows.md) W5.1). The
+owner can hold every other guest to one application: a list of executables, each named by its
+full path as the system names the image a process runs, letters compared without regard to case
+as the file system compares them. **A window is the application's when the process of its root
+window runs one of them**: a child a helper process draws into belongs to the window it sits in,
+and a popup of the application's own -- a menu, a tooltip, a dialog -- is its own root. **The
+owner is never held.** The setting is live: each seated guest takes it at once, a guest admitted
+later from its admission; `lowlatd --scope PATH`, once for each executable, holds the guests from
+its start.
+
+For a held guest:
+
+- **Keys, pointer motion and pads go in only while the window in front is the application's**,
+  and **buttons and the wheel only while the window under the pointer is too**: they act where
+  the pointer is rather than where the keys go. **A release always goes in**: what went down
+  while the application was in front comes up wherever the focus is now, and a release for what
+  never went down is dropped, as it is anywhere.
+- **The application leaving the front releases what the guest holds** -- keys and buttons up, a
+  sixteen-button pad centred, a pad sent as its reports given its product's report at rest -- as a
+  revoked permission does. It is asked as input arrives and on each pass of the guest's loop as
+  well: the owner can bring another program forward while the guest holds a key and sends
+  nothing, and the system's own repeat would type that key into it.
+- **The keys that reach past the application never go in**: the Windows keys and anything typed
+  under them, held on the host or in the peer's modifier mask; Tab under Alt, and Escape under
+  Alt or Control -- the task switcher, the start menu, the task manager; Print Screen, which
+  raises the system's own screen capture; mute, the volume and the media keys, which act on the
+  host's sound and player rather than on an application. Alt or Control going down under a held
+  Tab or Escape lets the held key go first, or the system's repeat of it would make the chord.
+- What the application's own process opens -- its file dialog among it -- stays reachable, as W5
+  says.
+
+**Asked as input arrives, not kept from the system's notice of a new foreground.** The notice is
+posted, so it trails the change it reports, and the question is cheap: a third of a microsecond
+for the window in front, two for the window under the pointer (measured 2026-11-20, from the
+system account as well). What is kept is each process's answer, for as long as the host holds
+that process's handle -- which keeps its number from passing to another process -- and dropped
+once it has exited; a process that cannot be opened is not the application's, and is asked about
+again.
+
+**Off the desktop that takes input nothing is in front**, and the pointer cannot be read. A
+guest's thread left on the desktop the lock screen or an elevation prompt had is moved to the
+desktop that takes input as it is now, at most every quarter second, and asked again; while the
+lock screen or a prompt has it, a held guest's input goes nowhere, neither being the
+application's.
+
 ## §8 Cursor
 
 The cursor travels out of band, not composited into the frame. That is a protocol property and

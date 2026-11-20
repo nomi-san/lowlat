@@ -3,6 +3,30 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-20 - W5.1 built: a guest held to one application
+
+### Built
+- **The owner can hold every other guest to one application**, on Windows
+  ([05 §7.4](05-host.md)): a list of executables by full path, a window the application's when the
+  process of its root window runs one. A held guest's keys, pointer motion and pads go in only
+  while the application is in front, its clicks and its wheel only over the application's windows;
+  a release always goes in; the application leaving the front releases what the guest holds and
+  puts its pads at rest; the Windows keys and what is typed under them, the task switcher's, the
+  start menu's and the task manager's chords, Print Screen and the host's sound and media keys
+  never go in. The owner is never held. A live setting of the host, and `lowlatd --scope PATH` at
+  its start; the C interface comes with W5.4.
+- **Asked as input arrives** rather than kept from the system's notice of a new foreground, which
+  trails the change: 0.3 us for the window in front, 2 us for the one under the pointer; each
+  process's answer kept while the host holds its handle.
+
+### Checked
+- Offline: the expander's seven checks and the judge's two, each broken once and seen to fail. On
+  Windows the input, host, daemon and SDK crates' clippy and tests passed; on Linux the input, host
+  and daemon crates' formatting, clippy and tests, but for the dual-stack check the virtual
+  machine's network fails as before.
+- Owed: the live check -- a guest and the owner against a test application, with another program
+  brought in front.
+
 ## 2026-11-19 - The display driver no longer ends when a monitor leaves as it is given a swapchain
 
 ### Fixed

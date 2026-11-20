@@ -3028,6 +3028,21 @@ The decisions are recorded once, here.
   neutral while the gate is closed; the answer kept from the system's notice of a new foreground
   and a path cached per process, not asked per input. Checked by a test application showing the
   input it receives, from a guest and from the owner, with another program brought in front.
+  *Built 2026-11-20, unticked:* the gate in the expander, on every platform -- a held guest's
+  keys, motion and pads behind the application in front, its clicks and wheel behind the window
+  under the pointer as well, releases always through, the application's going releasing what the
+  guest holds and putting its pads at rest, the keys that reach past it refused, Alt or Control
+  under a held Tab or Escape letting it go first -- and on Windows what judges it: the root
+  window's process named by its image, compared as the file system compares names, each
+  process's answer kept under its handle; the host's live setting, asked on each guest's pass;
+  `lowlatd --scope PATH` ([05 §7.4](05-host.md)). **Asked per input after all**: the notice trails
+  the change it reports, and the question measured 0.3 us for the window in front and 2 us for
+  the window under the pointer, from the system account as well. Print Screen and the host's sound
+  and media keys refused beside the planned chords. Run: the expander's seven checks and the
+  judge's two, each broken once and seen to fail; on Windows the input, host, daemon and SDK
+  crates' clippy and tests, on Linux the input, host and daemon crates' formatting, clippy and
+  tests, the dual-stack check the virtual machine's network fails as before. Owed: the live check
+  above.
 - [ ] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
   in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
   its place on the canvas by the conversion, following the foreground; black before the
@@ -3054,6 +3069,8 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-20: W5.1 built, unticked: a guest held to one application, its window in front and
+  under the pointer asked as input arrives; the live check owed.
 - 2026-11-20: W5.0 closed: the sound's price taken; the decision on sound amended -- a capture per
   sounding process, since the system's capture of a process reaches one level -- and W5.3 with it.
 - 2026-11-19: W5.0 measured: the capture of one process arrives 10 to 40 ms after the capture of the
