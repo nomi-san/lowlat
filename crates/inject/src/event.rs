@@ -199,6 +199,12 @@ pub trait Sink {
     /// sticks centred -- for as long as nothing else is written to it: the
     /// pads whose guest is held away from the application meanwhile.
     fn neutral(&mut self, _pad: u32) {}
+
+    /// Type one keystroke of no key at all, where a platform takes Alt let go
+    /// alone as a window's menu key: a held guest's Tab or Escape under Alt was
+    /// refused, and the Alt that comes up next must not open the menu of the
+    /// application in front.
+    fn mask_alt(&mut self) {}
 }
 
 /// What a guest held to one application needs of it before its input goes in
@@ -984,6 +990,11 @@ impl Injector {
         // chord from it.
         if pressed && self.held(out) {
             if self.refused_in_scope(peer_code, modifiers) {
+                // **A key refused under Alt leaves the Alt alone**, and an Alt
+                // let go alone is the window's menu key.
+                if modifiers & MOD_ALT != 0 || self.holds_any(&USAGE_ALTS) {
+                    out.mask_alt();
+                }
                 traced(code, modifiers, pressed, key, "scope");
                 return;
             }
@@ -1538,6 +1549,8 @@ mod tests {
         scope: Option<(bool, bool)>,
         /// The pads sent as their reports that were put at rest.
         rested: Vec<u32>,
+        /// How many keystrokes of no key were typed for an Alt.
+        masks: u32,
     }
 
     impl Sink for Recorder {
@@ -1579,6 +1592,10 @@ mod tests {
 
         fn neutral(&mut self, pad: u32) {
             self.rested.push(pad);
+        }
+
+        fn mask_alt(&mut self) {
+            self.masks += 1;
         }
     }
 
@@ -3384,6 +3401,24 @@ mod tests {
             out.keys_at(1),
             vec![code(43), code(41), code(226), code(61)]
         );
+    }
+
+    /// **A key refused under Alt is followed by a keystroke of no key**, so
+    /// the Alt let go after it is not the window's menu key: under a held Alt
+    /// or the mask's. A refusal with no Alt down types none, and neither does
+    /// a key under Alt that goes in.
+    #[test]
+    fn a_key_refused_under_alt_masks_the_alt() {
+        let (mut inject, mut out) = held_guest();
+        inject.on_control(&key(226, true), &mut out);
+        inject.on_control(&key(43, true), &mut out);
+        assert_eq!(out.masks, 1);
+        inject.on_control(&key(61, true), &mut out);
+        inject.on_control(&key(226, false), &mut out);
+        inject.on_control(&key(227, true), &mut out);
+        assert_eq!(out.masks, 1, "a refusal with no Alt down typed one");
+        inject.on_control(&control(op::KEYBOARD, 41, 0x0200, 1), &mut out);
+        assert_eq!(out.masks, 2);
     }
 
     /// **Alt or Control going down under a held Tab or Escape lets it go

@@ -910,6 +910,17 @@ impl Sink for Devices {
         }
     }
 
+    /// **The system's unassigned virtual key**, down and up through the batch
+    /// input call whichever way the guest's keys go: a window takes an Alt let
+    /// go after another key as part of a chord, not as its menu key.
+    fn mask_alt(&mut self) {
+        const UNASSIGNED: u16 = 0xE8;
+        self.send(&[
+            key_input(Stroke::Virtual(UNASSIGNED), true),
+            key_input(Stroke::Virtual(UNASSIGNED), false),
+        ]);
+    }
+
     /// **The product's own report at rest**, as a real pad sends it, the way
     /// any of its reports goes: into its device, onto the bus where it has
     /// none, or to the application holding the devices.
