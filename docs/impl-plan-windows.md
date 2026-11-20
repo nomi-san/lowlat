@@ -2930,7 +2930,139 @@ under an older runtime, and a ten-bit request without the second codec's bit. No
 named there: W4.2's pixel count at 125 percent and a machine with no mouse, and a game on the
 pads' maker's own PC library.
 
+## Phase W5 - A session held to one application
+
+**Planned 2026-11-19, interview of the same day.** A host session whose guests other than the
+owner see, hear and steer one application and nothing else of the machine: the application's
+window in place of the desktop, its sound in place of the machine's mix, and their input taken
+only while one of its windows is in front. The owner turns it on and names the application from
+the host, through the integrating application -- `lowlatd` for this project's own -- and a client
+changes nothing: it connects to a desktop host as it always has. Windows first; Linux, where the
+same scope needs a compositor of its own around the application, is a phase of its own later.
+The decisions are recorded once, here.
+
+### Decisions taken at the interview
+
+- **Nothing outside the application, and all of what is inside it.** A guest other than the
+  owner neither sees nor steers anything outside the application. What the application's own
+  process opens -- a file dialog, an overlay drawn inside it -- stays reachable, and is said so
+  rather than closed: running the application under another account would close it, and breaks
+  per-user launchers and copy protection, so it is not this phase's. The owner is never held.
+- **The picture is the application's window, by the system's capture of a window**, measured
+  before it was taken. On the same pictures it arrives 0.2 to 0.5 ms after a capture of the whole
+  display at the median and under 0.75 ms at p95 -- for a windowed, a borderless and an
+  exclusive-fullscreen game, a window another process draws into through composition, and a
+  window painted by GDI -- and 0.20 to 0.35 ms after the host's own display's direct picture
+  ([11 §1](11-drivers.md)). Its minimum update interval defaults to 16 ms, which halves a 120 Hz
+  source, and is set to 1 ms. Its secondary windows are taken in, so the menu, the dropdown or the
+  tooltip an application opens -- each a window of its own, a native menu with no owner -- is in
+  the picture. The alternative, the application moved onto the host's own display, has to keep
+  moving windows an application places itself, and shows whatever else lands there.
+- **The application is a list of executables by full path.** A window is the application's when
+  the process of its root window runs one of them; the foreground window decides for keys and
+  motion, the window under the pointer for buttons and the wheel, and a popup is found by its
+  process, never by its owner. **Not plain names**: any program copied under a listed name would
+  pass, and the application's own file dialog, reachable under the first decision, can make such
+  a copy and run it. Not the process the host started: a launcher already running hands the launch
+  to itself and exits. Not a tree of processes: a store's client holds its own browser and every
+  game it started.
+- **A fixed canvas, the size of the application's monitor**, the window drawn at its own place on
+  it and the rest black. Switching between the application's windows, moving or resizing them
+  never rebuilds the stream; the monitor's mode moving, or the window going to a monitor of
+  another size, rebuilds it as an output change does. **Nothing is scaled and the stream is not
+  resized for a window**: the stream stays the display's size and a peer's coordinates map one to
+  one ([05 §7](05-host.md)); what lies past the monitor's edges is clipped, as the monitor clips
+  it. Where the window sits is the launching application's to change.
+- **The canvas shows the foreground window alone**: one capture of the application's foreground
+  window, moved when the foreground moves to another of its windows, and live on the last of them
+  while the foreground is elsewhere. Every visible window of the application composed in order is
+  left for later; it changes neither the canvas nor the gate.
+- **The sound is the application's own**: a capture of each running listed process and the
+  processes it started, mixed -- a client built on a browser plays its sound from a child of its
+  window's process. Measured before it is built, as the picture was. *Amended 2026-11-20, at W5.0's
+  close:* the system's capture of a process takes it and the processes it started one level deep,
+  so the captures are chosen per process that sounds, and each sound is taken once: a sounding
+  process of the application -- its executable listed, or a listed process among its ancestors --
+  is captured unless its parent already is, whose capture holds it. **Its price is taken**: 10 to
+  40 ms behind the capture of the whole mix, and a 30 ms slip each time its own clock has drifted
+  that gap away. A guest hearing the owner's call or notifications would undo the scope.
+- **The owner turns it on.** The integrating application sets the scope live -- an application's
+  launch command and its paths -- and it stays until cleared; every guest but the owner is held
+  meanwhile. A client chooses nothing: established clients have no way to, and the machine is the
+  owner's.
+- **On the wire it is a desktop host**: advertised as one, no other host mode announced, guests
+  admitted by the same flags. The scope is the host's alone.
+- **Windows first.** Capturing a window, a process's sound, the foreground and placing a window are
+  the system's own here. On Linux the host sees no window and its input reaches every program, so
+  a scope there wraps the application in a compositor of its own -- another phase.
+
+### Steps
+
+- [x] **W5.0 the sound measured**: the capture of one process's tree against the capture of the
+  whole mix on the same sound -- its delay and its timestamps -- two and three such captures mixed,
+  and which processes of a launcher-style application sound. Measured before W5.3 is built.
+  *Measured 2026-11-19* on the development machine, its speakers' engine at 10 ms: test processes
+  playing short bursts, each logged as it was handed to the system, read back by both captures at
+  once. **The capture of a process arrives 10 to 40 ms after the capture of the whole mix**, tight
+  at any one moment and the same for an application buffering 20 ms or 100 ms. **It keeps time on a
+  48 kHz clock of its own, not the speakers'**, so the gap drifts at the difference between them --
+  here -21.7 ppm, 1.3 ms a minute in a straight line -- and when the drift has used it up, the
+  capture takes 30 ms back at once with no flag and no step in its timestamps: here from 10.2 to
+  40.3 ms, once in 35 minutes, 18 minutes in. It delivers
+  from the moment it opens -- zeros while its process is silent, has gone or never sounded -- so it
+  needs nothing playing to keep time; its timestamps are computed, and step by up to 14 ms when one
+  of its processes opens or closes a stream. **It holds 10 ms whatever is asked**, and a reader
+  later than that loses the rest with no flag: a reader held up 50 ms every 2 s lost 172 ms in 18 s,
+  and only the timestamps showed it. **It takes a process and the processes that process started,
+  one level and no deeper**: a grandchild never, whether its parent is alive and playing, the whole
+  tree was there before the capture began, or its parent has gone. Three captures at once each held
+  its own process alone; a stream on another output is in; the per-application volume and mute
+  reach it; the system account captures a user's process the same. A launcher-style application
+  idling sounds nowhere, and each of its two clients built on a browser plays from a sound-service
+  child of its window's process. *Closed 2026-11-20:* the price taken, the decision on sound
+  amended to what the capture takes, and W5.3 with it.
+- [ ] **W5.1 the gate**: for a guest other than the owner while a scope is set, keys and motion
+  only while the foreground's root is the application's, buttons and the wheel only over its
+  windows; the gate's closing releasing what that guest holds; the Windows keys and every chord
+  with them, the task-switching chords and the task manager's dropped always; pads reported
+  neutral while the gate is closed; the answer kept from the system's notice of a new foreground
+  and a path cached per process, not asked per input. Checked by a test application showing the
+  input it receives, from a guest and from the owner, with another program brought in front.
+- [ ] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
+  in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
+  its place on the canvas by the conversion, following the foreground; black before the
+  application has a window and after it exits, the stream and its guests kept. Checked by
+  stamped pictures: a switch between windows with no rebuild, a covered window still live, a menu
+  in the picture.
+- [ ] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
+  followed as its processes open and close their sound; each one's process held, so its number
+  cannot pass to another process under the capture, and the capture closed when it exits; read
+  within 10 ms, a step in a capture's timestamps filled with silence of its length; their mix, and
+  silence while none of them sounds. Checked by test processes three deep, one outside, and a
+  reader held up.
+- [ ] **W5.4 the C interface**: the scope as a live setting of the host, declared on Windows alone
+  as the input configuration is; [06](06-api.md).
+- [ ] **W5.5 `lowlatd`**: applications' definitions -- a name, a launch command, a working
+  directory, the paths -- launched in the signed-in session, the scope set and cleared from the
+  tray and the command line; the window placed once it appears, where asked.
+
+**Gate:** on the development machine, with established clients and the test applications: a guest
+who is not the owner held to the application -- nothing outside it seen, heard or reached, the
+owner unheld -- switching between its windows with no rebuild, its menus in the picture, its sound
+alone; a launcher-style game through its launcher to a match, its anti-cheat included; the
+recorded figures as W5.0 and W5.2 measure them.
+
 ## Change log
+
+- 2026-11-20: W5.0 closed: the sound's price taken; the decision on sound amended -- a capture per
+  sounding process, since the system's capture of a process reaches one level -- and W5.3 with it.
+- 2026-11-19: W5.0 measured: the capture of one process arrives 10 to 40 ms after the capture of the
+  whole mix, on a clock of its own that drifts against the speakers' and takes 30 ms back when the
+  drift has used the gap up; it holds 10 ms and drops past it without a flag, and takes a process
+  and its children one level deep.
+- 2026-11-19: W5 planned at its interview: a session held to one application -- its window by the
+  system's capture of a window, its own sound, input only while it is in front, the owner turning
+  it on from the host, a desktop host on the wire; Windows first.
 
 - 2026-11-19: W4.4 added, built, checked live and closed: the input driver's names and
   identifiers from W3.14's brand file, read by a crate of the brand's own; the variable renamed
