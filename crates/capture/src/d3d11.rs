@@ -9,13 +9,15 @@
 //! conversion and the encode; and the conversion is never waited on here,
 //! since the encoder's work on the same device is ordered behind it.
 
-use lowlat_drivers::d3d11::{Com, Device, Error};
+use core::cell::Cell;
+
+use lowlat_drivers::d3d11::{CONSTANTS, Com, Device, Error};
 use lowlat_drivers::ffi::d3d11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_UNORDERED_ACCESS, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_DEFAULT, DXGI_FORMAT, DXGI_FORMAT_AYUV, DXGI_FORMAT_NV12, DXGI_FORMAT_P010,
     DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
     DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM,
-    DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_Y410, DXGI_SAMPLE_DESC, ID3D11ComputeShader,
+    DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_Y410, DXGI_SAMPLE_DESC, ID3D11Buffer, ID3D11ComputeShader,
     ID3D11PixelShader, ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
     ID3D11UnorderedAccessView, ID3D11VertexShader,
 };
@@ -224,6 +226,51 @@ impl Target {
     }
 }
 
+/// Where a source's picture lies on a larger target: its top left there, in
+/// the target's pixels, and its size; the target around it comes out black.
+/// The picture's own pixels are the source's from its top left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Place {
+    /// The source over the whole target, as an unplaced conversion has it: a
+    /// size of nothing, which the shader reads as no place at all.
+    pub const WHOLE: Self = Self {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+
+    /// No picture at all: one pixel off every target, the target all black.
+    pub const NOTHING: Self = Self {
+        x: i32::MIN / 2,
+        y: i32::MIN / 2,
+        width: 1,
+        height: 1,
+    };
+
+    /// As the shader's register holds it: the corner, then the size.
+    fn words(self) -> [u8; CONSTANTS] {
+        let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
+        let mut bytes = [0u8; CONSTANTS];
+        for (at, word) in [self.x, self.y, side(self.width), side(self.height)]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(slot) = bytes.get_mut(at * 4..at * 4 + 4) {
+                slot.copy_from_slice(&word.to_le_bytes());
+            }
+        }
+        bytes
+    }
+}
+
 /// How the conversion writes its targets.
 enum Pass {
     /// One compute run over the picture.
@@ -246,6 +293,10 @@ pub struct Converter {
     /// the view holds its texture, so no other can be made there while it
     /// is kept.
     source: Option<(usize, Com<ID3D11ShaderResourceView>)>,
+    /// The shader's place register, bound for every pass, and what it was
+    /// last set to: written again only when a conversion asks for another.
+    place: Com<ID3D11Buffer>,
+    placed: Cell<Place>,
 }
 
 impl core::fmt::Debug for Converter {
@@ -283,6 +334,8 @@ impl Converter {
             pass,
             layout,
             source: None,
+            place: device.constants(&Place::WHOLE.words())?,
+            placed: Cell::new(Place::WHOLE),
         })
     }
 
@@ -296,6 +349,20 @@ impl Converter {
         source: *mut ID3D11Texture2D,
         target: &Target,
     ) -> Result<(), Error> {
+        self.convert_placed(device, source, target, Place::WHOLE)
+    }
+
+    /// [`Converter::convert`] with the source's picture at `place` on the
+    /// target and black around it: a window drawn at its place on its
+    /// monitor. A picture's pixels past the target's edges are left out, as
+    /// the monitor leaves them out.
+    pub fn convert_placed(
+        &mut self,
+        device: &Device,
+        source: *mut ID3D11Texture2D,
+        target: &Target,
+        place: Place,
+    ) -> Result<(), Error> {
         let key = source as usize;
         let view = match &self.source {
             Some((held, view)) if *held == key => view.as_ptr(),
@@ -307,7 +374,7 @@ impl Converter {
                 raw
             }
         };
-        self.run(device, view, target)
+        self.run(device, view, target, place)
     }
 
     /// The view a source texture is read through, at its own format: for a
@@ -332,7 +399,19 @@ impl Converter {
         view: &Com<ID3D11ShaderResourceView>,
         target: &Target,
     ) -> Result<(), Error> {
-        self.run(device, view.as_ptr(), target)
+        self.run(device, view.as_ptr(), target, Place::WHOLE)
+    }
+
+    /// [`Converter::convert_view`] at `place`, as
+    /// [`Converter::convert_placed`] has it.
+    pub fn convert_view_placed(
+        &self,
+        device: &Device,
+        view: &Com<ID3D11ShaderResourceView>,
+        target: &Target,
+        place: Place,
+    ) -> Result<(), Error> {
+        self.run(device, view.as_ptr(), target, place)
     }
 
     fn run(
@@ -340,9 +419,14 @@ impl Converter {
         device: &Device,
         view: *mut ID3D11ShaderResourceView,
         target: &Target,
+        place: Place,
     ) -> Result<(), Error> {
         if target.layout != self.layout {
             return Err(Error::Unavailable);
+        }
+        if self.placed.get() != place {
+            device.set_constants(&self.place, &place.words());
+            self.placed.set(place);
         }
         match (&self.pass, &target.views) {
             (Pass::Compute(shader), Views::Unordered(views)) => {
@@ -360,6 +444,7 @@ impl Converter {
                 device.dispatch(
                     shader,
                     &[view],
+                    Some(&self.place),
                     targets.get(..bound).unwrap_or_default(),
                     (columns.div_ceil(8), rows.div_ceil(8)),
                 )?;
@@ -373,7 +458,7 @@ impl Converter {
                 ];
                 for ((plane, rendered), size) in planes.iter().zip(views).zip(sizes) {
                     if let (Some(plane), Some(rendered)) = (plane, rendered) {
-                        device.draw(vertex, plane, &[view], rendered, size)?;
+                        device.draw(vertex, plane, &[view], Some(&self.place), rendered, size)?;
                     }
                 }
             }
@@ -639,6 +724,158 @@ mod tests {
                     adapter.description,
                     if draws(&device) { "drawn" } else { "computed" },
                     PATTERN.len()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no adapter converted anything");
+    }
+
+    /// A target's samples at a pixel, as an encoder reads them: its luma,
+    /// and the chroma it carries there -- its 2x2 block's in the two-plane
+    /// layouts.
+    fn sample(
+        layout: Layout,
+        (bytes, pitch): (&[u8], usize),
+        height: usize,
+        x: usize,
+        y: usize,
+    ) -> (u32, u32, u32) {
+        let word = |at: usize| u32::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
+        let chroma = height * pitch + (y / 2) * pitch;
+        match layout {
+            Layout::Nv12 => {
+                let c = chroma + (x / 2) * 2;
+                (
+                    u32::from(bytes[y * pitch + x]),
+                    u32::from(bytes[c]),
+                    u32::from(bytes[c + 1]),
+                )
+            }
+            Layout::P010 => {
+                let c = chroma + (x / 2) * 4;
+                (word(y * pitch + x * 2) >> 6, word(c) >> 6, word(c + 2) >> 6)
+            }
+            Layout::Ayuv => {
+                let p = &bytes[y * pitch + x * 4..];
+                (u32::from(p[2]), u32::from(p[1]), u32::from(p[0]))
+            }
+            Layout::Y410 => {
+                let p = &bytes[y * pitch + x * 4..];
+                let w = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+                ((w >> 10) & 0x3FF, w & 0x3FF, (w >> 20) & 0x3FF)
+            }
+        }
+    }
+
+    /// **A placed picture lands at its place, sample for sample, on black**:
+    /// every sample of the picture placed at (4, 2) on a larger target is the
+    /// unplaced conversion's at the place's offset, every sample around it is
+    /// black at the layout's depth, a place partly past the target's left
+    /// edge leaves out what lies past it, and an unplaced conversion after a
+    /// placed one is the whole source again. In every layout, on every adapter
+    /// that renders, by both passes, each against itself unplaced. Needs a
+    /// GPU, so off by default.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_placed_picture_lands_at_its_place_on_black() {
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let mut checked = 0;
+        for adapter in d3d11.adapters().expect("the walk") {
+            if !adapter.decodes_here() {
+                continue;
+            }
+            let device = d3d11.open(adapter.luid).expect("a device");
+            let (texture, width, height) = source(&device);
+            let (w, h) = (width as usize, height as usize);
+            for (layout, by_draws) in [Layout::Nv12, Layout::P010, Layout::Ayuv, Layout::Y410]
+                .into_iter()
+                .flat_map(|layout| [(layout, false), (layout, true)])
+            {
+                let (Ok(whole), Ok(canvas)) = (
+                    Target::made(&device, layout, width, height, by_draws),
+                    Target::made(&device, layout, width + 8, height + 4, by_draws),
+                ) else {
+                    println!(
+                        "{}: no {layout:?} target drawn={by_draws}",
+                        adapter.description
+                    );
+                    continue;
+                };
+                let black = match layout {
+                    Layout::Nv12 | Layout::Ayuv => (16, 128, 128),
+                    Layout::P010 | Layout::Y410 => (64, 512, 512),
+                };
+                let mut converter = Converter::made(&device, layout, by_draws).expect("the shader");
+                converter
+                    .convert(&device, texture.as_ptr(), &whole)
+                    .expect("the conversion");
+                let (want, want_pitch) = read_back(&device, &whole);
+                let want = |x: usize, y: usize| sample(layout, (&want, want_pitch), h, x, y);
+
+                let place = Place {
+                    x: 4,
+                    y: 2,
+                    width,
+                    height,
+                };
+                converter
+                    .convert_placed(&device, texture.as_ptr(), &canvas, place)
+                    .expect("the placed conversion");
+                let (got, pitch) = read_back(&device, &canvas);
+                for y in 0..h + 4 {
+                    for x in 0..w + 8 {
+                        let got = sample(layout, (&got, pitch), h + 4, x, y);
+                        let inside = (4..4 + w).contains(&x) && (2..2 + h).contains(&y);
+                        let wanted = if inside { want(x - 4, y - 2) } else { black };
+                        assert_eq!(
+                            got, wanted,
+                            "{} {layout:?} at ({x}, {y}), inside={inside}",
+                            adapter.description
+                        );
+                    }
+                }
+
+                // Past the left edge: the picture's columns from the third on.
+                let edge = Place {
+                    x: -2,
+                    y: 0,
+                    width,
+                    height,
+                };
+                converter
+                    .convert_placed(&device, texture.as_ptr(), &canvas, edge)
+                    .expect("the placed conversion");
+                let (got, pitch) = read_back(&device, &canvas);
+                for y in 0..h {
+                    for x in 0..w - 2 {
+                        assert_eq!(
+                            sample(layout, (&got, pitch), h + 4, x, y),
+                            want(x + 2, y),
+                            "{} {layout:?} past the edge at ({x}, {y})",
+                            adapter.description
+                        );
+                    }
+                }
+
+                converter
+                    .convert(&device, texture.as_ptr(), &whole)
+                    .expect("the conversion");
+                let (again, again_pitch) = read_back(&device, &whole);
+                for y in 0..h {
+                    for x in 0..w {
+                        assert_eq!(
+                            sample(layout, (&again, again_pitch), h, x, y),
+                            want(x, y),
+                            "{} {layout:?} unplaced again at ({x}, {y})",
+                            adapter.description
+                        );
+                    }
+                }
+                println!(
+                    "{}: {layout:?} {} placed, on black and past an edge",
+                    adapter.description,
+                    if by_draws { "drawn" } else { "computed" }
                 );
                 checked += 1;
             }

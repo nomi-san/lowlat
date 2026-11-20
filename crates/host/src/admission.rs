@@ -1038,6 +1038,11 @@ impl Admission {
             None => lowlat_common::log_info!("input: no guest held to an application"),
         }
         self.scope.clone_from(&scope);
+        // **The picture is held to it too**: the stream shows the
+        // application's window in its output's place.
+        if let Some(stream) = &self.stream {
+            stream.set_scope(scope.clone());
+        }
         self.tell_guests(Ask::Scope(scope));
     }
 

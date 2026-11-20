@@ -47,6 +47,9 @@ pub mod synthetic;
 pub mod vulkan;
 #[cfg(target_os = "linux")]
 mod wayland;
+/// One window as the system composes it, by its capture of a window.
+#[cfg(windows)]
+pub mod window;
 
 use lowlat_common::clock::Time;
 

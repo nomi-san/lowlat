@@ -13,7 +13,8 @@
 // and written as the exact normalised value of its integer, so the result does
 // not depend on how a driver rounds a float into a normalised store; a ten-bit
 // sample of the two-plane layout lands in the high ten bits of its sixteen.
-// The views' own sizes bound the work, so no constant is needed.
+// The views' own sizes bound the work; the one constant places a picture on a
+// larger target.
 
 // BT.709, and not selectable: a receiver applies the inverse unconditionally
 // with nothing on the wire saying which matrix was used.
@@ -42,14 +43,39 @@ static const float C_OFFSET = 128.0 / 255.0;
 // green and blue below are those channels whatever order memory holds them in.
 Texture2D<float4> source : register(t0);
 
+// Where the source's picture lies on the target, for a picture placed on a
+// larger canvas -- a window at its place on its monitor: its top left there,
+// and its size. A size of zero is the source over the whole target.
+cbuffer Place : register(b0)
+{
+    int2 place_at;
+    int2 place_size;
+};
+
 float3 fetch(int2 at)
 {
-    // Clamped rather than wrapped. An odd width or height leaves one column or
-    // row whose partner is off the edge, and repeating the last pixel is the
-    // only choice that does not invent colour at the border.
-    uint w, h;
-    source.GetDimensions(w, h);
-    return source.Load(int3(min(at, int2(w, h) - 1), 0)).rgb;
+    float3 colour;
+    if (place_size.x > 0)
+    {
+        // **Placed, the target around the picture is black**, whatever the
+        // buffer the picture comes in holds past it. Inside, every pixel is
+        // the picture's own, so nothing is clamped.
+        int2 from = at - place_at;
+        if (all(from >= 0) && all(from < place_size))
+            colour = source.Load(int3(from, 0)).rgb;
+        else
+            colour = float3(0.0, 0.0, 0.0);
+    }
+    else
+    {
+        // Clamped rather than wrapped. An odd width or height leaves one
+        // column or row whose partner is off the edge, and repeating the last
+        // pixel is the only choice that does not invent colour at the border.
+        uint w, h;
+        source.GetDimensions(w, h);
+        colour = source.Load(int3(min(at, int2(w, h) - 1), 0)).rgb;
+    }
+    return colour;
 }
 
 float luma_of(float3 c)

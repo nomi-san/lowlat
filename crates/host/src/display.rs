@@ -20,6 +20,11 @@ mod sys;
 #[path = "display/own.rs"]
 pub(crate) mod own;
 
+/// The application's window as an output's picture, which only Windows has.
+#[cfg(windows)]
+#[path = "display/window.rs"]
+mod window;
+
 pub use sys::{Display, Error, Register, Registration};
 
 /// What the host's own display is asked for by, whatever the system numbers

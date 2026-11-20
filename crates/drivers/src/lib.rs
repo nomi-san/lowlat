@@ -44,3 +44,6 @@ pub mod vpl;
 /// alone.
 #[cfg(target_os = "macos")]
 pub mod vt;
+/// The system's capture of a window, reached on Windows alone.
+#[cfg(windows)]
+pub mod wgc;

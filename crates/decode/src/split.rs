@@ -257,6 +257,7 @@ impl Split {
             .dispatch(
                 shader,
                 &sources,
+                None,
                 &uavs,
                 (cols.div_ceil(8), rows.div_ceil(8)),
             )

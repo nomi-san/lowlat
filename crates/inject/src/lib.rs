@@ -69,7 +69,7 @@ mod windows;
 // provides them on Linux.
 pub use handback::{Forward, Forwarded, PadWritten, WRITTEN_MAX};
 #[cfg(windows)]
-pub use scope::Scope;
+pub use scope::{Judge, Scope};
 #[cfg(target_os = "linux")]
 pub use uinput::{Devices, console_takes_the_chord};
 #[cfg(windows)]

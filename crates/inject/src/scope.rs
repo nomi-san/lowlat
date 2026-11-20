@@ -157,9 +157,12 @@ impl Drop for Process {
     }
 }
 
-/// What one guest's thread asks of the application before its input goes in.
+/// What one guest's thread asks of the application before its input goes in,
+/// and what the picture asks of a window it might show: **one answer for
+/// both**, so a window a guest's input reaches and a window the guest sees are
+/// the application's by the same rule.
 #[derive(Debug)]
-pub(crate) struct Judge {
+pub struct Judge {
     scope: Arc<Scope>,
     known: Vec<Known>,
     /// When this thread was last moved to the input desktop for an answer.
@@ -167,7 +170,7 @@ pub(crate) struct Judge {
 }
 
 impl Judge {
-    pub(crate) fn new(scope: Arc<Scope>) -> Self {
+    pub fn new(scope: Arc<Scope>) -> Self {
         Self {
             scope,
             known: Vec::new(),
@@ -240,7 +243,11 @@ impl Judge {
     /// helper process draws into belongs to the window it sits in, and a
     /// popup of the application's own -- a menu, a tooltip, a dialog -- is its
     /// own root, found by its process.
-    fn holds_window(&mut self, window: HWND) -> bool {
+    #[allow(
+        clippy::not_unsafe_ptr_arg_deref,
+        reason = "a window handle is a value the system checks at each call, never memory read here"
+    )]
+    pub fn holds_window(&mut self, window: HWND) -> bool {
         // SAFETY: a window handle; the root, or null for a window gone.
         let root = unsafe { GetAncestor(window, GA_ROOT) };
         let mut pid = 0u32;

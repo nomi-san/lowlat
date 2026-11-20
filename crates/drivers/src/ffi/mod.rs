@@ -109,6 +109,32 @@ pub mod d3d11;
 #[path = "windows/d3d11_guids.rs"]
 pub mod d3d11_guids;
 
+/// The system's capture of a window, from the platform's own headers
+/// (`scripts/gen-wgc-bindings.sh`), which exist on Windows alone.
+#[allow(
+    dead_code,
+    unused_imports,
+    unnecessary_transmutes,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    missing_debug_implementations,
+    unreachable_pub,
+    clippy::all,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::useless_transmute
+)]
+#[cfg(windows)]
+#[path = "windows/wgc.rs"]
+pub mod wgc;
+
+#[allow(dead_code, non_upper_case_globals, non_snake_case, unreachable_pub)]
+#[cfg(windows)]
+#[path = "windows/wgc_guids.rs"]
+pub mod wgc_guids;
+
 /// The system's media framework's decoders, from the platform's own headers
 /// (`scripts/gen-mf-bindings.sh`), which exist on Windows alone.
 #[allow(

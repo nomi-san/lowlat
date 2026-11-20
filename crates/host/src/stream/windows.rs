@@ -304,10 +304,33 @@ pub(super) fn build(
         }
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     }
+    // **Read on every build, whatever the source**: the read is the mark the
+    // loop measures a change against, and a build that skipped it would see
+    // the scope as changed on every pass.
+    let scope = shared.scope.take();
     if config.display {
-        run_display(shared, arrivals, config.clone(), roster, own, clock)
+        run_display(shared, arrivals, config.clone(), roster, own, clock, scope)
     } else {
         run_vendor(shared, arrivals, config.clone(), roster, clock)
+    }
+}
+
+/// Open the display `name` for the stream: **the application's window in
+/// the output's place where the guests are held to one** (docs/05-host.md
+/// section 7.4), the output's own picture otherwise.
+fn open_display(
+    device: &Arc<lowlat_encode::d3d11::Device>,
+    name: &str,
+    layout: Layout,
+    size: (u32, u32),
+    register: Register<'_, '_>,
+    scope: Option<&Arc<lowlat_inject::Scope>>,
+) -> Result<Display, crate::display::Error> {
+    match scope {
+        Some(scope) => {
+            Display::open_window(device, name, layout, size, register, Arc::clone(scope))
+        }
+        None => Display::open(device, name, layout, size, register),
     }
 }
 
@@ -479,8 +502,21 @@ fn run_display(
     roster: &mut Roster,
     own: &mut Own,
     clock: &MemoryClock,
+    scope: Option<Arc<lowlat_inject::Scope>>,
 ) -> Exit {
-    let wanted = config.output.as_deref();
+    // **Held to an application, the stream is built on the output its window
+    // is on**, whatever output was asked for, which waits for the scope to be
+    // cleared; one that shows no window yet takes the output asked for, its
+    // canvas black.
+    let application = scope.as_ref().and_then(Display::application_output);
+    if let Some(scope) = &scope {
+        lowlat_common::log_info!(
+            "stream: the guests held to an application of {} path(s), its window on {}",
+            scope.paths().count(),
+            application.as_deref().unwrap_or("no output yet")
+        );
+    }
+    let wanted = application.as_deref().or(config.output.as_deref());
     // **A display that is asleep or switched off is waited for**, as on
     // Linux: somebody connecting to a machine nobody is at is most of what
     // remote access is for. **So is the host's own display gone with its
@@ -571,11 +607,16 @@ fn run_display(
         fps: settle_pace(shared, shared.asked_fps(), refresh_hz),
         ..config
     };
+    let scope = scope.as_ref();
     if output.adapter.vendor == AMD {
-        return run_amd(shared, arrivals, config, roster, own, &device, &output);
+        return run_amd(
+            shared, arrivals, config, roster, own, &device, &output, scope,
+        );
     }
     if output.adapter.vendor == INTEL {
-        return run_intel(shared, arrivals, config, roster, own, &device, &output);
+        return run_intel(
+            shared, arrivals, config, roster, own, &device, &output, scope,
+        );
     }
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
@@ -606,12 +647,13 @@ fn run_display(
         config.quality,
         config.quality.min_qp()
     );
-    desktop = match Display::open(
+    desktop = match open_display(
         &device,
         &output.name,
         Layout::of(config.ten_bit, config.chroma_444),
         (width, height),
         Register::Nvenc(&encoder),
+        scope,
     ) {
         Ok(desktop) => desktop,
         Err(crate::display::Error::NoOutput) => {
@@ -646,6 +688,10 @@ fn run_display(
 
 /// [`run_display`] on an AMD GPU: AMD's own encoder on the output's device,
 /// reading the display's conversion.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the display's run passes them on to one encoder's"
+)]
 fn run_amd(
     shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
@@ -654,6 +700,7 @@ fn run_amd(
     own: &mut Own,
     device: &Arc<lowlat_encode::d3d11::Device>,
     output: &lowlat_drivers::d3d11::Output,
+    scope: Option<&Arc<lowlat_inject::Scope>>,
 ) -> Exit {
     let Ok(runtime) = lowlat_drivers::amf::Amf::load() else {
         lowlat_common::log_error!("stream: AMD's encoder runtime unavailable");
@@ -669,8 +716,9 @@ fn run_amd(
     // **Only the host's own display read from its driver is handed over as
     // it is**, at eight bits, the encoder converting in its own hardware. A
     // duplicated desktop takes our conversion at either depth, and so do ten
-    // bits from anywhere, which the encoder's own cannot write.
-    let slot = if config.ten_bit {
+    // bits from anywhere, which the encoder's own cannot write, and an
+    // application's window, which is drawn on a canvas.
+    let slot = if config.ten_bit || scope.is_some() {
         None
     } else {
         Display::driver_frames(output)
@@ -706,12 +754,13 @@ fn run_amd(
             Register::Captured(encoder.engine()),
             slot,
         ),
-        None => Display::open(
+        None => open_display(
             device,
             &output.name,
             layout,
             size,
             Register::Amd(&mut encoder),
+            scope,
         ),
     };
     let mut desktop = match opened {
@@ -782,6 +831,10 @@ fn intel_session<'r>(
 
 /// [`run_display`] on an Intel GPU: Intel's own encoder on the output's
 /// device, reading the display's conversion.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the display's run passes them on to one encoder's"
+)]
 fn run_intel(
     shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
@@ -790,6 +843,7 @@ fn run_intel(
     own: &mut Own,
     device: &Arc<lowlat_encode::d3d11::Device>,
     output: &lowlat_drivers::d3d11::Output,
+    scope: Option<&Arc<lowlat_inject::Scope>>,
 ) -> Exit {
     let runtime = match lowlat_drivers::vpl::Vpl::for_adapter(&output.adapter) {
         Ok(runtime) => runtime,
@@ -814,12 +868,13 @@ fn run_intel(
         config.quality,
         config.quality.min_qp()
     );
-    let mut desktop = match Display::open(
+    let mut desktop = match open_display(
         device,
         &output.name,
         Layout::of(config.ten_bit, config.chroma_444),
         (config.width, config.height),
         Register::Intel(&mut encoder),
+        scope,
     ) {
         Ok(desktop) => desktop,
         Err(crate::display::Error::NoOutput) => {

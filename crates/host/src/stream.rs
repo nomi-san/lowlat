@@ -622,6 +622,10 @@ pub(crate) struct Shared {
     /// that changes: the same counter and lock as the live video above.
     own_asked: AtomicU32,
     own_display: std::sync::Mutex<OwnDisplay>,
+    /// The application every guest but the owner is held to, for the
+    /// picture ([`Stream::set_scope`]).
+    #[cfg(windows)]
+    scope: ScopeCell,
     /// Where this loop announces what only it knows.
     ///
     /// **Here rather than threaded through every call.** Everything else the
@@ -873,6 +877,49 @@ struct Held {
 /// [`lowlat_core::congestion::level`] serves at the default.
 fn level_word(level: usize) -> u32 {
     u32::try_from(level).unwrap_or(u32::MAX)
+}
+
+/// The application every guest but the owner is held to, as the picture
+/// takes it (docs/05-host.md section 7.4): what was set last, a counter
+/// bumped at each set, and the mark the last build read it at.
+///
+/// **The output's own counter and mark, for the same reason**
+/// (`Shared::output_taken`): marked as the build reads it, so a set landing
+/// during the build is a change to the loop that follows, and the loop pays
+/// one load a pass.
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct ScopeCell {
+    held: std::sync::Mutex<Option<Arc<lowlat_inject::Scope>>>,
+    asked: AtomicU32,
+    taken: AtomicU32,
+}
+
+#[cfg(windows)]
+impl ScopeCell {
+    fn set(&self, scope: Option<Arc<lowlat_inject::Scope>>) {
+        // Named first, then announced, as an output is.
+        *self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = scope;
+        self.asked.fetch_add(1, Ordering::Release);
+    }
+
+    /// The application as a build reads it, the mark taken first.
+    pub(crate) fn take(&self) -> Option<Arc<lowlat_inject::Scope>> {
+        self.taken
+            .store(self.asked.load(Ordering::Acquire), Ordering::Relaxed);
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether it was set since the build read it.
+    fn moved(&self) -> bool {
+        self.asked.load(Ordering::Acquire) != self.taken.load(Ordering::Relaxed)
+    }
 }
 
 impl Shared {
@@ -1591,6 +1638,8 @@ impl Stream {
             cg_level: AtomicU32::new(level_word(config.cg_level)),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(config.own_display),
+            #[cfg(windows)]
+            scope: ScopeCell::default(),
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
@@ -1681,6 +1730,18 @@ impl Stream {
         if outputs.send(id).is_ok() {
             self.shared.output_asked.fetch_add(1, Ordering::Release);
         }
+    }
+
+    /// Show the guests one application in place of the output's own
+    /// picture, or let them see the output again (docs/05-host.md section
+    /// 7.4), live: the stream is rebuilt onto the output the application's
+    /// window is on, its window drawn at its place on a canvas of that
+    /// output's size and black around it. **One stream serves every seat**,
+    /// so the owner sees what a held guest sees; while it is set, a request
+    /// for another output waits for it to be cleared.
+    #[cfg(windows)]
+    pub fn set_scope(&self, scope: Option<Arc<lowlat_inject::Scope>>) {
+        self.shared.scope.set(scope);
     }
 
     /// Change what can be changed without rebuilding anything.
@@ -3953,6 +4014,15 @@ fn encode_loop<E: Encoder + FromDevice>(
     // The mark the last drain left (see `Shared::output_taken`): the loop only
     // has to notice that the count moved past it.
     let asked_at = shared.output_taken.load(Ordering::Relaxed);
+    // **An application's window shown in the output's place holds the
+    // output**: a request for another waits for the scope to be cleared, or a
+    // held guest could move the picture off the application.
+    #[cfg(windows)]
+    let holds_output = display
+        .as_ref()
+        .is_some_and(|display| display.shows_window());
+    #[cfg(not(windows))]
+    let holds_output = false;
     // **Said once, here, where both backends meet.** The picture's size is
     // published before the display is opened, because the encoder is built
     // against it; where that picture sits in the desktop cannot be known until
@@ -4541,8 +4611,12 @@ fn encode_loop<E: Encoder + FromDevice>(
             // output is no more absorbable than one of another size: the
             // encoder and the conversion target are built around the one that
             // was there when they were made.
-            if shared.output_asked.load(Ordering::Acquire) != asked_at {
+            if shared.output_asked.load(Ordering::Acquire) != asked_at && !holds_output {
                 return Exit::Rediscover("a different output was asked for");
+            }
+            #[cfg(windows)]
+            if shared.scope.moved() {
+                return Exit::Rediscover("the application the guests are held to changed");
             }
             // **Applied without rebuilding, which is what separates these from
             // an output change**, all but a frame rate that moves the pace.
@@ -5866,6 +5940,8 @@ mod tests {
                 cg_level: AtomicU32::new(1),
                 own_asked: AtomicU32::new(0),
                 own_display: std::sync::Mutex::new(OwnDisplay::default()),
+                #[cfg(windows)]
+                scope: ScopeCell::default(),
                 epoch: AtomicU32::new(0),
                 colour: AtomicU32::new(0),
                 ten_bit: AtomicU32::new(0),
@@ -5961,6 +6037,8 @@ mod tests {
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
+            #[cfg(windows)]
+            scope: ScopeCell::default(),
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
@@ -6559,6 +6637,8 @@ mod tests {
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
+            #[cfg(windows)]
+            scope: ScopeCell::default(),
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
@@ -6974,6 +7054,8 @@ mod tests {
             cg_level: AtomicU32::new(1),
             own_asked: AtomicU32::new(0),
             own_display: std::sync::Mutex::new(OwnDisplay::default()),
+            #[cfg(windows)]
+            scope: ScopeCell::default(),
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),

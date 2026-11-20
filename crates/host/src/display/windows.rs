@@ -74,6 +74,8 @@ pub enum Error {
     Register,
     /// The host's own display's driver: its frame page, or a handle it names.
     Frames(lowlat_vdd_ctl::Error),
+    /// The system's capture of a window: its runtime, or a capture of one.
+    Window(lowlat_drivers::wgc::Error),
 }
 
 impl core::fmt::Display for Error {
@@ -84,6 +86,7 @@ impl core::fmt::Display for Error {
             Self::NoOutput => f.write_str("no such output is part of the desktop"),
             Self::Register => f.write_str("the encoder refused a target on its own device"),
             Self::Frames(error) => write!(f, "the display driver's frames: {error:?}"),
+            Self::Window(error) => write!(f, "the window's capture: {error}"),
         }
     }
 }
@@ -105,6 +108,12 @@ impl From<lowlat_drivers::d3d11::Error> for Error {
 impl From<duplication::Error> for Error {
     fn from(error: duplication::Error) -> Self {
         Self::Duplication(error)
+    }
+}
+
+impl From<lowlat_drivers::wgc::Error> for Error {
+    fn from(error: lowlat_drivers::wgc::Error) -> Self {
+        Self::Window(error)
     }
 }
 
@@ -477,8 +486,9 @@ enum Source {
     Chosen,
     /// The driver's monitor at this slot.
     Driver(u8),
-    /// The system's duplication, whatever the output is.
-    #[cfg(test)]
+    /// The system's duplication, whatever the output is: what a test compares
+    /// the driver's frames against, and the pointer of an application's
+    /// window shown in the output's place.
     Duplication,
 }
 
@@ -1257,6 +1267,10 @@ pub struct Display {
     /// A turn seen while read from the driver, by the slow look at the
     /// output ([`Display::attached`]), for [`Display::take_resize`] to answer.
     turned: core::cell::Cell<bool>,
+    /// The application's window in place of the output's own picture
+    /// ([`Display::open_window`]): the duplication kept for the pointer
+    /// alone, its pictures given back unread.
+    window: Option<super::window::Windowed>,
     kept: Option<Kept>,
     /// The capture's own texture read by the encoder, in place of the
     /// conversion and its targets.
@@ -1446,6 +1460,33 @@ impl Display {
         Self::open_with(device, name, layout, size, register, Source::Driver(slot))
     }
 
+    /// Prepare to show the application `scope` names on the output `name`,
+    /// in place of the output's own picture (docs/05-host.md section 7.4):
+    /// its window drawn at its place on a canvas the output's size, black
+    /// around it and black all over while it shows none; the output's
+    /// duplication kept for the pointer, which the capture of a window leaves
+    /// out. **Never the output's own picture**, whatever the capture of a
+    /// window does. Converted always: no encoder reads the window in place.
+    pub fn open_window(
+        device: &Arc<Device>,
+        name: &str,
+        layout: Layout,
+        size: (u32, u32),
+        register: Register<'_, '_>,
+        scope: Arc<lowlat_inject::Scope>,
+    ) -> Result<Self, Error> {
+        if matches!(register, Register::Captured(_)) {
+            return Err(Error::Register);
+        }
+        let mut display =
+            Self::open_with(device, name, layout, size, register, Source::Duplication)?;
+        display.window = Some(super::window::Windowed::new(device, scope)?);
+        lowlat_common::log_info!(
+            "display: {name} shows the application's window in place of its own picture"
+        );
+        Ok(display)
+    }
+
     /// Prepare to capture the output named `name` through the system's
     /// duplication of it, whatever the output is: what a test compares the
     /// driver's frames against.
@@ -1503,6 +1544,7 @@ impl Display {
             duplication: None,
             direct: None,
             turned: core::cell::Cell::new(false),
+            window: None,
             kept: None,
             in_place,
             encoding,
@@ -1543,7 +1585,6 @@ impl Display {
         // otherwise, as any display is.
         let attached = match source {
             Source::Driver(slot) => Some((slot, Direct::attach(slot)?)),
-            #[cfg(test)]
             Source::Duplication => None,
             Source::Chosen => driver_slot(&display.output.name).and_then(|slot| {
                 if !upright(display.output.rotation) {
@@ -1751,6 +1792,27 @@ impl Display {
         }
     }
 
+    /// Whether this display shows an application's window in its output's
+    /// place ([`Display::open_window`]).
+    pub fn shows_window(&self) -> bool {
+        self.window.is_some()
+    }
+
+    /// The application's window followed, for a test reading its pictures.
+    #[cfg(test)]
+    fn followed_window(&self) -> Option<*mut core::ffi::c_void> {
+        self.window
+            .as_ref()
+            .and_then(super::window::Windowed::followed)
+    }
+
+    /// The output the application `scope` names shows a window on, by the
+    /// output's name: its window in front, else its topmost on the screen;
+    /// nothing while it shows none.
+    pub fn application_output(scope: &Arc<lowlat_inject::Scope>) -> Option<String> {
+        super::window::output_of_application(scope)
+    }
+
     /// Where the captured output sits in the desktop.
     pub fn place(&self) -> Option<Placement> {
         Some(self.place)
@@ -1828,6 +1890,9 @@ impl Display {
             if self.settled.is_some() {
                 self.repace();
             }
+        }
+        if self.window.is_some() {
+            return self.acquire_window();
         }
         if self.direct.is_some() {
             return self.acquire_direct();
@@ -1910,6 +1975,123 @@ impl Display {
             Err(error) => {
                 self.lose(error);
                 Err(Error::Duplication(error))
+            }
+        }
+    }
+
+    /// [`Display::acquire`] for an application's window shown in the
+    /// output's place: the pointer read from the duplication, the window in
+    /// front followed, and its newest picture converted at its place on the
+    /// canvas, black around it -- or the canvas black once as the application
+    /// stops showing one. **A window gone to another output is a rebuild**,
+    /// as an output of another size is: the canvas is its output's.
+    fn acquire_window(&mut self) -> Result<Time, Error> {
+        self.drain_pointer();
+        let Some(windowed) = self.window.as_mut() else {
+            return Ok(Time::now());
+        };
+        windowed.follow(&self.device, &self.output.name);
+        if let Some(now) = windowed.output()
+            && !named(&now, &self.output.name)
+        {
+            lowlat_common::log_info!(
+                "display: the application's window moved from {} to {now}",
+                self.output.name
+            );
+            self.resized = true;
+            return Ok(Time::now());
+        }
+        let Some(taken) = windowed.take(&self.device, &self.output)? else {
+            return Ok(Time::now());
+        };
+        let slot = self.next % self.targets.len().max(1);
+        let target = self.targets.get(slot).ok_or(Error::Register)?;
+        let timed = self.timing.read(&self.device);
+        if timed && let Some(timer) = &self.timing.timer {
+            self.device.begin_span(timer);
+        }
+        let converted =
+            self.converter
+                .convert_view_placed(&self.device, &taken.view, target, taken.place);
+        if timed
+            && let (Some(fence), Some(timer)) = (&self.timing.fence, &self.timing.timer)
+            && self
+                .device
+                .signal_timed(fence, self.timing.signalled + 1, timer)
+                .is_ok()
+        {
+            self.timing.signalled += 1;
+            self.timing.timing = true;
+        }
+        converted?;
+        let at = Time::now();
+        self.next = self.next.wrapping_add(1);
+        let age_ms = taken.arrived.map(duplication::age_ms);
+        if let Some(age_ms) = age_ms {
+            self.timing.handed.record(age_ms);
+            self.timing.queued.record(age_ms);
+            self.timing.report(&self.output.name);
+        }
+        self.flight = Some(Acquired {
+            at,
+            changed: true,
+            composed_before_ms: age_ms,
+            keyframe: false,
+        });
+        Ok(at)
+    }
+
+    /// What the duplication has gathered of the pointer since it was last
+    /// asked, for an output whose picture is an application's window: one
+    /// look without waiting, its picture given back unread. Made again as it
+    /// goes, as for any duplicated output.
+    fn drain_pointer(&mut self) {
+        if self.duplicate().is_err() {
+            return;
+        }
+        let Some(source) = self.duplication.as_mut() else {
+            return;
+        };
+        match source.next(0) {
+            Ok(Some(frame)) => {
+                Self::note_pointer(&mut self.watch, source, &frame);
+                source.release();
+            }
+            Ok(None) => {}
+            Err(error) => self.lose(error),
+        }
+    }
+
+    /// [`Display::wait_present`] for an application's window: a picture
+    /// arrived is a present; a refresh past the deadline with none is a
+    /// present of the same picture, as the duplication's wait has it.
+    fn wait_window(&mut self, timeout_ms: i32) -> Option<bool> {
+        let period = self.period_ms;
+        let windowed = self.window.as_mut()?;
+        if windowed.pending {
+            return Some(true);
+        }
+        let began = *self.waiting_since.get_or_insert_with(Time::now);
+        let called = Time::now();
+        loop {
+            let now = Time::now();
+            let bound = period - clock::diff_ms(began, now);
+            if bound <= 0.0 {
+                return Some(true);
+            }
+            let budget = f64::from(timeout_ms.max(1)) - clock::diff_ms(called, now);
+            if budget <= 0.0 {
+                return None;
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a positive wait of at most a refresh or the loop's timeout"
+            )]
+            let wait = budget.min(bound).ceil().max(1.0) as u32;
+            if windowed.wait(wait) {
+                windowed.pending = true;
+                return Some(true);
             }
         }
     }
@@ -2301,7 +2483,7 @@ impl Display {
     /// composition at the median and 0.735 at the 99th percentile; this wait
     /// alone, 0.7 %, 0.077 and 0.188.
     pub fn waits_for_composition(&self) -> bool {
-        self.direct.is_none() && self.duplication.is_some()
+        self.window.is_none() && self.direct.is_none() && self.duplication.is_some()
     }
 
     /// The coming wait begins `until_ms` before its deadline. **Its bound
@@ -2333,6 +2515,9 @@ impl Display {
     /// all. Nothing at all in the time: nothing. **A duplication lost or out
     /// of reach is a present**, so the tick runs and its acquire asks again.
     pub fn wait_present(&mut self, timeout_ms: i32) -> Option<bool> {
+        if self.window.is_some() {
+            return self.wait_window(timeout_ms);
+        }
         if self.direct.is_some() {
             return self.wait_direct(timeout_ms);
         }
@@ -4052,6 +4237,408 @@ mod tests {
         )
         .expect("the display");
         with(&mut display)
+    }
+
+    /// [`on_nvenc`] for the application `scope` names, shown in the output's
+    /// place ([`Display::open_window`]).
+    fn on_nvenc_window<R>(
+        name: &str,
+        scope: Arc<lowlat_inject::Scope>,
+        with: impl FnOnce(&mut Display) -> R,
+    ) -> R {
+        use lowlat_encode::nvenc;
+
+        let output = Display::locate(Some(name)).expect("its output");
+        let (width, height, _) = Display::shape_of_display(Some(name)).expect("its picture");
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let device = Arc::new(d3d11.open(output.adapter.luid).expect("a device"));
+        let api = nvenc::Api::load().expect("the encoder's runtime");
+        let session = api.open_session(Arc::clone(&device)).expect("a session");
+        let encoder = session
+            .initialize(nvenc::Config {
+                codec: nvenc::Codec::H265,
+                width,
+                height,
+                fps: 60,
+                bitrate_bps: 20_000_000,
+                min_qp: lowlat_encode::DEFAULT_MIN_QP,
+                thorough: false,
+                chroma: nvenc::Chroma::Yuv420,
+                depth: nvenc::Depth::Eight,
+            })
+            .expect("an encoder");
+        let mut display = Display::open_window(
+            &device,
+            &output.name,
+            Layout::Nv12,
+            (width, height),
+            Register::Nvenc(&encoder),
+            scope,
+        )
+        .expect("the display");
+        with(&mut display)
+    }
+
+    /// The luma of the target the last acquire converted into, and its pitch.
+    fn last_luma(display: &Display) -> (Vec<u8>, usize) {
+        let len = display.targets.len();
+        let slot = (display.next + len - 1) % len;
+        luma_of(&display.device, &display.targets[slot])
+    }
+
+    fn pump() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+        };
+        // SAFETY: plain data the call fills.
+        let mut message: MSG = unsafe { core::mem::zeroed() };
+        // SAFETY: this thread's queue; the message is a live local.
+        while unsafe { PeekMessageW(&raw mut message, core::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+        {
+            // SAFETY: a message just taken off this thread's queue.
+            unsafe {
+                TranslateMessage(&raw const message);
+                DispatchMessageW(&raw const message);
+            }
+        }
+    }
+
+    unsafe extern "system" fn plain(
+        window: *mut core::ffi::c_void,
+        message: u32,
+        w: usize,
+        l: isize,
+    ) -> isize {
+        // SAFETY: the system's own handling of the system's message.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(window, message, w, l)
+        }
+    }
+
+    /// A window of this test's own, solid white, at (`x`, `y`) of the desktop.
+    fn white_window(x: i32, y: i32, width: i32, height: i32) -> *mut core::ffi::c_void {
+        use windows_sys::Win32::Graphics::Gdi::CreateSolidBrush;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, RegisterClassW, WNDCLASSW, WS_POPUP, WS_VISIBLE,
+        };
+        let name: Vec<u16> = "lowlat-window-source-test\0".encode_utf16().collect();
+        // SAFETY: this process's module and a class of its own with the
+        // system's handling and a solid brush; the class's name outlives the
+        // calls that read it.
+        let window = unsafe {
+            let module = GetModuleHandleW(core::ptr::null());
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(plain),
+                hInstance: module,
+                hbrBackground: CreateSolidBrush(0x00FF_FFFF),
+                lpszClassName: name.as_ptr(),
+                // SAFETY: the rest of the class is plain data, zero by default.
+                ..core::mem::zeroed()
+            };
+            RegisterClassW(&raw const class);
+            CreateWindowExW(
+                0,
+                name.as_ptr(),
+                name.as_ptr(),
+                WS_POPUP | WS_VISIBLE,
+                x,
+                y,
+                width,
+                height,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                module,
+                core::ptr::null(),
+            )
+        };
+        assert!(!window.is_null(), "the test's window");
+        window
+    }
+
+    /// **An application's window is drawn at its place on its output, black
+    /// around it, and the canvas goes black as the window goes**: a window of
+    /// the test's own, solid white, held to the test's own executable -- the
+    /// middle of its frame white and the output's corner black in a converted
+    /// picture; after it is destroyed, every sample black. Needs NVIDIA's
+    /// encoder, a display and a process of the signed-in user's, so off by
+    /// default.
+    #[test]
+    #[ignore = "requires NVIDIA's encoder, a display and the signed-in user's account"]
+    fn an_applications_window_is_drawn_at_its_place_on_black() {
+        let window = white_window(200, 150, 640, 480);
+        pump();
+        let me = std::env::current_exe().expect("the test's own path");
+        let scope = Arc::new(lowlat_inject::Scope::new([me.as_os_str()]));
+        let name = Display::application_output(&scope).expect("the window's output");
+        on_nvenc_window(&name, scope, |display| {
+            let (left, top) = (display.output.left, display.output.top);
+            let at = |luma: &[u8], pitch: usize, x: i32, y: i32| {
+                luma[usize::try_from(y - top).expect("on the output") * pitch
+                    + usize::try_from(x - left).expect("on the output")]
+            };
+            let began = Time::now();
+            let mut pictures = 0u32;
+            loop {
+                pump();
+                if display.wait_present(100) == Some(true)
+                    && display.acquire().is_ok()
+                    && display.converted().ok().flatten().is_some()
+                {
+                    pictures += 1;
+                    let (x, y, w, h) = lowlat_capture::window::frame(window).expect("its frame");
+                    let (luma, pitch) = last_luma(display);
+                    let middle = at(&luma, pitch, x + w as i32 / 2, y + h as i32 / 2);
+                    let corner = at(&luma, pitch, left, top);
+                    if (middle, corner) == (235, 16) {
+                        break;
+                    }
+                }
+                assert!(
+                    clock::elapsed_ms(began) < 3000.0,
+                    "the window not seen at its place in 3 s, {pictures} picture(s)"
+                );
+            }
+            assert_eq!(display.followed_window(), Some(window));
+            // SAFETY: the test's own window.
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(window) };
+            let gone = Time::now();
+            loop {
+                pump();
+                if display.wait_present(100) == Some(true)
+                    && display.acquire().is_ok()
+                    && display.converted().ok().flatten().is_some()
+                {
+                    let (luma, _) = last_luma(display);
+                    if luma.iter().step_by(61).all(|&y| y == 16) {
+                        break;
+                    }
+                }
+                assert!(
+                    clock::elapsed_ms(gone) < 3000.0,
+                    "the canvas not black in 3 s after the window went"
+                );
+            }
+            assert_eq!(display.followed_window(), None);
+            println!("window source: drawn at its place after {pictures} picture(s), black after");
+        });
+    }
+
+    /// The stamp a fixture draws at (8, 8) of its window's client area
+    /// (local/probes/2026-11-19/game-mode/fx.h), read off a converted canvas:
+    /// the picture's submit time in microseconds, its number, and whether its
+    /// last row is the complement of its number.
+    fn stamp_on(
+        luma: &[u8],
+        pitch: usize,
+        output: &Output,
+        window: *mut core::ffi::c_void,
+    ) -> Option<(u64, u32, bool)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        let mut corner = POINT { x: 0, y: 0 };
+        // SAFETY: a window handle and one point the call writes.
+        if unsafe { ClientToScreen(window, &raw mut corner) } == 0 {
+            return None;
+        }
+        let (x0, y0) = (corner.x + 8 - output.left, corner.y + 8 - output.top);
+        let mut words = [0u32; 4];
+        for (row, word) in words.iter_mut().enumerate() {
+            for column in 0..32 {
+                let x = usize::try_from(x0 + column * 16 + 8).ok()?;
+                let y = usize::try_from(y0 + i32::try_from(row).ok()? * 16 + 8).ok()?;
+                if *luma.get(y * pitch + x)? >= 128 {
+                    *word |= 1 << column;
+                }
+            }
+        }
+        let time = u64::from(words[0]) | (u64::from(words[1]) << 32);
+        Some((time, words[2], words[2] ^ words[3] == u32::MAX))
+    }
+
+    fn class_of(window: *mut core::ffi::c_void) -> String {
+        let mut name = [0u16; 64];
+        // SAFETY: a window handle and a buffer of the length passed.
+        let len = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(
+                window,
+                name.as_mut_ptr(),
+                64,
+            )
+        };
+        String::from_utf16_lossy(&name[..usize::try_from(len).unwrap_or(0)])
+    }
+
+    /// The middle of the native menu on the screen, while one is open.
+    fn menu_middle() -> Option<(i32, i32)> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+        let class: Vec<u16> = "#32768\0".encode_utf16().collect();
+        // SAFETY: a class name the call reads; a window or null.
+        let menu = unsafe { FindWindowW(class.as_ptr(), core::ptr::null()) };
+        if menu.is_null() {
+            return None;
+        }
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: a window handle and one rectangle the call writes.
+        (unsafe { GetWindowRect(menu, &raw mut rect) } != 0)
+            .then_some(((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2))
+    }
+
+    /// **An application's window follows the front among its own windows,
+    /// with no rebuild, stays live while another program's window is in front,
+    /// and takes its native menu in**, read from the stamps the fixtures draw
+    /// (local/probes/2026-11-19/game-mode, started beforehand, the game
+    /// running): `LOWLAT_SCOPE` the application's paths, `;` between, and
+    /// `LOWLAT_FX` the launcher whose commands bring a window forward and open
+    /// the menu. Prints every step and each window's pictures, valid stamps
+    /// and submit-to-converted milliseconds. Needs NVIDIA's encoder and a
+    /// process of the signed-in user's, so off by default.
+    #[test]
+    #[ignore = "requires NVIDIA's encoder, the stamped fixtures running and the signed-in user's account"]
+    fn the_applications_window_follows_the_front() {
+        let paths = std::env::var("LOWLAT_SCOPE").expect("LOWLAT_SCOPE: the application's paths");
+        let launcher = std::env::var("LOWLAT_FX").expect("LOWLAT_FX: the fixtures' launcher");
+        let scope = Arc::new(lowlat_inject::Scope::new(paths.split(';')));
+        let tell = |what: &str| {
+            std::process::Command::new(&launcher)
+                .arg(what)
+                .status()
+                .expect("the launcher");
+        };
+        tell("--focus=game");
+        std::thread::sleep(core::time::Duration::from_millis(800));
+        let name = Display::application_output(&scope).expect("the application's output");
+        on_nvenc_window(&name, scope, |display| {
+            // When each step is taken, in ms from the start, and what it is.
+            let steps = [
+                (2500.0, "--focus=client"),
+                (5000.0, "--popup=menu"),
+                (6500.0, "--popup=none"),
+                (7000.0, "--focus=shell"),
+                (10000.0, "--focus=game"),
+            ];
+            let end_ms = 12000.0;
+            let began = Time::now();
+            let mut step = 0;
+            // (ms, the window's class, the stamp's number, valid, submit to
+            // converted ms), and the menu's middle's luma while it was open.
+            let mut seen: Vec<(f64, String, u32, bool, f64)> = Vec::new();
+            let mut menu: Vec<u8> = Vec::new();
+            let mut rebuilds = 0u32;
+            loop {
+                let now_ms = clock::elapsed_ms(began);
+                if now_ms >= end_ms {
+                    break;
+                }
+                if let Some((at, what)) = steps.get(step)
+                    && now_ms >= *at
+                {
+                    println!("step at {now_ms:.0} ms: {what}");
+                    tell(what);
+                    step += 1;
+                }
+                if display.wait_present(50) != Some(true)
+                    || display.acquire().is_err()
+                    || display.converted().ok().flatten().is_none()
+                {
+                    continue;
+                }
+                let converted_us = lowlat_common::clock::monotonic_us();
+                if display.take_resize() {
+                    rebuilds += 1;
+                }
+                let Some(window) = display.followed_window() else {
+                    continue;
+                };
+                let (luma, pitch) = last_luma(display);
+                if let Some((x, y)) = menu_middle()
+                    && let (Ok(x), Ok(y)) = (
+                        usize::try_from(x - display.output.left),
+                        usize::try_from(y - display.output.top),
+                    )
+                    && let Some(&sample) = luma.get(y * pitch + x)
+                {
+                    menu.push(sample);
+                }
+                if let Some((time, number, valid)) = stamp_on(&luma, pitch, &display.output, window)
+                {
+                    #[allow(clippy::cast_precision_loss, reason = "microseconds, a test's")]
+                    let late = converted_us.saturating_sub(time) as f64 / 1000.0;
+                    seen.push((now_ms, class_of(window), number, valid, late));
+                }
+            }
+            let mut classes: Vec<String> = seen.iter().map(|s| s.1.clone()).collect();
+            classes.sort();
+            classes.dedup();
+            for class in &classes {
+                let mine: Vec<_> = seen.iter().filter(|s| &s.1 == class).collect();
+                let valid: Vec<_> = mine.iter().filter(|s| s.3).collect();
+                let mut numbers: Vec<u32> = valid.iter().map(|s| s.2).collect();
+                numbers.sort_unstable();
+                numbers.dedup();
+                let mut late: Vec<f64> =
+                    valid.iter().map(|s| s.4).filter(|l| *l < 1000.0).collect();
+                late.sort_by(f64::total_cmp);
+                let pick = |percent: usize| {
+                    late.get(late.len().saturating_sub(1) * percent / 100)
+                        .copied()
+                        .unwrap_or(f64::NAN)
+                };
+                println!(
+                    "{class}: {} picture(s), {} with a valid stamp, {} distinct, submit to converted \
+                     ms p50 {:.2} p95 {:.2} max {:.2}",
+                    mine.len(),
+                    valid.len(),
+                    numbers.len(),
+                    pick(50),
+                    pick(95),
+                    late.last().copied().unwrap_or(f64::NAN)
+                );
+            }
+            // While the shell, outside the application, was in front.
+            let behind: Vec<u32> = seen
+                .iter()
+                .filter(|s| (7300.0..10000.0).contains(&s.0) && s.3)
+                .map(|s| s.2)
+                .collect();
+            let behind_class: Vec<&str> = seen
+                .iter()
+                .filter(|s| (7300.0..10000.0).contains(&s.0))
+                .map(|s| s.1.as_str())
+                .collect();
+            let bright = menu.iter().filter(|&&y| y >= 200).count();
+            println!(
+                "rebuilds asked {rebuilds}; menu samples {} bright {bright}; behind the shell {} \
+                 valid stamp(s) of {:?}",
+                menu.len(),
+                behind.len(),
+                behind_class.first()
+            );
+            assert_eq!(rebuilds, 0, "a switch between windows asked for a rebuild");
+            assert!(
+                classes.iter().any(|c| c == "FxGame"),
+                "the game never shown"
+            );
+            assert!(
+                classes.iter().any(|c| c == "FxClient"),
+                "the client never shown"
+            );
+            assert!(bright > 0, "the menu never in the picture");
+            assert!(
+                behind_class.iter().all(|c| *c == "FxClient"),
+                "the picture left the client while the shell was in front"
+            );
+            assert!(
+                behind.windows(2).filter(|w| w[1] != w[0]).count() > 5,
+                "the client's pictures stood still while the shell was in front"
+            );
+        });
     }
 
     /// A picture by the first present, as the loop's first tick takes one: a

@@ -38,25 +38,26 @@ use lowlat_common::dynlib::Library;
 
 use crate::ffi::d3d11::{
     _D3DKMT_ADAPTERTYPE__bindgen_ty_1__bindgen_ty_1 as AdapterFlags, D3D_DRIVER_TYPE_UNKNOWN,
-    D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FENCE_FLAG_NONE,
-    D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP,
-    D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_RENDER_TARGET_VIEW_DESC,
+    D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS,
+    D3D11_BUFFER_DESC, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    D3D11_FENCE_FLAG_NONE, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D11_QUERY_DESC,
+    D3D11_QUERY_TIMESTAMP, D3D11_QUERY_TIMESTAMP_DISJOINT, D3D11_RENDER_TARGET_VIEW_DESC,
     D3D11_RENDER_TARGET_VIEW_DESC__bindgen_ty_1, D3D11_RESOURCE_MISC_SHARED,
     D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_SDK_VERSION, D3D11_SHADER_RESOURCE_VIEW_DESC,
-    D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_TEX2D_RTV,
-    D3D11_TEX2D_SRV, D3D11_TEX2D_UAV, D3D11_TEXTURE2D_DESC, D3D11_UAV_DIMENSION_TEXTURE2D,
-    D3D11_UNORDERED_ACCESS_VIEW_DESC, D3D11_UNORDERED_ACCESS_VIEW_DESC__bindgen_ty_1,
-    D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
-    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT,
-    DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-    DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC, GUID, HANDLE, HRESULT,
-    ID3D11Asynchronous, ID3D11ComputeShader, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
-    ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11PixelShader, ID3D11Query,
-    ID3D11RenderTargetView, ID3D11Resource, ID3D11ShaderResourceView, ID3D11Texture2D,
-    ID3D11UnorderedAccessView, ID3D11VertexShader, ID3D11VideoContext, ID3D11VideoDevice,
-    IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIFactory6, IDXGIOutput, IDXGIResource,
-    IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
+    D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2D,
+    D3D11_SUBRESOURCE_DATA, D3D11_TEX2D_RTV, D3D11_TEX2D_SRV, D3D11_TEX2D_UAV,
+    D3D11_TEXTURE2D_DESC, D3D11_UAV_DIMENSION_TEXTURE2D, D3D11_UNORDERED_ACCESS_VIEW_DESC,
+    D3D11_UNORDERED_ACCESS_VIEW_DESC__bindgen_ty_1, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT,
+    D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO,
+    DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+    DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_MODE_ROTATION, DXGI_OUTPUT_DESC, DXGI_SAMPLE_DESC,
+    GUID, HANDLE, HRESULT, ID3D11Asynchronous, ID3D11Buffer, ID3D11ComputeShader, ID3D11Device,
+    ID3D11Device5, ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread,
+    ID3D11PixelShader, ID3D11Query, ID3D11RenderTargetView, ID3D11Resource,
+    ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11UnorderedAccessView, ID3D11VertexShader,
+    ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,
+    IDXGIFactory6, IDXGIOutput, IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER,
+    LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
     IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Multithread,
@@ -1092,6 +1093,61 @@ impl Device {
         unsafe { Com::from_raw(raw) }.ok_or(Error::Unavailable)
     }
 
+    /// A constant buffer of sixteen bytes, `bytes` to begin with, which a
+    /// [`Device::dispatch`] or a [`Device::draw`] binds at slot zero.
+    pub fn constants(&self, bytes: &[u8; CONSTANTS]) -> Result<Com<ID3D11Buffer>> {
+        #[allow(clippy::cast_possible_truncation, reason = "sixteen bytes")]
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: CONSTANTS as u32,
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: bytes.as_ptr().cast(),
+            SysMemPitch: 0,
+            SysMemSlicePitch: 0,
+        };
+        let mut raw: *mut ID3D11Buffer = core::ptr::null_mut();
+        // SAFETY: a live device; the description, the bytes it is made from
+        // and the output are live.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreateBuffer,
+                &raw const desc,
+                &raw const initial,
+                &raw mut raw
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a buffer whose reference the call handed over.
+        unsafe { Com::from_raw(raw) }.ok_or(Error::Unavailable)
+    }
+
+    /// Queue `bytes` into a buffer [`Device::constants`] made: what the work
+    /// queued after it reads. On the opening thread, under the device's lock.
+    pub fn set_constants(&self, buffer: &Com<ID3D11Buffer>, bytes: &[u8; CONSTANTS]) {
+        let _locked = self.lock();
+        // SAFETY: a live context on its own thread and a buffer of exactly
+        // the bytes' size; the bytes are copied by the call.
+        unsafe {
+            vcall!(
+                self.context.as_ptr(),
+                UpdateSubresource,
+                buffer.as_ptr().cast::<ID3D11Resource>(),
+                0,
+                core::ptr::null(),
+                bytes.as_ptr().cast(),
+                0,
+                0
+            )
+        };
+    }
+
     /// A texture another device shared by its handle, opened on this one.
     pub fn open_shared(&self, handle: u64) -> Result<Com<ID3D11Texture2D>> {
         let mut out: *mut c_void = core::ptr::null_mut();
@@ -1351,15 +1407,17 @@ impl Device {
     /// Queue one triangle over the whole of `target`, `width` x `height`:
     /// placed by `vertex`, which makes its corners from their numbers so
     /// nothing is bound for it to read, and shaded by `pixel` reading
-    /// `sources` from slot zero. As [`Device::dispatch`]: on the opening
-    /// thread, under the device's lock, every binding undone before this
-    /// returns; the rasterizer and the blend at their defaults rather than
-    /// whatever was set before. At most [`BOUND`] sources.
+    /// `sources` from slot zero and `constants`, where given, at slot zero.
+    /// As [`Device::dispatch`]: on the opening thread, under the device's
+    /// lock, every binding undone before this returns; the rasterizer and the
+    /// blend at their defaults rather than whatever was set before. At most
+    /// [`BOUND`] sources.
     pub fn draw(
         &self,
         vertex: &Com<ID3D11VertexShader>,
         pixel: &Com<ID3D11PixelShader>,
         sources: &[*mut ID3D11ShaderResourceView],
+        constants: Option<&Com<ID3D11Buffer>>,
         target: &Com<ID3D11RenderTargetView>,
         (width, height): (u32, u32),
     ) -> Result<()> {
@@ -1378,12 +1436,17 @@ impl Device {
             MaxDepth: 1.0,
         };
         let targets = [target.as_ptr()];
+        let buffers = [constants.map_or(core::ptr::null_mut(), Com::as_ptr)];
+        let none_buffer = [core::ptr::null_mut::<ID3D11Buffer>()];
         let context = self.context.as_ptr();
         let _locked = self.lock();
-        // SAFETY: a live context on its own thread; the shaders, the views and
-        // the target are the caller's live ones, each array as long as the
-        // count it is passed with; null states are the defaults.
+        // SAFETY: a live context on its own thread; the shaders, the views,
+        // the buffer and the target are the caller's live ones, each array as
+        // long as the count it is passed with; null states are the defaults.
         unsafe {
+            if constants.is_some() {
+                vcall!(context, PSSetConstantBuffers, 0, 1, buffers.as_ptr());
+            }
             vcall!(context, IASetInputLayout, core::ptr::null_mut());
             vcall!(
                 context,
@@ -1418,6 +1481,9 @@ impl Device {
                 core::ptr::null_mut()
             );
             vcall!(context, PSSetShaderResources, 0, count, none_srv.as_ptr());
+            if constants.is_some() {
+                vcall!(context, PSSetConstantBuffers, 0, 1, none_buffer.as_ptr());
+            }
             vcall!(
                 context,
                 PSSetShader,
@@ -1437,16 +1503,17 @@ impl Device {
     }
 
     /// Queue one run of `shader` over `groups`, reading `sources` and
-    /// writing `targets`, each bound from slot zero: on the opening thread,
-    /// as the context is, and under the device's lock, so a runtime calling
-    /// into the context from a thread of its own waits while the bindings
-    /// stand. Every binding is undone before this returns, so nothing of the
-    /// run stays bound into the device's next work. At most [`BOUND`] of
-    /// each.
+    /// `constants`, where given, and writing `targets`, each bound from slot
+    /// zero: on the opening thread, as the context is, and under the device's
+    /// lock, so a runtime calling into the context from a thread of its own
+    /// waits while the bindings stand. Every binding is undone before this
+    /// returns, so nothing of the run stays bound into the device's next
+    /// work. At most [`BOUND`] views of each kind.
     pub fn dispatch(
         &self,
         shader: &Com<ID3D11ComputeShader>,
         sources: &[*mut ID3D11ShaderResourceView],
+        constants: Option<&Com<ID3D11Buffer>>,
         targets: &[*mut ID3D11UnorderedAccessView],
         (columns, rows): (u32, u32),
     ) -> Result<()> {
@@ -1459,14 +1526,19 @@ impl Device {
             u32::try_from(sources.len()).unwrap_or(0),
             u32::try_from(targets.len()).unwrap_or(0),
         );
+        let buffers = [constants.map_or(core::ptr::null_mut(), Com::as_ptr)];
+        let none_buffer = [core::ptr::null_mut::<ID3D11Buffer>()];
         let context = self.context.as_ptr();
         let _locked = self.lock();
-        // SAFETY: a live context on its own thread; the shader, the views and
-        // the targets are the caller's live ones, each array as long as the
-        // count it is passed with.
+        // SAFETY: a live context on its own thread; the shader, the views,
+        // the buffer and the targets are the caller's live ones, each array as
+        // long as the count it is passed with.
         unsafe {
             vcall!(context, CSSetShader, shader.as_ptr(), core::ptr::null(), 0);
             vcall!(context, CSSetShaderResources, 0, counts.0, sources.as_ptr());
+            if constants.is_some() {
+                vcall!(context, CSSetConstantBuffers, 0, 1, buffers.as_ptr());
+            }
             vcall!(
                 context,
                 CSSetUnorderedAccessViews,
@@ -1483,6 +1555,9 @@ impl Device {
                 counts.0,
                 none_srv.as_ptr()
             );
+            if constants.is_some() {
+                vcall!(context, CSSetConstantBuffers, 0, 1, none_buffer.as_ptr());
+            }
             vcall!(
                 context,
                 CSSetUnorderedAccessViews,
@@ -1505,6 +1580,10 @@ impl Device {
 
 /// The most views of each kind one [`Device::dispatch`] binds.
 pub const BOUND: usize = 8;
+
+/// The bytes of a constant buffer [`Device::constants`] makes: one of the
+/// shader's sixteen-byte registers.
+pub const CONSTANTS: usize = 16;
 
 /// An argument out of range.
 const E_INVALIDARG: HRESULT = 0x8007_0057_u32 as HRESULT;
