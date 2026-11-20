@@ -1422,6 +1422,10 @@ For a held guest:
   raises the system's own screen capture; mute, the volume and the media keys, which act on the
   host's sound and player rather than on an application. Alt or Control going down under a held
   Tab or Escape lets the held key go first, or the system's repeat of it would make the chord.
+  *Checked 2026-11-20:* **a key refused under Alt is followed by one keystroke of the system's
+  unassigned virtual key**, so the Alt let go next is part of a chord to the window in front and
+  not its menu key: Alt let go alone opens a window's menu, whose loop takes the keys after it,
+  and a game in it looks frozen.
 - What the application's own process opens -- its file dialog among it -- stays reachable, as W5
   says.
 

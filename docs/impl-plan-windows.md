@@ -3021,7 +3021,7 @@ The decisions are recorded once, here.
   idling sounds nowhere, and each of its two clients built on a browser plays from a sound-service
   child of its window's process. *Closed 2026-11-20:* the price taken, the decision on sound
   amended to what the capture takes, and W5.3 with it.
-- [ ] **W5.1 the gate**: for a guest other than the owner while a scope is set, keys and motion
+- [x] **W5.1 the gate**: for a guest other than the owner while a scope is set, keys and motion
   only while the foreground's root is the application's, buttons and the wheel only over its
   windows; the gate's closing releasing what that guest holds; the Windows keys and every chord
   with them, the task-switching chords and the task manager's dropped always; pads reported
@@ -3042,7 +3042,19 @@ The decisions are recorded once, here.
   judge's two, each broken once and seen to fail; on Windows the input, host, daemon and SDK
   crates' clippy and tests, on Linux the input, host and daemon crates' formatting, clippy and
   tests, the dual-stack check the virtual machine's network fails as before. Owed: the live check
-  above.
+  above. *Checked 2026-11-20 on the development machine*, the host's own input path -- its devices
+  and its judge, of the system account in the console session -- given a guest's and the owner's
+  messages by a probe rather than over a session, a test application logging the input it gets
+  and another program brought in front: in front, the application's keys, clicks and wheel went
+  in; behind the other program, neither its keys nor its clicks reached anything; a key held as
+  the other program came forward stayed down until the guest's next pass, then came up; the
+  Windows key, Tab under Alt and Escape under Alt or Control dropped, the front unchanged, Tab and
+  Escape alone in; a click beside the application dropped; the owner, and a guest with no scope
+  set, unheld. **Found and fixed**: Alt+Tab with the Tab dropped was Alt let go alone, which the
+  system takes as the window's menu key, and the window's menu loop took the keys after it; a key
+  refused under Alt is now followed by one keystroke of the unassigned virtual key, and the run
+  again lost nothing. A session's own messages from established clients are W5's gate.
+  *Closed 2026-11-20.*
 - [ ] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
   in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
   its place on the canvas by the conversion, following the foreground; black before the
@@ -3069,6 +3081,8 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-20: W5.1 checked and closed on the development machine; a key refused under Alt types
+  the unassigned virtual key after it, so the Alt is not the window's menu key.
 - 2026-11-20: W5.1 built, unticked: a guest held to one application, its window in front and
   under the pointer asked as input arrives; the live check owed.
 - 2026-11-20: W5.0 closed: the sound's price taken; the decision on sound amended -- a capture per

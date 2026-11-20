@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2026-11-20 - W5.1 built: a guest held to one application
+## 2026-11-20 - W5.1 closed: a guest held to one application
 
 ### Built
 - **The owner can hold every other guest to one application**, on Windows
@@ -19,13 +19,24 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   trails the change: 0.3 us for the window in front, 2 us for the one under the pointer; each
   process's answer kept while the host holds its handle.
 
+### Fixed
+- **A held guest's Alt+Tab opened the application's menu** ([05 §7.4](05-host.md)): with the Tab
+  dropped, the Alt was let go alone, which the system takes as the window's menu key, and the
+  window's menu loop took the keys after it. A key refused under Alt is followed by one keystroke
+  of the system's unassigned virtual key.
+
 ### Checked
 - Offline: the expander's seven checks and the judge's two, each broken once and seen to fail. On
   Windows the input, host, daemon and SDK crates' clippy and tests passed; on Linux the input, host
   and daemon crates' formatting, clippy and tests, but for the dual-stack check the virtual
   machine's network fails as before.
-- Owed: the live check -- a guest and the owner against a test application, with another program
-  brought in front.
+- On the development machine, the host's own input path of the system account in the console
+  session, given a guest's and the owner's messages by a probe, against a test application and
+  another program brought in front: keys, clicks and the wheel in while the application was in
+  front and nowhere behind the other program; a key held across the change up at the guest's next
+  pass; the Windows key and the switching chords dropped with the front unchanged; a click beside
+  the application dropped; the owner and an unscoped guest unheld. The menu key above was found
+  there, and the second run lost nothing.
 
 ## 2026-11-19 - The display driver no longer ends when a monitor leaves as it is given a swapchain
 
