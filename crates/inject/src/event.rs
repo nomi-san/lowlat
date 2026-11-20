@@ -52,6 +52,26 @@ const MOD_CAPS: u32 = 0x2000;
 /// The modifier bits for left and right Command, Windows or Super.
 const MOD_GUI: u32 = 0x0400 | 0x0800;
 
+/// The modifier bits for left and right Alt, and for left and right Control.
+const MOD_ALT: u32 = 0x0100 | 0x0200;
+const MOD_CTRL: u32 = 0x0040 | 0x0080;
+
+/// The peer's codes a guest held to one application never presses
+/// (docs/05-host.md section 7.4): the Windows keys, Print Screen -- which
+/// raises the system's own screen capture -- and the keys that act on the
+/// host's sound and media player rather than on an application: mute and the
+/// volume on the keyboard page, and the peer's media keys past its end.
+const SCOPE_REFUSED: [u16; 6] = [227, 231, 70, 127, 128, 129];
+const SCOPE_REFUSED_MEDIA: core::ops::RangeInclusive<u16> = 258..=263;
+
+/// The peer's codes for Tab and Escape, which the task switcher's, the start
+/// menu's and the task manager's chords end in, and for the two Alts and the
+/// two Controls they are held under.
+const USAGE_TAB: u16 = 43;
+const USAGE_ESCAPE: u16 = 41;
+const USAGE_ALTS: [u16; 2] = [226, 230];
+const USAGE_CTRLS: [u16; 2] = [224, 228];
+
 /// The peer's codes for the eight modifiers, Control to right Command.
 const MODIFIERS: core::ops::RangeInclusive<u16> = 224..=231;
 
@@ -159,6 +179,37 @@ pub trait Sink {
     fn host_locks(&self) -> Option<Locks> {
         None
     }
+
+    /// Whether the host holds its guests to one application
+    /// (docs/05-host.md section 7.4): a sink that can judge one says so, and
+    /// [`Sink::gate`] answers for it. None by default.
+    fn scoped(&self) -> bool {
+        false
+    }
+
+    /// Whether the application the host is held to is where input of this
+    /// kind lands now. **Asked as the input arrives**, since the owner can
+    /// bring anything else to the front at any moment; open where nothing is
+    /// held.
+    fn gate(&mut self, _at: Gate) -> bool {
+        true
+    }
+
+    /// Put a pad sent as its own reports at rest -- no button down, the
+    /// sticks centred -- for as long as nothing else is written to it: the
+    /// pads whose guest is held away from the application meanwhile.
+    fn neutral(&mut self, _pad: u32) {}
+}
+
+/// What a guest held to one application needs of it before its input goes in
+/// (docs/05-host.md section 7.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// The application in front: keys, pointer motion, pads.
+    Front,
+    /// The application's window under the pointer as well: buttons and the
+    /// wheel, which act where the pointer is rather than where the keys go.
+    Pointer,
 }
 
 /// Which locks are on.
@@ -309,6 +360,9 @@ pub struct Injector {
     floor: bool,
     /// Whether this guest owns the host, which alone lets it press Guide.
     owner: bool,
+    /// Whether the application the host is held to was in front when last
+    /// asked: its going is when what the guest holds comes up.
+    front: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
     /// What has arrived, for the line a live run is read from.
@@ -351,6 +405,7 @@ impl Injector {
             caps_lock: None,
             floor: true,
             owner: false,
+            front: true,
             pads: [None; MAX_PADS],
             tally: Tally::default(),
             scratch: [Event {
@@ -410,6 +465,58 @@ impl Injector {
         self.floor = held;
     }
 
+    /// Ask whether the application this guest is held to is still in front,
+    /// and let go of what the guest holds if it is not.
+    ///
+    /// **On a timer as well as as input arrives**, for the reason the pointer
+    /// is: the owner brings another program to the front while the guest
+    /// holds a key and sends nothing, and the key is typed into that program
+    /// by the system's own repeat until the guest's release comes. The owner
+    /// is never held.
+    pub fn follow_gate(&mut self, out: &mut impl Sink) {
+        if !self.held(out) {
+            self.front = true;
+            return;
+        }
+        let front = out.gate(Gate::Front);
+        self.follow(front, out);
+    }
+
+    /// Whether this guest is held to one application: a host that holds its
+    /// guests to one, and a guest that is not the owner.
+    fn held(&self, out: &impl Sink) -> bool {
+        !self.owner && out.scoped()
+    }
+
+    /// Whether input that needs `at` goes in, letting go of what the guest
+    /// holds where the application has left the front since it was last
+    /// asked.
+    fn admits(&mut self, at: Gate, out: &mut impl Sink) -> bool {
+        if !self.held(out) {
+            return true;
+        }
+        let front = out.gate(Gate::Front);
+        self.follow(front, out);
+        front && (at == Gate::Front || out.gate(Gate::Pointer))
+    }
+
+    /// The application in front or not, as just asked: its going releases
+    /// every key and button and puts every pad at rest, as a revoked
+    /// permission does (docs/05-host.md section 7.4).
+    fn follow(&mut self, front: bool, out: &mut impl Sink) {
+        if self.front && !front {
+            self.release_keys(out);
+            self.release_buttons(out);
+            self.centre_pads(out);
+            for pad in self.pads.iter().flatten() {
+                if pad.raw {
+                    out.neutral(pad.id);
+                }
+            }
+        }
+        self.front = front;
+    }
+
     /// Whether this guest is holding any pointer button.
     ///
     /// **A gesture that is still going, stated as plainly as it can be.** A
@@ -460,20 +567,29 @@ impl Injector {
     /// Expand one control message.
     pub fn on_control(&mut self, message: &Control<'_>, out: &mut impl Sink) {
         self.tally.count(message.opcode);
+        // **A release is never held back** by the application a guest is held
+        // to: what went down while it was in front comes up wherever the
+        // focus is now, and what did not is dropped as never held.
         match message.opcode {
             op::KEYBOARD if self.permissions.keyboard => {
-                self.keyboard(message.a0, message.a1, message.a2 != 0, out);
+                let pressed = message.a2 != 0;
+                if !pressed || self.admits(Gate::Front, out) {
+                    self.keyboard(message.a0, message.a1, pressed, out);
+                }
             }
             op::MOUSE_BUTTON if self.pointer_allowed() => {
-                self.button(message.a0, message.a1 != 0, out);
+                let pressed = message.a1 != 0;
+                if !pressed || self.admits(Gate::Pointer, out) {
+                    self.button(message.a0, pressed, out);
+                }
             }
-            op::MOUSE_WHEEL if self.pointer_allowed() => {
+            op::MOUSE_WHEEL if self.pointer_allowed() && self.admits(Gate::Pointer, out) => {
                 self.wheel(as_i32(message.a0), as_i32(message.a1), out);
             }
-            op::MOUSE_MOTION if self.pointer_allowed() => {
+            op::MOUSE_MOTION if self.pointer_allowed() && self.admits(Gate::Front, out) => {
                 self.motion(message.a0 != 0, as_i32(message.a1), as_i32(message.a2), out);
             }
-            op::MOUSE_MOTION_STREAM if self.pointer_allowed() => {
+            op::MOUSE_MOTION_STREAM if self.pointer_allowed() && self.admits(Gate::Front, out) => {
                 // **The two coordinates are packed differently.** The
                 // horizontal one is unsigned and the vertical one is signed,
                 // which is not symmetry anybody would invent and is not
@@ -487,10 +603,10 @@ impl Injector {
             // section 7.2): the first message that can create a pad fixes
             // its family, a report pad takes only reports, and a
             // sixteen-button pad ignores them.
-            op::PAD_REPORT if self.permissions.gamepad => {
+            op::PAD_REPORT if self.permissions.gamepad && self.admits(Gate::Front, out) => {
                 self.pad_report(message, out);
             }
-            op::GAMEPAD_BUTTON if self.permissions.gamepad => {
+            op::GAMEPAD_BUTTON if self.permissions.gamepad && self.admits(Gate::Front, out) => {
                 // Arguments are the button, whether it is down, and the pad.
                 let Some(bit) = gamepad::bit_for_index(message.a0) else {
                     return;
@@ -514,7 +630,7 @@ impl Injector {
                 let id = pad.id;
                 self.buttons_changed(id, before_state, after, out);
             }
-            op::GAMEPAD_AXIS if self.permissions.gamepad => {
+            op::GAMEPAD_AXIS if self.permissions.gamepad && self.admits(Gate::Front, out) => {
                 // Arguments are the axis, its value, and the pad.
                 let Some(index) = self.standard_pad(message.a2, out) else {
                     return;
@@ -531,7 +647,7 @@ impl Injector {
             op::GAMEPAD_UNPLUG => {
                 self.unplug(message.a2, out);
             }
-            op::GAMEPAD_STATE if self.permissions.gamepad => {
+            op::GAMEPAD_STATE if self.permissions.gamepad && self.admits(Gate::Front, out) => {
                 self.pad_state(message.a0, message.body, out);
             }
             // **A peer that lost focus says so**, and everything it holds has
@@ -825,6 +941,32 @@ impl Injector {
         self.permissions.pointer && self.floor
     }
 
+    /// Whether a key a guest held to one application presses is one it may
+    /// not: a key of [`SCOPE_REFUSED`] or past the peer's keyboard page, a key
+    /// under the Windows keys, Tab under Alt, Escape under Alt or Control.
+    ///
+    /// **A modifier is down where either side says so**: the peer's mask, or
+    /// a key this guest holds here.
+    fn refused_in_scope(&self, usage: u16, modifiers: u32) -> bool {
+        let alt = modifiers & MOD_ALT != 0 || self.holds_any(&USAGE_ALTS);
+        let ctrl = modifiers & MOD_CTRL != 0 || self.holds_any(&USAGE_CTRLS);
+        SCOPE_REFUSED.contains(&usage)
+            || SCOPE_REFUSED_MEDIA.contains(&usage)
+            || modifiers & MOD_GUI != 0
+            || (usage == USAGE_TAB && alt)
+            || (usage == USAGE_ESCAPE && (alt || ctrl))
+    }
+
+    /// Whether this guest holds any of the keys the peer names by these codes.
+    fn holds_any(&self, usages: &[u16]) -> bool {
+        usages.iter().any(|&usage| {
+            usage::key_code(usage)
+                .and_then(|key| self.keys.get(usize::from(key)))
+                .copied()
+                .unwrap_or(false)
+        })
+    }
+
     fn keyboard(&mut self, code: u32, modifiers: u32, pressed: bool, out: &mut impl Sink) {
         let Ok(peer_code) = u16::try_from(code) else {
             traced(code, modifiers, pressed, 0, "no-key");
@@ -834,6 +976,22 @@ impl Injector {
             traced(code, modifiers, pressed, 0, "no-key");
             return;
         };
+        // **A guest held to one application presses nothing that reaches past
+        // it** (docs/05-host.md section 7.4): the keys that open the shell or
+        // switch away from the application, and those that act on the host's
+        // own sound. Alt or Control going down under a held Tab or Escape lets
+        // the held key go first, or the system's own repeat would make the
+        // chord from it.
+        if pressed && self.held(out) {
+            if self.refused_in_scope(peer_code, modifiers) {
+                traced(code, modifiers, pressed, key, "scope");
+                return;
+            }
+            if USAGE_ALTS.contains(&peer_code) || USAGE_CTRLS.contains(&peer_code) {
+                let ends = [USAGE_TAB, USAGE_ESCAPE].map(usage::key_code);
+                self.release_keys_but(out, |held| !ends.contains(&Some(held)));
+            }
+        }
         let host = out.host_locks();
         // **Where the host's locks can be read, a lock key is the peer's lock
         // state, never a keystroke.** A peer whose platform reports a lock as
@@ -1375,6 +1533,11 @@ mod tests {
         refuses_reports: bool,
         /// What the sink was last told of Guide.
         guide: Option<bool>,
+        /// The application the host holds its guests to, where it holds them:
+        /// whether it is in front, and whether it is under the pointer.
+        scope: Option<(bool, bool)>,
+        /// The pads sent as their reports that were put at rest.
+        rested: Vec<u32>,
     }
 
     impl Sink for Recorder {
@@ -1401,6 +1564,21 @@ mod tests {
 
         fn host_locks(&self) -> Option<Locks> {
             self.locks
+        }
+
+        fn scoped(&self) -> bool {
+            self.scope.is_some()
+        }
+
+        fn gate(&mut self, at: Gate) -> bool {
+            self.scope.is_none_or(|(front, under)| match at {
+                Gate::Front => front,
+                Gate::Pointer => under,
+            })
+        }
+
+        fn neutral(&mut self, pad: u32) {
+            self.rested.push(pad);
         }
     }
 
@@ -3028,5 +3206,234 @@ mod tests {
         );
         denied.on_control(&Control { a1: 5, ..report }, &mut out);
         assert_eq!(out.reports.len(), 2);
+    }
+
+    /// A guest held to one application, the application in front and under
+    /// the pointer.
+    fn held_guest() -> (Injector, Recorder) {
+        let out = Recorder {
+            scope: Some((true, true)),
+            ..Recorder::default()
+        };
+        (injector(), out)
+    }
+
+    fn code(usage: u16) -> u16 {
+        usage::key_code(usage).expect("the table names the key")
+    }
+
+    /// **A guest held to one application types into it alone**
+    /// (docs/05-host.md section 7.4): its keys go in while the application is
+    /// in front and are dropped while anything else is, and a key it held as
+    /// the application went comes up then.
+    #[test]
+    fn a_held_guest_types_only_while_the_application_is_in_front() {
+        let (mut inject, mut out) = held_guest();
+        inject.on_control(&key(4, true), &mut out);
+        assert_eq!(out.keys_at(1), vec![code(4)]);
+
+        out.scope = Some((false, false));
+        out.batches.clear();
+        inject.on_control(&key(5, true), &mut out);
+        assert!(
+            out.keys_at(1).is_empty(),
+            "a key went in behind the application"
+        );
+        assert_eq!(out.keys_at(0), vec![code(4)], "the held key was left down");
+
+        // Its release finds nothing held, and goes nowhere.
+        out.batches.clear();
+        inject.on_control(&key(4, false), &mut out);
+        assert!(out.batches.is_empty());
+
+        out.scope = Some((true, true));
+        inject.on_control(&key(5, true), &mut out);
+        assert_eq!(out.keys_at(1), vec![code(5)]);
+    }
+
+    /// **The application leaving the front lets go of what the guest holds**
+    /// with nothing arriving from the guest, as a revoked permission does:
+    /// keys and buttons up, a sixteen-button pad centred, a pad sent as its
+    /// reports put at rest by the sink and left plugged in.
+    #[test]
+    fn the_application_leaving_the_front_releases_what_a_held_guest_holds() {
+        let (mut inject, mut out) = held_guest();
+        let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        inject.on_control(&key(26, true), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(
+            &state(1, &pad_state_body(gamepad::bit::A, 900, 0, 0, 0, 40, 0)),
+            &mut out,
+        );
+        inject.on_control(
+            &Control {
+                a0: 64,
+                a1: 2,
+                a2: 0x0CE6,
+                opcode: op::PAD_REPORT,
+                body: ds5,
+            },
+            &mut out,
+        );
+        out.batches.clear();
+        inject.follow_gate(&mut out);
+        assert!(
+            out.batches.is_empty(),
+            "something came up with the application in front"
+        );
+
+        out.scope = Some((false, true));
+        inject.follow_gate(&mut out);
+        let mut up = out.keys_at(0);
+        up.sort_unstable();
+        let mut expected = vec![code(26), BTN_LEFT, gamepad::key::SOUTH];
+        expected.sort_unstable();
+        assert_eq!(up, expected);
+        assert!(
+            abs(&out).contains(&(gamepad::axis::X, 0)),
+            "the stick was left where it was"
+        );
+        assert_eq!(
+            out.rested,
+            vec![2],
+            "the report pad was left at its last report"
+        );
+        assert!(out.unplugged.is_empty(), "a pad was taken away");
+
+        // Asked again, there is nothing more to let go of.
+        out.batches.clear();
+        inject.follow_gate(&mut out);
+        assert!(out.batches.is_empty());
+        assert_eq!(out.rested, vec![2]);
+    }
+
+    /// **A click and a scroll need the application under the pointer too**:
+    /// the pointer moves while the application is in front, a press lands only
+    /// on its windows, and a button dragged off them still comes up.
+    #[test]
+    fn a_held_guest_clicks_and_scrolls_only_over_the_application() {
+        let (mut inject, mut out) = held_guest();
+        out.scope = Some((true, false));
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(&control(op::MOUSE_WHEEL, 0, 120, 0), &mut out);
+        assert!(
+            out.batches.is_empty(),
+            "a click or a scroll went in past the application"
+        );
+        inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
+        assert!(!out.batches.is_empty(), "the pointer did not move");
+
+        out.batches.clear();
+        out.scope = Some((true, true));
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![BTN_LEFT]);
+        out.scope = Some((true, false));
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 0, 0), &mut out);
+        assert_eq!(
+            out.keys_at(0),
+            vec![BTN_LEFT],
+            "the dragged button stayed down"
+        );
+    }
+
+    /// **The owner is never held**: with another program in front its keys,
+    /// the Windows key among them, and its clicks go in.
+    #[test]
+    fn the_owner_is_never_held() {
+        let (mut inject, mut out) = held_guest();
+        inject.set_owner(true, &mut out);
+        out.scope = Some((false, false));
+        inject.on_control(&key(227, true), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![code(227), BTN_LEFT]);
+    }
+
+    /// **The keys that reach past the application never go in from a held
+    /// guest**: the Windows keys and a key under them by the peer's mask,
+    /// Print Screen, the host's sound and media keys, Tab under Alt and
+    /// Escape under Alt or Control -- by a key held here or by the mask alone.
+    /// Tab, Escape and Alt with any other key still go in.
+    #[test]
+    fn a_held_guest_never_presses_the_shells_keys_or_the_switching_chords() {
+        let (mut inject, mut out) = held_guest();
+        for usage in [227, 231, 70, 127, 128, 129, 258, 261] {
+            inject.on_control(&key(usage, true), &mut out);
+        }
+        inject.on_control(&control(op::KEYBOARD, 21, 0x0400, 1), &mut out);
+        assert!(out.keys_at(1).is_empty(), "{:?} went in", out.keys_at(1));
+
+        inject.on_control(&key(226, true), &mut out);
+        inject.on_control(&key(43, true), &mut out);
+        inject.on_control(&key(41, true), &mut out);
+        inject.on_control(&key(226, false), &mut out);
+        inject.on_control(&key(224, true), &mut out);
+        inject.on_control(&key(41, true), &mut out);
+        inject.on_control(&key(224, false), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 41, 0x0080, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![code(226), code(224)]);
+
+        out.batches.clear();
+        for usage in [43, 41] {
+            inject.on_control(&key(usage, true), &mut out);
+            inject.on_control(&key(usage, false), &mut out);
+        }
+        inject.on_control(&key(226, true), &mut out);
+        inject.on_control(&key(61, true), &mut out);
+        assert_eq!(
+            out.keys_at(1),
+            vec![code(43), code(41), code(226), code(61)]
+        );
+    }
+
+    /// **Alt or Control going down under a held Tab or Escape lets it go
+    /// first**, or the system's own repeat of the held key would make the
+    /// chord; where nothing holds the guest, nothing changes.
+    #[test]
+    fn alt_or_control_under_a_held_tab_or_escape_lets_it_go_first() {
+        let (mut inject, mut out) = held_guest();
+        inject.on_control(&key(43, true), &mut out);
+        out.batches.clear();
+        inject.on_control(&key(226, true), &mut out);
+        assert_eq!(
+            out.keys_at(0),
+            vec![code(43)],
+            "the Tab was left held under Alt"
+        );
+        assert_eq!(out.keys_at(1), vec![code(226)]);
+
+        inject.on_control(&key(226, false), &mut out);
+        inject.on_control(&key(41, true), &mut out);
+        out.batches.clear();
+        inject.on_control(&key(228, true), &mut out);
+        assert_eq!(
+            out.keys_at(0),
+            vec![code(41)],
+            "the Escape was left held under Control"
+        );
+
+        let (mut free, mut out) = (injector(), Recorder::default());
+        free.on_control(&key(43, true), &mut out);
+        free.on_control(&key(226, true), &mut out);
+        assert!(out.keys_at(0).is_empty());
+    }
+
+    /// **A held guest's pads go in only while the application is in front**,
+    /// wherever the pointer is.
+    #[test]
+    fn a_held_guests_pads_go_in_only_while_the_application_is_in_front() {
+        let (mut inject, mut out) = held_guest();
+        out.scope = Some((false, true));
+        let a = pad_state_body(gamepad::bit::A, 0, 0, 0, 0, 0, 0);
+        inject.on_control(&state(1, &a), &mut out);
+        inject.on_control(&control(op::GAMEPAD_BUTTON, 0, 1, 1), &mut out);
+        assert!(
+            out.batches.is_empty(),
+            "a pad went in behind the application"
+        );
+
+        out.scope = Some((true, false));
+        inject.on_control(&state(1, &a), &mut out);
+        assert_eq!(out.keys_at(1), vec![gamepad::key::SOUTH]);
     }
 }

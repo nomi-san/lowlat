@@ -177,6 +177,9 @@ pub struct Devices {
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
     desktop: Option<Desktop>,
+    /// The application the owner holds the host's guests to, judged here as
+    /// input arrives, where one is set.
+    scope: Option<crate::scope::Judge>,
     _aware: Aware,
 }
 
@@ -226,8 +229,17 @@ impl Devices {
             guide: false,
             refusing: false,
             desktop,
+            scope: None,
             _aware: aware,
         })
+    }
+
+    /// Hold this guest to one application, or to none (docs/05-host.md
+    /// section 7.4). Whether the guest is the owner, whom nothing holds, is the
+    /// expander's to say; what the application had been asked here is
+    /// forgotten with it.
+    pub fn set_scope(&mut self, scope: Option<std::sync::Arc<crate::Scope>>) {
+        self.scope = scope.map(crate::scope::Judge::new);
     }
 
     /// Move the guest's keys and pointer to a keyboard and a mouse of the
@@ -885,6 +897,42 @@ impl Sink for Devices {
 
     fn guide(&mut self, allowed: bool) {
         self.guide = allowed;
+    }
+
+    fn scoped(&self) -> bool {
+        self.scope.is_some()
+    }
+
+    fn gate(&mut self, at: event::Gate) -> bool {
+        match self.scope.as_mut() {
+            Some(judge) => judge.gate(at, &mut self.desktop),
+            None => true,
+        }
+    }
+
+    /// **The product's own report at rest**, as a real pad sends it, the way
+    /// any of its reports goes: into its device, onto the bus where it has
+    /// none, or to the application holding the devices.
+    fn neutral(&mut self, id: u32) {
+        let product = match self.forward.as_ref() {
+            Some(forward) => forward.product(id),
+            None => self
+                .hid_pads
+                .iter()
+                .flatten()
+                .find(|known| known.id == id)
+                .map(|known| known.product),
+        };
+        let Some(product) = product else {
+            return;
+        };
+        let Some(report) = kind_of(product)
+            .and_then(|kind| kind.neutral().first().copied())
+            .and_then(|rest| <[u8; pad::INPUT_LEN]>::try_from(rest).ok())
+        else {
+            return;
+        };
+        self.report(id, &Inbound::Input { product, report });
     }
 
     fn host_locks(&self) -> Option<Locks> {
@@ -1855,12 +1903,12 @@ impl Inputs {
 /// closed, so the handle lives until the thread moves to another, and the one
 /// it replaces is closed then.
 #[derive(Debug)]
-struct Desktop(HDESK);
+pub(crate) struct Desktop(HDESK);
 
 impl Desktop {
     /// Refused on a thread that owns a window or a hook, and where this
     /// process may not open the desktop.
-    fn attach() -> Option<Self> {
+    pub(crate) fn attach() -> Option<Self> {
         // SAFETY: no flags, not inherited, every right; the handle is checked.
         let handle = unsafe { OpenInputDesktop(0, 0, GENERIC_ALL) };
         if handle.is_null() {

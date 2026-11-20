@@ -298,6 +298,18 @@ fn flag_set(name: &str) -> bool {
     std::env::args().any(|arg| arg == name)
 }
 
+/// Every value a flag given more than once was given, in order.
+#[cfg(windows)]
+fn flag_values(name: &str) -> Vec<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .filter_map(|pair| match pair {
+            [flag, value] if flag == name => Some(value.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Where sound comes from, or nothing when it is switched off.
 ///
 /// **A service outside the session has to be told which one**, because the
@@ -1079,6 +1091,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         lowlat_common::log_warn!(
             "lowlatd: --virtual-pads refused, pads play as the Xbox pad, error={error}"
         );
+    }
+    // **Every guest but the owner held to one application** where the owner
+    // names its executables, each `--scope` one full path (docs/05-host.md
+    // section 7.4).
+    #[cfg(windows)]
+    {
+        let paths = flag_values("--scope");
+        if !paths.is_empty() {
+            seam.set_scope(Some(lowlat_host::inject::Scope::new(&paths)));
+        }
     }
 
     let params = Connect {

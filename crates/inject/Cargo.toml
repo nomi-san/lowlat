@@ -24,6 +24,8 @@ lowlat-hid-proto.workspace = true
 windows-sys = { version = "0.61", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    # A process's image named as the file system compares names.
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",

@@ -34,6 +34,8 @@ pub mod handback;
 pub mod hid;
 #[cfg(windows)]
 mod scancode;
+#[cfg(windows)]
+mod scope;
 #[cfg(target_os = "linux")]
 pub mod uhid;
 #[cfg(target_os = "linux")]
@@ -66,6 +68,8 @@ mod windows;
 // the guest loop uses whatever the platform; the kernel's input layer
 // provides them on Linux.
 pub use handback::{Forward, Forwarded, PadWritten, WRITTEN_MAX};
+#[cfg(windows)]
+pub use scope::Scope;
 #[cfg(target_os = "linux")]
 pub use uinput::{Devices, console_takes_the_chord};
 #[cfg(windows)]

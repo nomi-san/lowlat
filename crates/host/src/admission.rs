@@ -781,7 +781,7 @@ pub struct Metrics {
 /// messages use one: the guest's own thread is the only thing that may touch
 /// its session or its input devices, so an ask is delivered to it rather than
 /// applied behind its back.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Ask {
     /// End this guest, telling it why on the way out.
     Kick(i32),
@@ -796,6 +796,9 @@ enum Ask {
     /// host's own input driver, or not.
     #[cfg(windows)]
     VirtualPads(bool),
+    /// Hold its input to one application, or to none.
+    #[cfg(windows)]
+    Scope(Option<std::sync::Arc<lowlat_inject::Scope>>),
 }
 
 /// One message on its way to a guest, built where the caller is.
@@ -878,6 +881,10 @@ pub struct Admission {
     /// ([`Admission::set_virtual_pads`]).
     #[cfg(windows)]
     virtual_pads: bool,
+    /// The application every guest but the owner is held to
+    /// ([`Admission::set_scope`]).
+    #[cfg(windows)]
+    scope: Option<std::sync::Arc<lowlat_inject::Scope>>,
 }
 
 impl core::fmt::Debug for Attempt {
@@ -931,6 +938,8 @@ impl Admission {
             virtual_input: false,
             #[cfg(windows)]
             virtual_pads: false,
+            #[cfg(windows)]
+            scope: None,
         }
     }
 
@@ -1006,9 +1015,37 @@ impl Admission {
     fn tell_guests(&self, ask: Ask) {
         for attempt in self.attempts.values() {
             if let Some(asked) = attempt.ask.as_ref() {
-                let _ = asked.send(ask);
+                let _ = asked.send(ask.clone());
             }
         }
+    }
+
+    /// Hold every guest but the owner to one application, or let them all go
+    /// (docs/05-host.md section 7.4), live: a held guest's keys, pointer
+    /// motion and pads go in only while the application is in front, its
+    /// clicks and its wheel only over the application's windows, and the keys
+    /// that reach past it never; what it holds comes up as the application
+    /// leaves the front. Each seated guest takes it on its next pass, and a
+    /// guest admitted later from its admission.
+    #[cfg(windows)]
+    pub fn set_scope(&mut self, scope: Option<lowlat_inject::Scope>) {
+        let scope = scope.map(std::sync::Arc::new);
+        match scope.as_deref() {
+            Some(held) => lowlat_common::log_info!(
+                "input: every guest but the owner held to one application, paths={}",
+                held.paths().count()
+            ),
+            None => lowlat_common::log_info!("input: no guest held to an application"),
+        }
+        self.scope.clone_from(&scope);
+        self.tell_guests(Ask::Scope(scope));
+    }
+
+    /// The application every guest but the owner is held to, if any.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn scope(&self) -> Option<&lowlat_inject::Scope> {
+        self.scope.as_deref()
     }
 
     /// Whether the guests' keys and pointers go to the host's own input
@@ -1247,6 +1284,8 @@ impl Admission {
         let virtual_input = self.virtual_input;
         #[cfg(windows)]
         let virtual_pads = self.virtual_pads;
+        #[cfg(windows)]
+        let scope = self.scope.clone();
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -1279,6 +1318,8 @@ impl Admission {
                         virtual_input,
                         #[cfg(windows)]
                         virtual_pads,
+                        #[cfg(windows)]
+                        scope,
                     },
                 },
                 wake,
@@ -1810,6 +1851,10 @@ struct Driven {
     /// Whether its pads sent as their reports start on it.
     #[cfg(windows)]
     virtual_pads: bool,
+    /// The application it is held to from its admission, unless it is the
+    /// owner.
+    #[cfg(windows)]
+    scope: Option<std::sync::Arc<lowlat_inject::Scope>>,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -2630,6 +2675,7 @@ fn drive<M: Media>(
         {
             input.sink.set_virtual_input(args.virtual_input);
             input.sink.set_virtual_pads(args.virtual_pads);
+            input.sink.set_scope(args.scope.clone());
         }
     }
     // A reason the application gave for ending this guest, waiting for the one
@@ -2851,6 +2897,10 @@ fn drive<M: Media>(
                 .injector
                 .set_relative(seat.as_ref().is_some_and(SeatHold::relative));
             follow_pointer(input, &args.floor, args.guest, now);
+            // **And whether the application it is held to is still in
+            // front**, for the same reason: a guest holding a key while the
+            // owner brings another program forward sends nothing more.
+            input.injector.follow_gate(&mut input.sink);
             // **What a local application asks a pad to do goes back to the
             // peer holding it.** Nothing on this machine can vibrate; the
             // controller is somewhere else.
@@ -3309,6 +3359,21 @@ fn drive<M: Media>(
                     );
                     if let Some(input) = input.as_mut() {
                         input.sink.set_virtual_pads(on);
+                    }
+                }
+                // **Asked at once**, so a guest the change holds lets go of
+                // what it held behind another program now rather than at its
+                // next pass.
+                #[cfg(windows)]
+                Ask::Scope(scope) => {
+                    lowlat_common::log_info!(
+                        "guest: number={} held to an application={}",
+                        args.guest,
+                        u8::from(scope.is_some() && !args.owner)
+                    );
+                    if let Some(input) = input.as_mut() {
+                        input.sink.set_scope(scope);
+                        input.injector.follow_gate(&mut input.sink);
                     }
                 }
             }

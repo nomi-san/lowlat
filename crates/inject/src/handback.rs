@@ -140,6 +140,16 @@ impl Forwarding {
         (self.to.0)(forwarded);
     }
 
+    /// The product a forwarded pad's first report fixed.
+    #[cfg(windows)]
+    pub(crate) fn product(&self, pad: u32) -> Option<Product> {
+        self.pads
+            .iter()
+            .flatten()
+            .find(|(id, _)| *id == pad)
+            .map(|(_, product)| *product)
+    }
+
     /// Whether the pad was one forwarded, and so one the application was
     /// told about.
     pub(crate) fn unplug(&mut self, pad: u32) -> bool {

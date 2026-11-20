@@ -43,6 +43,8 @@ pub mod capture {
 }
 
 pub mod inject {
+    #[cfg(windows)]
+    pub use lowlat_inject::Scope;
     pub use lowlat_inject::console_takes_the_chord;
     pub use lowlat_inject::event::Permissions;
 }
