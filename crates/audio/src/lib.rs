@@ -55,6 +55,8 @@ mod ffi {
 #[global_allocator]
 static ALLOC: lowlat_common::alloc_counter::Counting = lowlat_common::alloc_counter::Counting;
 
+#[cfg(windows)]
+pub use capture::Application;
 #[cfg(any(target_os = "linux", windows))]
 pub use capture::{Capture, Config, Live, Output, Wanted, outputs};
 pub use decode::Decoder;

@@ -112,6 +112,10 @@ macro_rules! com {
     }};
 }
 
+/// An application's own sound: declared after the call macro, which it uses.
+#[path = "windows/application.rs"]
+mod application;
+
 /// The process's multithreaded apartment, kept alive once and never given
 /// back, so the capture's thread and an application's thread asking for the
 /// outputs both reach the system's sound interfaces **without either being put
@@ -665,11 +669,26 @@ fn take_silence<S: FnMut(&[u8])>(frames: &mut Frames<S>, count: usize) {
     }
 }
 
-/// What the system's notification thread tells the capture's.
+/// What the system's notification threads tell the capture's.
 #[derive(Debug)]
 struct Signal {
     default_changed: AtomicBool,
+    /// An output came, went or changed its state.
+    outputs_changed: AtomicBool,
+    /// A session began or started on an output whose sessions are watched.
+    sessions_changed: AtomicBool,
     event: Event,
+}
+
+impl Signal {
+    fn new() -> Result<Self, Error> {
+        Ok(Self {
+            default_changed: AtomicBool::new(false),
+            outputs_changed: AtomicBool::new(false),
+            sessions_changed: AtomicBool::new(false),
+            event: Event::new(false)?,
+        })
+    }
 }
 
 /// The notification client: the one interface this side implements.
@@ -748,15 +767,34 @@ unsafe extern "C" fn notifier_release(this: *mut IMMNotificationClient) -> ULONG
 }
 
 unsafe extern "C" fn notifier_state(
-    _this: *mut IMMNotificationClient,
+    this: *mut IMMNotificationClient,
     _id: LPCWSTR,
     _state: u32,
 ) -> HRESULT {
+    // SAFETY: `this` is a live notifier for the call's duration.
+    unsafe { outputs_moved(this) };
     S_OK
 }
 
-unsafe extern "C" fn notifier_device(_this: *mut IMMNotificationClient, _id: LPCWSTR) -> HRESULT {
+unsafe extern "C" fn notifier_device(this: *mut IMMNotificationClient, _id: LPCWSTR) -> HRESULT {
+    // SAFETY: as above.
+    unsafe { outputs_moved(this) };
     S_OK
+}
+
+/// An output came, went or changed: noted and the capture's thread woken.
+///
+/// # Safety
+///
+/// `this` is a live notifier for the call's duration.
+unsafe fn outputs_moved(this: *mut IMMNotificationClient) {
+    // SAFETY: the caller's contract.
+    let notifier = unsafe { &*this.cast::<Notifier>() };
+    notifier
+        .signal
+        .outputs_changed
+        .store(true, Ordering::Release);
+    notifier.signal.event.set();
 }
 
 unsafe extern "C" fn notifier_property(
@@ -858,7 +896,12 @@ struct LocalMute {
 ///
 /// **Only what this host did is remembered**, so only that is ever undone.
 fn mute_local(session: &Session) -> LocalMute {
-    let Some(volume) = session.volume.as_ref() else {
+    mute_speakers(session.volume.as_ref(), &session.name)
+}
+
+/// Silence an output's speakers where its mute is the device's own.
+fn mute_speakers(volume: Option<&Com<IAudioEndpointVolume>>, name: &str) -> LocalMute {
+    let Some(volume) = volume else {
         return LocalMute::default();
     };
     let mut hardware: u32 = 0;
@@ -869,8 +912,7 @@ fn mute_local(session: &Session) -> LocalMute {
         // engine applies it to the mix the guests are sent, so silencing the
         // speakers would silence every guest.
         lowlat_common::log_warn!(
-            "audio: the speakers cannot be silenced without silencing the guests, output={}, left alone",
-            session.name
+            "audio: the speakers cannot be silenced without silencing the guests, output={name}, left alone"
         );
         return LocalMute::default();
     }
@@ -887,7 +929,7 @@ fn mute_local(session: &Session) -> LocalMute {
     if hr < 0 {
         return LocalMute::default();
     }
-    lowlat_common::log_info!("audio: the speakers are silenced, output={}", session.name);
+    lowlat_common::log_info!("audio: the speakers are silenced, output={name}");
     LocalMute { applied: true }
 }
 
@@ -896,10 +938,15 @@ fn mute_local(session: &Session) -> LocalMute {
 /// **Restore, never unmute**: still muted, and by us. Somebody who unmuted
 /// during the session is not muted again, and nobody's own mute is undone.
 fn restore_local(session: &Session, state: &LocalMute) {
+    restore_speakers(session.volume.as_ref(), &session.name, state);
+}
+
+/// Put an output's speakers back, if this host silenced them.
+fn restore_speakers(volume: Option<&Com<IAudioEndpointVolume>>, name: &str, state: &LocalMute) {
     if !state.applied {
         return;
     }
-    let Some(volume) = session.volume.as_ref() else {
+    let Some(volume) = volume else {
         return;
     };
     let mut muted: i32 = 0;
@@ -909,7 +956,7 @@ fn restore_local(session: &Session, state: &LocalMute) {
             && muted != 0
             && com!(volume.as_ptr(), SetMute, 0, ptr::null()) >= 0
         {
-            lowlat_common::log_info!("audio: the speakers are back, output={}", session.name);
+            lowlat_common::log_info!("audio: the speakers are back, output={name}");
         }
     }
 }
@@ -937,9 +984,33 @@ pub(super) fn run<S>(
         );
     }
     let mut frames = Frames::new(sink);
-    if let Err(error) = serve(config, stop, device, report, &mut frames) {
-        lowlat_common::log_warn!("audio: capture ended, {error}");
+    // **One loop for each way of capturing, and the asked-for one runs**:
+    // each hands back when the other is asked for, so an application's sound
+    // and the output's mix follow each other live on the same thread, into
+    // the same frames.
+    loop {
+        let ended = match config.application() {
+            Some(held) => application::serve(config, &held, stop, device, report, &mut frames),
+            None => serve(config, stop, device, report, &mut frames),
+        };
+        match ended {
+            Ok(Ended::Moved) => {}
+            Ok(Ended::Stopped) => return,
+            Err(error) => {
+                lowlat_common::log_warn!("audio: capture ended, {error}");
+                return;
+            }
+        }
     }
+}
+
+/// Why a capture's loop handed back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// Its owner asked it to stop.
+    Stopped,
+    /// The other way of capturing was asked for.
+    Moved,
 }
 
 /// Everything the loop holds, from the enumeration to the session.
@@ -959,14 +1030,11 @@ fn serve<S: FnMut(&[u8])>(
     device: &Mutex<String>,
     report: &std::sync::mpsc::Sender<Result<(), Error>>,
     frames: &mut Frames<S>,
-) -> Result<(), Error> {
+) -> Result<Ended, Error> {
     let opened = (|| -> Result<_, Error> {
         let enumerator = enumerator()?;
         let wake = Event::new(false)?;
-        let signal = Arc::new(Signal {
-            default_changed: AtomicBool::new(false),
-            event: Event::new(false)?,
-        });
+        let signal = Arc::new(Signal::new()?);
         let session = Session::open(&enumerator, config.wanted_device().as_deref(), &wake)?;
         Ok((enumerator, wake, signal, session))
     })();
@@ -1019,7 +1087,7 @@ fn serve_loop<S: FnMut(&[u8])>(
     device: &Mutex<String>,
     frames: &mut Frames<S>,
     state: &mut Loop<'_>,
-) -> Result<(), Error> {
+) -> Result<Ended, Error> {
     let mut seen = config.wanted.generation();
     let handles = [stop.event.0, state.wake.0, state.signal.event.0];
     loop {
@@ -1029,7 +1097,7 @@ fn serve_loop<S: FnMut(&[u8])>(
             WaitForMultipleObjects(3, handles.as_ptr(), 0, WAIT_CAP_MS);
         }
         if stop.asked() {
-            return Ok(());
+            return Ok(Ended::Stopped);
         }
 
         if let Err(error) = state.session.drain(frames) {
@@ -1081,6 +1149,11 @@ fn serve_loop<S: FnMut(&[u8])>(
         let now = config.wanted.generation();
         if now != seen {
             seen = now;
+            // **An application's own sound asked for ends this loop**, the
+            // speakers put back on the way out by the caller.
+            if config.application().is_some() {
+                return Ok(Ended::Moved);
+            }
             let live = config.live();
             let wanted = live.device.as_deref().filter(|name| !name.is_empty());
             let moving = match wanted {

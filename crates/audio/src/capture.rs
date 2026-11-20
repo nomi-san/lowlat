@@ -61,6 +61,47 @@ pub struct Live {
     pub mute_local: bool,
 }
 
+/// An application whose own sound is captured in place of the output's mix
+/// ([05 §9.7](../../../docs/05-host.md)): whether a process is one of it,
+/// asked of the image the process runs -- its full path as the system names
+/// it, in UTF-16.
+///
+/// **A question rather than a list**, so whoever says which windows are the
+/// application's says which sounds are too, by the same rule.
+#[cfg(windows)]
+#[derive(Clone)]
+pub struct Application(Arc<Holds>);
+
+/// The question an application answers of an image.
+#[cfg(windows)]
+type Holds = dyn Fn(&[u16]) -> bool + Send + Sync;
+
+#[cfg(windows)]
+impl Application {
+    pub fn new<F>(holds: F) -> Self
+    where
+        F: Fn(&[u16]) -> bool + Send + Sync + 'static,
+    {
+        Self(Arc::new(holds))
+    }
+
+    pub(crate) fn holds(&self, image: &[u16]) -> bool {
+        (self.0)(image)
+    }
+
+    /// Whether two are the one set, not two that answer alike.
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+#[cfg(windows)]
+impl core::fmt::Debug for Application {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Application")
+    }
+}
+
 /// Where those settings live, shared between whoever sets them and the loop.
 ///
 /// **Held by the owner rather than by the capture**, so a setting survives the
@@ -71,6 +112,10 @@ pub struct Live {
 pub struct Wanted {
     live: Mutex<Live>,
     asked: std::sync::atomic::AtomicU32,
+    /// **Apart from the live half**, which an application sets whole: its
+    /// device and its mute never clear what the host holds its guests to.
+    #[cfg(windows)]
+    application: Mutex<Option<Application>>,
 }
 
 impl Wanted {
@@ -79,6 +124,29 @@ impl Wanted {
         Self {
             live: Mutex::new(live),
             asked: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(windows)]
+            application: Mutex::new(None),
+        }
+    }
+
+    /// Capture one application's own sound in place of the output's mix, or
+    /// the output again. Noticed on the loop's next pass, as the rest is.
+    #[cfg(windows)]
+    pub fn set_application(&self, application: Option<Application>) {
+        match self.application.lock() {
+            Ok(mut held) => *held = application,
+            Err(held) => *held.into_inner() = application,
+        }
+        self.asked
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The application whose sound is asked for, if one is.
+    #[cfg(windows)]
+    pub fn application(&self) -> Option<Application> {
+        match self.application.lock() {
+            Ok(held) => held.clone(),
+            Err(held) => held.into_inner().clone(),
         }
     }
 
@@ -289,6 +357,12 @@ impl Settings {
     /// The device asked for, if one was.
     fn wanted_device(&self) -> Option<String> {
         self.live().device.filter(|name| !name.is_empty())
+    }
+
+    /// The application whose own sound is asked for, if one is.
+    #[cfg(windows)]
+    fn application(&self) -> Option<Application> {
+        self.wanted.application()
     }
 }
 

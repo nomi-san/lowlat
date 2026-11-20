@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate the system sound interface's declarations from the Windows SDK
 # headers: the device enumeration, the audio client and its capture and render
-# halves, the endpoint's volume and its property store.
+# halves, the endpoint's volume and its property store; the sessions each
+# output holds, and the capture of one process's sound.
 #
 # Run by hand on Windows, never from a build script: the generated files are
 # committed so that no build machine needs a C toolchain or the SDK. Run from
@@ -47,6 +48,8 @@ cat > "$work/wasapi.h" <<'EOF'
 #include <audioclient.h>
 #include <endpointvolume.h>
 #include <propsys.h>
+#include <audiopolicy.h>
+#include <audioclientactivationparams.h>
 EOF
 
 # Interfaces and values reached only by pointer, never called or read here:
@@ -55,6 +58,7 @@ EOF
 opaque=(
     'IStream|IStorage|IDispatch|IRecordInfo|ITypeInfo|IEnumSTATPROPSTG|IPropertySetStorage'
     'IAudioEndpointVolumeCallback'
+    'IAudioSessionEvents|IAudioVolumeDuckNotification|ISimpleAudioVolume'
     'PROPVARIANT|tagPROPVARIANT|SAFEARRAY|tagSAFEARRAY|BLOB|tagBLOB'
     'DECIMAL|tagDEC|CY|tagCY|BSTR_BLOB|CLIPDATA|tagCLIPDATA|VERSIONEDSTREAM|tagVersionedStream'
 )
@@ -75,7 +79,7 @@ bindgen "$work/wasapi.h" \
     `# side implements to hear of a new default, a device's audio client with` \
     `# its capture and render halves, its volume, and its property store.` \
     --allowlist-type 'IMMDevice(Enumerator|Collection)?|IMMNotificationClient' \
-    --allowlist-type 'IAudio(Client|CaptureClient|RenderClient|EndpointVolume)|IPropertyStore|IUnknown' \
+    --allowlist-type 'IAudio(Client|CaptureClient|RenderClient|EndpointVolume)|IPropertyStore|IUnknown'     `# The sessions an output holds, which say which processes play, and the`     `# one this side implements to hear of a new one; the activation of a`     `# process's capture, with the completion this side implements.`     --allowlist-type 'IAudioSession(Manager2|Enumerator|Control2|Notification)|AudioSessionState'     --allowlist-type 'IActivateAudioInterface(AsyncOperation|CompletionHandler)'     --allowlist-type 'AUDIOCLIENT_(ACTIVATION_PARAMS|PROCESS_LOOPBACK_PARAMS|ACTIVATION_TYPE)|PROCESS_LOOPBACK_MODE' \
     `# What the calls take: the format, a property's key, which flow and role.` \
     --allowlist-type 'WAVEFORMATEX|PROPERTYKEY|EDataFlow|ERole|AUDCLNT_SHAREMODE|_AUDCLNT_BUFFERFLAGS' \
     `# Flags and codes passed as plain integers.` \
@@ -103,10 +107,13 @@ def read(rel):
 interfaces = {
     "um/unknwnbase.h": ["IUnknown"],
     "um/mmdeviceapi.h": ["IMMDeviceEnumerator", "IMMDevice", "IMMDeviceCollection",
-                         "IMMNotificationClient"],
+                         "IMMNotificationClient", "IActivateAudioInterfaceCompletionHandler"],
     "um/audioclient.h": ["IAudioClient", "IAudioCaptureClient", "IAudioRenderClient"],
     "um/endpointvolume.h": ["IAudioEndpointVolume"],
     "um/propsys.h": ["IPropertyStore"],
+    "um/audiopolicy.h": ["IAudioSessionManager2", "IAudioSessionControl2",
+                         "IAudioSessionNotification"],
+    "um/objidlbase.h": ["IAgileObject"],
 }
 
 lines = [
@@ -176,8 +183,8 @@ lines.append("    pid: %d," % parts[11])
 lines.append("};")
 count += 1
 
-if count != 12:
-    raise SystemExit("%d identifiers matched, expected 12; the header layout changed" % count)
+if count != 17:
+    raise SystemExit("%d identifiers matched, expected 17; the header layout changed" % count)
 
 open(dst, "w", encoding="ascii", newline="\n").write("\n".join(lines) + "\n")
 print("  %d identifiers" % count)

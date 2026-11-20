@@ -1739,8 +1739,17 @@ impl Stream {
     /// output's size and black around it. **One stream serves every seat**,
     /// so the owner sees what a held guest sees; while it is set, a request
     /// for another output waits for it to be cleared.
+    ///
+    /// **And they hear it alone**: the sound is the application's own
+    /// processes' in place of the output's mix (section 9.7), by the same
+    /// question of each process's image.
     #[cfg(windows)]
     pub fn set_scope(&self, scope: Option<Arc<lowlat_inject::Scope>>) {
+        self.shared.sound_wanted().set_application(
+            scope
+                .clone()
+                .map(|scope| lowlat_audio::Application::new(move |image| scope.holds(image))),
+        );
         self.shared.scope.set(scope);
     }
 

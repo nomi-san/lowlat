@@ -1690,10 +1690,129 @@ const _: () = {
     ["Offset of field: IMMDeviceEnumerator::lpVtbl"]
         [::std::mem::offset_of!(IMMDeviceEnumerator, lpVtbl) - 0usize];
 };
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IActivateAudioInterfaceCompletionHandlerVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IActivateAudioInterfaceCompletionHandler,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IActivateAudioInterfaceCompletionHandler) -> ULONG,
+    >,
+    pub Release: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IActivateAudioInterfaceCompletionHandler) -> ULONG,
+    >,
+    pub ActivateCompleted: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IActivateAudioInterfaceCompletionHandler,
+            activateOperation: *mut IActivateAudioInterfaceAsyncOperation,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IActivateAudioInterfaceCompletionHandlerVtbl"]
+        [::std::mem::size_of::<IActivateAudioInterfaceCompletionHandlerVtbl>() - 32usize];
+    ["Alignment of IActivateAudioInterfaceCompletionHandlerVtbl"]
+        [::std::mem::align_of::<IActivateAudioInterfaceCompletionHandlerVtbl>() - 8usize];
+    ["Offset of field: IActivateAudioInterfaceCompletionHandlerVtbl::QueryInterface"][::std::mem::offset_of!(
+        IActivateAudioInterfaceCompletionHandlerVtbl,
+        QueryInterface
+    ) - 0usize];
+    ["Offset of field: IActivateAudioInterfaceCompletionHandlerVtbl::AddRef"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceCompletionHandlerVtbl, AddRef) - 8usize];
+    ["Offset of field: IActivateAudioInterfaceCompletionHandlerVtbl::Release"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceCompletionHandlerVtbl, Release) - 16usize];
+    ["Offset of field: IActivateAudioInterfaceCompletionHandlerVtbl::ActivateCompleted"][::std::mem::offset_of!(
+        IActivateAudioInterfaceCompletionHandlerVtbl,
+        ActivateCompleted
+    )
+        - 24usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IActivateAudioInterfaceCompletionHandler {
+    pub lpVtbl: *mut IActivateAudioInterfaceCompletionHandlerVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IActivateAudioInterfaceCompletionHandler"]
+        [::std::mem::size_of::<IActivateAudioInterfaceCompletionHandler>() - 8usize];
+    ["Alignment of IActivateAudioInterfaceCompletionHandler"]
+        [::std::mem::align_of::<IActivateAudioInterfaceCompletionHandler>() - 8usize];
+    ["Offset of field: IActivateAudioInterfaceCompletionHandler::lpVtbl"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceCompletionHandler, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IActivateAudioInterfaceAsyncOperationVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IActivateAudioInterfaceAsyncOperation,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IActivateAudioInterfaceAsyncOperation) -> ULONG,
+    >,
+    pub Release: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IActivateAudioInterfaceAsyncOperation) -> ULONG,
+    >,
+    pub GetActivateResult: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IActivateAudioInterfaceAsyncOperation,
+            activateResult: *mut HRESULT,
+            activatedInterface: *mut *mut IUnknown,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IActivateAudioInterfaceAsyncOperationVtbl"]
+        [::std::mem::size_of::<IActivateAudioInterfaceAsyncOperationVtbl>() - 32usize];
+    ["Alignment of IActivateAudioInterfaceAsyncOperationVtbl"]
+        [::std::mem::align_of::<IActivateAudioInterfaceAsyncOperationVtbl>() - 8usize];
+    ["Offset of field: IActivateAudioInterfaceAsyncOperationVtbl::QueryInterface"][::std::mem::offset_of!(
+        IActivateAudioInterfaceAsyncOperationVtbl,
+        QueryInterface
+    ) - 0usize];
+    ["Offset of field: IActivateAudioInterfaceAsyncOperationVtbl::AddRef"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceAsyncOperationVtbl, AddRef) - 8usize];
+    ["Offset of field: IActivateAudioInterfaceAsyncOperationVtbl::Release"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceAsyncOperationVtbl, Release) - 16usize];
+    ["Offset of field: IActivateAudioInterfaceAsyncOperationVtbl::GetActivateResult"][::std::mem::offset_of!(
+        IActivateAudioInterfaceAsyncOperationVtbl,
+        GetActivateResult
+    ) - 24usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IActivateAudioInterfaceAsyncOperation {
+    pub lpVtbl: *mut IActivateAudioInterfaceAsyncOperationVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IActivateAudioInterfaceAsyncOperation"]
+        [::std::mem::size_of::<IActivateAudioInterfaceAsyncOperation>() - 8usize];
+    ["Alignment of IActivateAudioInterfaceAsyncOperation"]
+        [::std::mem::align_of::<IActivateAudioInterfaceAsyncOperation>() - 8usize];
+    ["Offset of field: IActivateAudioInterfaceAsyncOperation::lpVtbl"]
+        [::std::mem::offset_of!(IActivateAudioInterfaceAsyncOperation, lpVtbl) - 0usize];
+};
 pub const AUDCLNT_SHAREMODE_SHARED: _AUDCLNT_SHAREMODE = 0;
 pub const AUDCLNT_SHAREMODE_EXCLUSIVE: _AUDCLNT_SHAREMODE = 1;
 pub type _AUDCLNT_SHAREMODE = ::std::os::raw::c_int;
 pub use self::_AUDCLNT_SHAREMODE as AUDCLNT_SHAREMODE;
+pub const AudioSessionStateInactive: _AudioSessionState = 0;
+pub const AudioSessionStateActive: _AudioSessionState = 1;
+pub const AudioSessionStateExpired: _AudioSessionState = 2;
+pub type _AudioSessionState = ::std::os::raw::c_int;
+pub use self::_AudioSessionState as AudioSessionState;
 pub type REFERENCE_TIME = LONGLONG;
 pub const AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY: _AUDCLNT_BUFFERFLAGS = 1;
 pub const AUDCLNT_BUFFERFLAGS_SILENT: _AUDCLNT_BUFFERFLAGS = 2;
@@ -1936,6 +2055,17 @@ const _: () = {
 #[repr(C)]
 #[repr(align(8))]
 #[derive(Debug, Copy, Clone)]
+pub struct ISimpleAudioVolume {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ISimpleAudioVolume"][::std::mem::size_of::<ISimpleAudioVolume>() - 8usize];
+    ["Alignment of ISimpleAudioVolume"][::std::mem::align_of::<ISimpleAudioVolume>() - 8usize];
+};
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
 pub struct IAudioEndpointVolumeCallback {
     pub _bindgen_opaque_blob: u64,
 }
@@ -2129,4 +2259,542 @@ const _: () = {
     ["Alignment of IAudioEndpointVolume"][::std::mem::align_of::<IAudioEndpointVolume>() - 8usize];
     ["Offset of field: IAudioEndpointVolume::lpVtbl"]
         [::std::mem::offset_of!(IAudioEndpointVolume, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionEvents {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionEvents"][::std::mem::size_of::<IAudioSessionEvents>() - 8usize];
+    ["Alignment of IAudioSessionEvents"][::std::mem::align_of::<IAudioSessionEvents>() - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionControlVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionControl) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionControl) -> ULONG>,
+    pub GetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            pRetVal: *mut AudioSessionState,
+        ) -> HRESULT,
+    >,
+    pub GetDisplayName: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub SetDisplayName: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            Value: LPCWSTR,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub GetIconPath: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub SetIconPath: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            Value: LPCWSTR,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub GetGroupingParam: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl, pRetVal: *mut GUID) -> HRESULT,
+    >,
+    pub SetGroupingParam: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            Override: LPCGUID,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub RegisterAudioSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            NewNotifications: *mut IAudioSessionEvents,
+        ) -> HRESULT,
+    >,
+    pub UnregisterAudioSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl,
+            NewNotifications: *mut IAudioSessionEvents,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionControlVtbl"]
+        [::std::mem::size_of::<IAudioSessionControlVtbl>() - 96usize];
+    ["Alignment of IAudioSessionControlVtbl"]
+        [::std::mem::align_of::<IAudioSessionControlVtbl>() - 8usize];
+    ["Offset of field: IAudioSessionControlVtbl::QueryInterface"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, QueryInterface) - 0usize];
+    ["Offset of field: IAudioSessionControlVtbl::AddRef"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, AddRef) - 8usize];
+    ["Offset of field: IAudioSessionControlVtbl::Release"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, Release) - 16usize];
+    ["Offset of field: IAudioSessionControlVtbl::GetState"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, GetState) - 24usize];
+    ["Offset of field: IAudioSessionControlVtbl::GetDisplayName"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, GetDisplayName) - 32usize];
+    ["Offset of field: IAudioSessionControlVtbl::SetDisplayName"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, SetDisplayName) - 40usize];
+    ["Offset of field: IAudioSessionControlVtbl::GetIconPath"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, GetIconPath) - 48usize];
+    ["Offset of field: IAudioSessionControlVtbl::SetIconPath"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, SetIconPath) - 56usize];
+    ["Offset of field: IAudioSessionControlVtbl::GetGroupingParam"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, GetGroupingParam) - 64usize];
+    ["Offset of field: IAudioSessionControlVtbl::SetGroupingParam"]
+        [::std::mem::offset_of!(IAudioSessionControlVtbl, SetGroupingParam) - 72usize];
+    ["Offset of field: IAudioSessionControlVtbl::RegisterAudioSessionNotification"][::std::mem::offset_of!(
+        IAudioSessionControlVtbl,
+        RegisterAudioSessionNotification
+    ) - 80usize];
+    ["Offset of field: IAudioSessionControlVtbl::UnregisterAudioSessionNotification"][::std::mem::offset_of!(
+        IAudioSessionControlVtbl,
+        UnregisterAudioSessionNotification
+    ) - 88usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionControl {
+    pub lpVtbl: *mut IAudioSessionControlVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionControl"][::std::mem::size_of::<IAudioSessionControl>() - 8usize];
+    ["Alignment of IAudioSessionControl"][::std::mem::align_of::<IAudioSessionControl>() - 8usize];
+    ["Offset of field: IAudioSessionControl::lpVtbl"]
+        [::std::mem::offset_of!(IAudioSessionControl, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionControl2Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionControl2) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionControl2) -> ULONG>,
+    pub GetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            pRetVal: *mut AudioSessionState,
+        ) -> HRESULT,
+    >,
+    pub GetDisplayName: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub SetDisplayName: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            Value: LPCWSTR,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub GetIconPath: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub SetIconPath: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            Value: LPCWSTR,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub GetGroupingParam: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut GUID) -> HRESULT,
+    >,
+    pub SetGroupingParam: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            Override: LPCGUID,
+            EventContext: LPCGUID,
+        ) -> HRESULT,
+    >,
+    pub RegisterAudioSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            NewNotifications: *mut IAudioSessionEvents,
+        ) -> HRESULT,
+    >,
+    pub UnregisterAudioSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionControl2,
+            NewNotifications: *mut IAudioSessionEvents,
+        ) -> HRESULT,
+    >,
+    pub GetSessionIdentifier: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub GetSessionInstanceIdentifier: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut LPWSTR) -> HRESULT,
+    >,
+    pub GetProcessId: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, pRetVal: *mut DWORD) -> HRESULT,
+    >,
+    pub IsSystemSoundsSession:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionControl2) -> HRESULT>,
+    pub SetDuckingPreference: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IAudioSessionControl2, optOut: BOOL) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionControl2Vtbl"]
+        [::std::mem::size_of::<IAudioSessionControl2Vtbl>() - 136usize];
+    ["Alignment of IAudioSessionControl2Vtbl"]
+        [::std::mem::align_of::<IAudioSessionControl2Vtbl>() - 8usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::AddRef"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, AddRef) - 8usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::Release"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, Release) - 16usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetState"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetState) - 24usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetDisplayName"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetDisplayName) - 32usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::SetDisplayName"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, SetDisplayName) - 40usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetIconPath"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetIconPath) - 48usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::SetIconPath"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, SetIconPath) - 56usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetGroupingParam"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetGroupingParam) - 64usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::SetGroupingParam"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, SetGroupingParam) - 72usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::RegisterAudioSessionNotification"][::std::mem::offset_of!(
+        IAudioSessionControl2Vtbl,
+        RegisterAudioSessionNotification
+    ) - 80usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::UnregisterAudioSessionNotification"][::std::mem::offset_of!(
+        IAudioSessionControl2Vtbl,
+        UnregisterAudioSessionNotification
+    ) - 88usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetSessionIdentifier"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetSessionIdentifier) - 96usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetSessionInstanceIdentifier"][::std::mem::offset_of!(
+        IAudioSessionControl2Vtbl,
+        GetSessionInstanceIdentifier
+    ) - 104usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::GetProcessId"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, GetProcessId) - 112usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::IsSystemSoundsSession"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, IsSystemSoundsSession) - 120usize];
+    ["Offset of field: IAudioSessionControl2Vtbl::SetDuckingPreference"]
+        [::std::mem::offset_of!(IAudioSessionControl2Vtbl, SetDuckingPreference) - 128usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionControl2 {
+    pub lpVtbl: *mut IAudioSessionControl2Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionControl2"][::std::mem::size_of::<IAudioSessionControl2>() - 8usize];
+    ["Alignment of IAudioSessionControl2"]
+        [::std::mem::align_of::<IAudioSessionControl2>() - 8usize];
+    ["Offset of field: IAudioSessionControl2::lpVtbl"]
+        [::std::mem::offset_of!(IAudioSessionControl2, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioVolumeDuckNotification {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioVolumeDuckNotification"]
+        [::std::mem::size_of::<IAudioVolumeDuckNotification>() - 8usize];
+    ["Alignment of IAudioVolumeDuckNotification"]
+        [::std::mem::align_of::<IAudioVolumeDuckNotification>() - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionNotificationVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionNotification,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionNotification) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionNotification) -> ULONG>,
+    pub OnSessionCreated: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionNotification,
+            NewSession: *mut IAudioSessionControl,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionNotificationVtbl"]
+        [::std::mem::size_of::<IAudioSessionNotificationVtbl>() - 32usize];
+    ["Alignment of IAudioSessionNotificationVtbl"]
+        [::std::mem::align_of::<IAudioSessionNotificationVtbl>() - 8usize];
+    ["Offset of field: IAudioSessionNotificationVtbl::QueryInterface"]
+        [::std::mem::offset_of!(IAudioSessionNotificationVtbl, QueryInterface) - 0usize];
+    ["Offset of field: IAudioSessionNotificationVtbl::AddRef"]
+        [::std::mem::offset_of!(IAudioSessionNotificationVtbl, AddRef) - 8usize];
+    ["Offset of field: IAudioSessionNotificationVtbl::Release"]
+        [::std::mem::offset_of!(IAudioSessionNotificationVtbl, Release) - 16usize];
+    ["Offset of field: IAudioSessionNotificationVtbl::OnSessionCreated"]
+        [::std::mem::offset_of!(IAudioSessionNotificationVtbl, OnSessionCreated) - 24usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionNotification {
+    pub lpVtbl: *mut IAudioSessionNotificationVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionNotification"]
+        [::std::mem::size_of::<IAudioSessionNotification>() - 8usize];
+    ["Alignment of IAudioSessionNotification"]
+        [::std::mem::align_of::<IAudioSessionNotification>() - 8usize];
+    ["Offset of field: IAudioSessionNotification::lpVtbl"]
+        [::std::mem::offset_of!(IAudioSessionNotification, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionEnumeratorVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionEnumerator,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionEnumerator) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionEnumerator) -> ULONG>,
+    pub GetCount: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionEnumerator,
+            SessionCount: *mut ::std::os::raw::c_int,
+        ) -> HRESULT,
+    >,
+    pub GetSession: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionEnumerator,
+            SessionCount: ::std::os::raw::c_int,
+            Session: *mut *mut IAudioSessionControl,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionEnumeratorVtbl"]
+        [::std::mem::size_of::<IAudioSessionEnumeratorVtbl>() - 40usize];
+    ["Alignment of IAudioSessionEnumeratorVtbl"]
+        [::std::mem::align_of::<IAudioSessionEnumeratorVtbl>() - 8usize];
+    ["Offset of field: IAudioSessionEnumeratorVtbl::QueryInterface"]
+        [::std::mem::offset_of!(IAudioSessionEnumeratorVtbl, QueryInterface) - 0usize];
+    ["Offset of field: IAudioSessionEnumeratorVtbl::AddRef"]
+        [::std::mem::offset_of!(IAudioSessionEnumeratorVtbl, AddRef) - 8usize];
+    ["Offset of field: IAudioSessionEnumeratorVtbl::Release"]
+        [::std::mem::offset_of!(IAudioSessionEnumeratorVtbl, Release) - 16usize];
+    ["Offset of field: IAudioSessionEnumeratorVtbl::GetCount"]
+        [::std::mem::offset_of!(IAudioSessionEnumeratorVtbl, GetCount) - 24usize];
+    ["Offset of field: IAudioSessionEnumeratorVtbl::GetSession"]
+        [::std::mem::offset_of!(IAudioSessionEnumeratorVtbl, GetSession) - 32usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionEnumerator {
+    pub lpVtbl: *mut IAudioSessionEnumeratorVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionEnumerator"][::std::mem::size_of::<IAudioSessionEnumerator>() - 8usize];
+    ["Alignment of IAudioSessionEnumerator"]
+        [::std::mem::align_of::<IAudioSessionEnumerator>() - 8usize];
+    ["Offset of field: IAudioSessionEnumerator::lpVtbl"]
+        [::std::mem::offset_of!(IAudioSessionEnumerator, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionManager2Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionManager2) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IAudioSessionManager2) -> ULONG>,
+    pub GetAudioSessionControl: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            AudioSessionGuid: LPCGUID,
+            StreamFlags: DWORD,
+            SessionControl: *mut *mut IAudioSessionControl,
+        ) -> HRESULT,
+    >,
+    pub GetSimpleAudioVolume: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            AudioSessionGuid: LPCGUID,
+            StreamFlags: DWORD,
+            AudioVolume: *mut *mut ISimpleAudioVolume,
+        ) -> HRESULT,
+    >,
+    pub GetSessionEnumerator: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            SessionEnum: *mut *mut IAudioSessionEnumerator,
+        ) -> HRESULT,
+    >,
+    pub RegisterSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            SessionNotification: *mut IAudioSessionNotification,
+        ) -> HRESULT,
+    >,
+    pub UnregisterSessionNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            SessionNotification: *mut IAudioSessionNotification,
+        ) -> HRESULT,
+    >,
+    pub RegisterDuckNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            sessionID: LPCWSTR,
+            duckNotification: *mut IAudioVolumeDuckNotification,
+        ) -> HRESULT,
+    >,
+    pub UnregisterDuckNotification: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IAudioSessionManager2,
+            duckNotification: *mut IAudioVolumeDuckNotification,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionManager2Vtbl"]
+        [::std::mem::size_of::<IAudioSessionManager2Vtbl>() - 80usize];
+    ["Alignment of IAudioSessionManager2Vtbl"]
+        [::std::mem::align_of::<IAudioSessionManager2Vtbl>() - 8usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::AddRef"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, AddRef) - 8usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::Release"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, Release) - 16usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::GetAudioSessionControl"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, GetAudioSessionControl) - 24usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::GetSimpleAudioVolume"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, GetSimpleAudioVolume) - 32usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::GetSessionEnumerator"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, GetSessionEnumerator) - 40usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::RegisterSessionNotification"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, RegisterSessionNotification) - 48usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::UnregisterSessionNotification"][::std::mem::offset_of!(
+        IAudioSessionManager2Vtbl,
+        UnregisterSessionNotification
+    ) - 56usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::RegisterDuckNotification"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, RegisterDuckNotification) - 64usize];
+    ["Offset of field: IAudioSessionManager2Vtbl::UnregisterDuckNotification"]
+        [::std::mem::offset_of!(IAudioSessionManager2Vtbl, UnregisterDuckNotification) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IAudioSessionManager2 {
+    pub lpVtbl: *mut IAudioSessionManager2Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IAudioSessionManager2"][::std::mem::size_of::<IAudioSessionManager2>() - 8usize];
+    ["Alignment of IAudioSessionManager2"]
+        [::std::mem::align_of::<IAudioSessionManager2>() - 8usize];
+    ["Offset of field: IAudioSessionManager2::lpVtbl"]
+        [::std::mem::offset_of!(IAudioSessionManager2, lpVtbl) - 0usize];
+};
+pub const PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE: PROCESS_LOOPBACK_MODE = 0;
+pub const PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE: PROCESS_LOOPBACK_MODE = 1;
+pub type PROCESS_LOOPBACK_MODE = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+    pub TargetProcessId: DWORD,
+    pub ProcessLoopbackMode: PROCESS_LOOPBACK_MODE,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS"]
+        [::std::mem::size_of::<AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS>() - 8usize];
+    ["Alignment of AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS"]
+        [::std::mem::align_of::<AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS>() - 4usize];
+    ["Offset of field: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS::TargetProcessId"]
+        [::std::mem::offset_of!(AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, TargetProcessId) - 0usize];
+    ["Offset of field: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS::ProcessLoopbackMode"]
+        [::std::mem::offset_of!(AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ProcessLoopbackMode) - 4usize];
+};
+pub const AUDIOCLIENT_ACTIVATION_TYPE_DEFAULT: AUDIOCLIENT_ACTIVATION_TYPE = 0;
+pub const AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK: AUDIOCLIENT_ACTIVATION_TYPE = 1;
+pub type AUDIOCLIENT_ACTIVATION_TYPE = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct AUDIOCLIENT_ACTIVATION_PARAMS {
+    pub ActivationType: AUDIOCLIENT_ACTIVATION_TYPE,
+    pub __bindgen_anon_1: AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1 {
+    pub ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1"]
+        [::std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1>() - 8usize];
+    ["Alignment of AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1"]
+        [::std::mem::align_of::<AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1>() - 4usize];
+    ["Offset of field: AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1::ProcessLoopbackParams"][::std::mem::offset_of!(
+        AUDIOCLIENT_ACTIVATION_PARAMS__bindgen_ty_1,
+        ProcessLoopbackParams
+    )
+        - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of AUDIOCLIENT_ACTIVATION_PARAMS"]
+        [::std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() - 12usize];
+    ["Alignment of AUDIOCLIENT_ACTIVATION_PARAMS"]
+        [::std::mem::align_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() - 4usize];
+    ["Offset of field: AUDIOCLIENT_ACTIVATION_PARAMS::ActivationType"]
+        [::std::mem::offset_of!(AUDIOCLIENT_ACTIVATION_PARAMS, ActivationType) - 0usize];
 };

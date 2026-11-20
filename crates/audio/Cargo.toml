@@ -21,7 +21,8 @@ lowlat-core.workspace = true
 rusty-opus.workspace = true
 
 # The system's sound service: its object creation and apartment, a property's
-# value, and the events the capture waits on, as the system declares them.
+# value, and the events the capture waits on, as the system declares them; the
+# processes' parents, for whose sound an application's is.
 # The sound interfaces themselves are generated from the SDK's headers
 # (scripts/gen-wasapi-bindings.sh), since these declarations carry none.
 [target.'cfg(windows)'.dependencies]
@@ -30,6 +31,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
     "Win32_System_Variant",
 ] }
