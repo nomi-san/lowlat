@@ -3,6 +3,53 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-20 - W5.2: the application's window as the picture
+
+### Built
+- **A held guest sees the application alone**, on Windows ([05 §2, §7.4](05-host.md)): while the
+  guests are held to an application, the stream shows the system's capture of its window in place
+  of its output's picture -- the window at its place on a canvas the output's size, black around
+  it, nothing scaled -- following the window in front while it is the application's, staying on
+  the last one shown while another program is in front, and black while the application shows
+  none. Its popups and menus are in the picture; the pointer comes from the output's duplication,
+  as before. The stream is rebuilt as the scope is set or cleared and as the window goes to
+  another output, never as the picture moves between the application's windows; one stream serves
+  every seat, the owner's included, and a request for another output waits while the scope is
+  set.
+- **The conversion places a picture**: an offset on a larger target and black around it, in every
+  layout and by both passes; a picture placed nowhere leaves the target black.
+- **The capture of a window** in the capture crate, over the system's capture runtime, with
+  bindings generated from the SDK (`scripts/gen-wgc-bindings.sh`); the two interfaces the
+  platform declares for C++ alone are written by hand, one of them because its C form leaves out
+  the object argument.
+
+### Decided
+- **A host showing an application runs as the signed-in user, elevated**
+  ([impl-plan-windows.md](impl-plan-windows.md) W5): the system's capture of a window is served to
+  the signed-in user's processes only -- the system account is refused it, and a thread of the
+  system account acting as the user is refused it too. Elevated so its input reaches an
+  application that runs elevated. The account is chosen as the host starts; the secure screens
+  are not that host's.
+
+### Measured
+- As the signed-in user, unelevated or elevated, a window's capture took every picture; the
+  border the system draws around a captured window goes when asked, with no access asked for.
+- **The realtime GPU band is granted without the privilege on Windows 11 24H2**
+  ([05 §3](05-host.md)): a process of the signed-in user, unelevated, is given the class and reads
+  it back.
+
+### Checked
+- Offline: the window capture's handlers' answers and counts; on three GPUs, a placed picture
+  against the same picture unplaced, sample for sample, in every layout each writes, computed
+  and drawn; a window's capture as drawn and closed; a window of the test's own drawn at its
+  place on black, and the canvas black after it. Each broken once and seen to fail.
+- On the development machine, as the signed-in user, the host's own display path on NVIDIA's
+  encoder and the stamped test applications: the game, then the client as it came in front, then
+  the game, with no rebuild; every stamp valid, the game's 525 pictures all distinct and 9.7 ms
+  from submit to converted at the median; the client's native menu in the picture; with another
+  program in front, the picture stayed on the client and its stamps went on. A session with a
+  client, AMD's and Intel's encoders, and a host started elevated by the service are not run yet.
+
 ## 2026-11-20 - W5.1 closed: a guest held to one application
 
 ### Built

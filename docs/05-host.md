@@ -245,6 +245,20 @@ Rules:
   sides and hands its picture over at the panel's, and compared as the picture's, every open of a
   turned output -- a panel's as much as a virtual display's -- asked for another, a stream
   turning over and over.
+- **An application's window can be the picture instead** (*added 2026-11-20*, §7.4,
+  [impl-plan-windows.md](impl-plan-windows.md) W5.2). On Windows, while the guests are held to an
+  application, the picture is the system's capture of the application's window rather than of its
+  output: the window drawn at its place on a canvas the size of the output it is on, black around
+  it, and what lies past the output's edges left out; nothing is scaled. Its pictures are told by
+  an event of the capture's own and timed as they arrive; a refresh past the deadline with none is
+  a present of the same picture, as the duplication's wait has it. The capture's shortest interval
+  is set to a millisecond -- its default, 16 ms, halves a 120 Hz source -- the window's popups and
+  menus are taken in, the pointer is left out, and the border the system draws on the screen
+  around a captured window is not drawn. The pointer is the output's duplication's, kept open for
+  it alone, its pictures given back unread. **The capture of a window is served to processes of
+  the signed-in user only**: a host of the system account is refused every one, and shows the
+  canvas black. The interval and the popups exist from Windows 11 24H2; before it, a capture of a
+  window delivers a picture every 16 ms at most and leaves the popups out.
 - **On Windows the lock screen and the secure attention screen are drawn on the primary display
   alone** (*found 2026-10-16, at W3.5's checks*). A guest watching another display -- the host's
   own beside a lit panel -- sees black while they are up, though the stream goes on, follows the
@@ -340,7 +354,10 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   band: there the conversion ends with the game's frame whatever its class. The band asks for the
   base-priority privilege, which the system account holds; refused, the process's GPU work stays
   at normal priority and says so once. The library never asks: its process is its
-  application's.
+  application's. *Amended 2026-11-20, measured:* **on Windows 11 24H2 the band is granted without
+  the privilege** -- a process of the signed-in user, unelevated, is given the realtime class and
+  reads it back. Whether it then schedules as the system account's did under a game is not
+  measured, nor any other build.
 - **An integrated device powers its compute block down between frames, and the first
   conversion after the gap pays the wakeup.** Measured on the open stack: 0.4 ms warm
   against 1.3 ms after a few milliseconds of idle, with no encoder and no display activity
@@ -1451,6 +1468,20 @@ guest's thread left on the desktop the lock screen or an elevation prompt had is
 desktop that takes input as it is now, at most every quarter second, and asked again; while the
 lock screen or a prompt has it, a held guest's input goes nowhere, neither being the
 application's.
+
+*Built 2026-11-20* ([impl-plan-windows.md](impl-plan-windows.md) W5.2): **a held guest sees the
+application alone.** While the scope is set, the stream shows the application's window in place
+of its output's picture (§2), on the output the window is on. The window is the one in front
+while it is the application's -- a dialog or a menu of the application's comes in its owner's
+picture; else the one shown last, for as long as it is open, covered or not; else the
+application's topmost on the screen; else none, and the canvas is black. The stream is rebuilt as
+the scope is set and cleared, and as the window goes to another output, never as the picture
+moves between the application's windows. **One stream serves every seat, so the owner sees what a
+held guest sees**, and while the scope is set a request for another output waits for it to be
+cleared: a held guest could otherwise move the picture off the application. **A host showing an
+application runs as the signed-in user**, elevated so its input reaches an application that runs
+elevated ([impl-plan-windows.md](impl-plan-windows.md) W5); a host of the system account
+holding its guests to an application shows them the canvas black.
 
 ## §8 Cursor
 

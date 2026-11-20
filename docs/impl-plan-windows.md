@@ -2995,6 +2995,18 @@ The decisions are recorded once, here.
 - **Windows first.** Capturing a window, a process's sound, the foreground and placing a window are
   the system's own here. On Linux the host sees no window and its input reaches every program, so
   a scope there wraps the application in a compositor of its own -- another phase.
+- **A host for an application runs as the signed-in user, elevated** (*decided 2026-11-20, at
+  W5.2*). The system's capture of a window refuses the system account the host otherwise runs as:
+  it is served per signed-in user, and refused the same to a thread of the system account acting as
+  that user. The system account is there for the secure screens, which a held guest never reaches.
+  So the account is chosen as the host starts -- the system account for the whole desktop with its
+  secure screens, the signed-in user for an application -- and changing it is a restart; in the
+  user's host the scope is still set and cleared live, the whole desktop duplicated while none is
+  set, with no secure screens and no attention chord. **Elevated for its input alone**: the batch
+  input call does not reach a window of a higher integrity, and some applications run elevated;
+  the application it launches is launched unelevated. A process of the user's capturing beside a
+  host of the system account was weighed and not taken: a process and a channel more, for screens
+  the scope does not use.
 
 ### Steps
 
@@ -3069,12 +3081,37 @@ The decisions are recorded once, here.
   moved the pointer and its buttons acted in the game -- once, at the very start of a match, an
   absolute move did not land and the next one did. **So such a game is played with
   `virtual_input` on, on the primary display.**
-- [ ] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
+- [x] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
   in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
   its place on the canvas by the conversion, following the foreground; black before the
   application has a window and after it exits, the stream and its guests kept. Checked by
   stamped pictures: a switch between windows with no rebuild, a covered window still live, a menu
   in the picture.
+  *Measured first, 2026-11-20:* **the system's capture of a window refuses the system account** --
+  its availability and every capture of a window refused with "the service does not exist", the
+  system serving the capture per signed-in user -- and refuses it the same to a thread of the
+  system account acting as the signed-in user; the signed-in user's process captures every
+  picture, elevated or not, the border off as asked with no access asked for. So the decision on
+  the host's account above. The interval and the secondary windows exist from Windows 11 24H2:
+  before it, a picture every 16 ms at most and no popups.
+  *Built and checked 2026-11-20* ([05 §2, §7.4](05-host.md)): the capture of a window in the
+  capture crate over the system's capture runtime, its two handlers this side's own; the
+  conversion's place -- a picture at an offset on a larger target, black around it, in every
+  layout and both passes; the window as the display's third source, the output's duplication
+  kept for the pointer alone; the stream rebuilt onto the application's output as the scope is
+  set or cleared, a request for another output waiting while it is set, and the application's
+  window, not the output, in every seat's picture, the owner's included. **Run**: a window's
+  capture as drawn -- its colour, its size, its close -- and its handlers' answers; a placed
+  picture against the same picture unplaced, sample for sample, in every layout an adapter
+  writes, computed and drawn, on three GPUs; a window of the test's own drawn at its place on
+  black and the canvas black after it; each broken once and seen to fail. On the development
+  machine, as the signed-in user, the host's own display path on NVIDIA's encoder and the
+  stamped test applications: **the game followed, then the client as it came in front, then the
+  game, with no rebuild; every stamp valid** -- the game's 525 pictures all distinct, 9.7 ms from
+  submit to converted at the median and 10.4 at p95, against the capture's 9.0 to 9.1 to its
+  arrival (W5's measurement); the client's native menu in the picture; **with another program in
+  front, the picture stayed on the client and its stamps went on**. A session with a client is
+  W5's gate.
 - [ ] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
   followed as its processes open and close their sound; each one's process held, so its number
   cannot pass to another process under the capture, and the capture closed when it exits; read
@@ -3095,6 +3132,9 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-20: W5.2 built and checked: the application's window as the display's source, drawn at
+  its place on its output's canvas, following the front; the host for an application decided to
+  run as the signed-in user, the system's capture of a window refused to the system account.
 - 2026-11-20: W5.1 amended: a process that opens but cannot be named is asked about again. A game
   under its anti-cheat measured: named and judged in front, keys in, every pointer move through the
   batch input call refused machine-wide while it runs; the input driver's keyboard and mouse reach
