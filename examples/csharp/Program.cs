@@ -53,6 +53,20 @@ foreach (var (id, name) in Host.AudioOutputs())
     Console.WriteLine($"audio output: {name}  [{id}]");
 }
 
+#if WINDOWS
+// **The applications the guests can be held to**, from `LOWLAT_APPLICATIONS`
+// (docs/impl-plan-windows.md W5.5); in a session each is started and held to by
+// its number's key.
+var applications = Applications.Load();
+for (var at = 0; at < applications.Length; at++)
+{
+    var app = applications[at];
+    Console.WriteLine(
+        $"application {at + 1}: {app.Name}, {app.Executables.Length} executable(s), "
+        + $"input driver={app.VirtualInput}, place={app.Place ?? "as it opens"}");
+}
+#endif
+
 if (offline || session is null)
 {
     // Everything except the service: the boundary is driven end to end with a
@@ -61,6 +75,16 @@ if (offline || session is null)
         ? "no LOWLAT_SESSION, running the boundary without signaling"
         : "LOWLAT_OFFLINE, running the boundary without signaling");
     host.DriveWithoutSignaling();
+#if WINDOWS
+    // **One application held and started with no guest**, where `LOWLAT_HOLD`
+    // names it by its number: what a session's key does, run without one.
+    if (int.TryParse(Environment.GetEnvironmentVariable("LOWLAT_HOLD"), out var number)
+        && number >= 1 && number <= applications.Length)
+    {
+        host.Hold(applications[number - 1])?.Join(TimeSpan.FromSeconds(65));
+        host.LetGo();
+    }
+#endif
     host.Stop();
     host.Destroy();
     return 0;
@@ -113,7 +137,8 @@ _ = Task.Run(async () =>
 // reports, `s` every guest but the owner held to `LOWLAT_SCOPE`'s executables.
 Console.WriteLine(
     "keys: i switches the keyboard and mouse, p the pads, on the input driver; "
-    + "s holds the guests to LOWLAT_SCOPE, or lets them go");
+    + "s holds the guests to LOWLAT_SCOPE, or lets them go; "
+    + "1-9 start an application and hold the guests to it, 0 lets them go");
 _ = Task.Run(async () =>
 {
     while (!cancel.IsCancellationRequested)
@@ -130,6 +155,12 @@ _ = Task.Run(async () =>
                     break;
                 case 's':
                     host.ToggleScope();
+                    break;
+                case '0':
+                    host.LetGo();
+                    break;
+                case var digit and >= '1' and <= '9' when digit - '1' < applications.Length:
+                    host.Hold(applications[digit - '1']);
                     break;
             }
         }

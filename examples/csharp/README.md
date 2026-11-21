@@ -46,6 +46,23 @@ desktops only the system account reaches, so a host that must stream them runs
 as the system account in the console session
 ([impl-plan-windows.md](../../docs/impl-plan-windows.md) W2).
 
+## Holding guests to one application (Windows)
+
+`LOWLAT_APPLICATIONS` names a JSON file of applications
+(`{"applications": [{"name", "program", "arguments", "directory", "executables":
+[...], "virtualInput", "place"}]}`); in a session, key `1` to `9` holds every
+guest but the owner to that application and starts it, and `0` lets them go
+([05 §7.4](../../docs/05-host.md), [06 §3](../../docs/06-api.md)). The guests
+are held before the start, so from its first window. The program is started by
+the desktop's shell, so unelevated, and its first window is found by the
+executables its process runs and moved to the middle of its monitor (`center`)
+or of an output named by its enumeration identity. `virtualInput` switches the
+guests' keyboard and mouse to the input driver for it, which a game under an
+anti-cheat that refuses injected pointer moves needs. Run such a host as the
+signed-in user, elevated: the system account shows the held guests black, and
+the input driver admits an administrator only elevated. `LOWLAT_HOLD=N` with
+`LOWLAT_OFFLINE` holds and starts application `N` with no session.
+
 ## What is where
 
 | File | |
@@ -54,6 +71,7 @@ as the system account in the console session
 | `Signaling.cs` | Kessel, written against .NET's own sockets and JSON |
 | `Host.cs` | the calls an application makes, and the event pump |
 | `Program.cs` | admission policy, the reconnect loop, and the wiring |
+| `Applications.cs` | the applications guests are held to, their start by the shell, their first window (Windows) |
 
 ## Three things worth reading before writing another integration
 

@@ -317,6 +317,74 @@ internal sealed class Host
     /// `s` while it runs: the guests held to `LOWLAT_SCOPE`'s executables, or
     /// let go.
     public void ToggleScope() => Scope(Held().Length == 0 ? ScopeFromEnvironment() : []);
+
+    /// The input driver's switch as it stood before a hold turned it on, to put
+    /// back when the guests are let go; nothing where no hold turned it.
+    private bool? inputBefore;
+
+    /// Hold every guest but the owner to `app` and start it. **Held first**, so
+    /// the guests are held from its first window; the input driver's keyboard
+    /// and mouse switched on where it asks for them, since a game under an
+    /// anti-cheat that refuses injected pointer moves takes the driver's
+    /// (docs/05-host.md section 7); started by the desktop's shell, so
+    /// unelevated; its first window placed where asked. Returns the thread
+    /// that waits for that window, or nothing where it was not started.
+    public Thread? Hold(Application app)
+    {
+        if (app.VirtualInput && VirtualInput(true) is var (switched, was) && switched)
+        {
+            inputBefore ??= was;
+        }
+        var scoped = Scope(app.Executables);
+        if (scoped != Status.Ok && scoped != Status.ScopeNoPicture)
+        {
+            Console.WriteLine($"applications: {app.Name} not started, the guests not held to it");
+            return null;
+        }
+        var failed = Shell.Launch(app.Program, app.Arguments, app.Directory);
+        if (failed is not null)
+        {
+            Console.WriteLine($"applications: {app.Name} not started: {failed}");
+            return null;
+        }
+        Console.WriteLine($"applications: {app.Name} started by the desktop's shell");
+        var outputs = Enumeration.Outputs().Select(each => (each.id, each.connector)).ToList();
+        return AppWindows.Follow(app, outputs);
+    }
+
+    /// `0` while it runs: every guest let go, and the input driver's switch put
+    /// back as it stood before a hold turned it on. The application runs on;
+    /// closing it is the person at the desk's.
+    public void LetGo()
+    {
+        Scope([]);
+        if (inputBefore is { } before)
+        {
+            VirtualInput(before);
+            inputBefore = null;
+        }
+    }
+
+    /// Switch the guests' keyboard and mouse to the input driver or off it,
+    /// saying what the host answered: whether it switched, and what it was.
+    private (bool switched, bool was) VirtualInput(bool on)
+    {
+        unsafe
+        {
+            var cfg = new HostInputConfig { Size = (uint)sizeof(HostInputConfig) };
+            if (Native.lowlat_host_get_input_config(handle, &cfg) != Status.Ok || cfg.VirtualInput == on)
+            {
+                return (false, cfg.VirtualInput);
+            }
+            var was = cfg.VirtualInput;
+            cfg.VirtualInput = on;
+            var set = Native.lowlat_host_set_input_config(handle, &cfg);
+            Console.WriteLine(
+                $"input: keyboard and mouse on the driver={on}: "
+                + (set == Status.Ok ? "switched" : $"refused ({Text.Describe(set)})"));
+            return (set == Status.Ok, was);
+        }
+    }
 #endif
 
     public HostStatus State()
