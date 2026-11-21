@@ -2936,8 +2936,9 @@ pads' maker's own PC library.
 owner see, hear and steer one application and nothing else of the machine: the application's
 window in place of the desktop, its sound in place of the machine's mix, and their input taken
 only while one of its windows is in front. The owner turns it on and names the application from
-the host, through the integrating application -- `lowlatd` for this project's own -- and a client
-changes nothing: it connects to a desktop host as it always has. Windows first; Linux, where the
+the host, through the integrating application -- the C# reference host for this project's own
+(*replanned 2026-11-21*: not `lowlatd`, which keeps W5.1's `--scope` and nothing more) -- and a
+client changes nothing: it connects to a desktop host as it always has. Windows first; Linux, where the
 same scope needs a compositor of its own around the application, is a phase of its own later.
 The decisions are recorded once, here.
 
@@ -3170,18 +3171,42 @@ The decisions are recorded once, here.
   same program switched the input driver on through the input configuration: refused to the
   signed-in user unelevated (`LOWLAT_ERR_INPUT_DRIVER_DENIED`), taken from its elevated token and
   from the system account ([11 §2.2](11-drivers.md)). A session with a client is W5's gate.
-- [ ] **W5.5 `lowlatd`**: applications' definitions -- a name, a launch command, a working
-  directory, the paths -- launched in the signed-in session, the scope set and cleared from the
-  tray and the command line; the window placed once it appears, where asked.
+- [x] **W5.5 the reference host**: the C# reference host (`examples/csharp`) as an
+  application's host, through the C interface alone -- applications' definitions, each a name, a
+  program with its arguments and working directory, its executables, whether the guests' keys and
+  pointer go to the input driver, and where its window is placed; each launched by the desktop's
+  shell, so unelevated in the signed-in session, with the guests held to it first; the scope
+  cleared from the host's console; the window placed once it appears. *Replanned 2026-11-21, the
+  maintainer's decision*: `lowlatd` is not given game mode, and W5's gate runs on the reference
+  host, started by whoever runs it as the signed-in user, elevated.
+  *Built and checked 2026-11-21* (the example's README): the definitions from the file
+  `LOWLAT_APPLICATIONS` names, one this host could not hold to left out and said so; a key per
+  application holding the guests and starting it, `0` letting them go and putting the input
+  driver's switch back; the start handed to the desktop's shell through its own interfaces; the
+  first window found by the executables its process runs -- not by the process started, which a
+  launcher already running replaces -- and moved to the middle of its monitor's working area or of
+  an output's, that monitor asked of the system by the output's name. **Found on the way**: an
+  output's enumerated position is the space absolute input is expressed against, measured from
+  the desktop's corner, and placing a window there missed by the offset of a monitor to the
+  primary's left. **Run** on the development machine with no session, the test applications'
+  launcher the program: from an elevated host and from an unelevated one, started fresh -- the
+  launcher the shell's child, the client's process unelevated -- and handed to a launcher already
+  running, which took it as it should; the client's window found and moved to the second
+  monitor's middle as asked. A session with a client is W5's gate.
 
-**Gate:** on the development machine, with established clients and the test applications: a guest
-who is not the owner held to the application -- nothing outside it seen, heard or reached, the
+**Gate:** on the development machine, the reference host with established clients and the test
+applications: a guest who is not the owner held to the application -- nothing outside it seen, heard or reached, the
 owner unheld -- switching between its windows with no rebuild, its menus in the picture, its sound
 alone; a launcher-style game through its launcher to a match, its anti-cheat included; the
 recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-21: W5.5 built and checked: the reference host holds its guests to an application
+  from its console, starting it through the desktop's shell, unelevated, and placing its first
+  window.
+- 2026-11-21: W5.5 replanned: an application's host is the C# reference host, through the C
+  interface alone, and W5's gate runs on it; `lowlatd` keeps W5.1's `--scope` and nothing more.
 - 2026-11-20: W5.4 built and checked: the scope through the C interface, a live setting on Windows
   alone; a scope this process cannot show is taken and answered with a status of its own rather
   than refused, so an unread refusal cannot leave the guests on the whole desktop.

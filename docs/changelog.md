@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-21 - W5.5: the reference host holds its guests to an application
+
+### Built
+- **The C# reference host is an application's host**, through the C interface alone
+  ([examples/csharp](../examples/csharp/README.md)): applications read from the file
+  `LOWLAT_APPLICATIONS` names -- a name, a program with its arguments and working directory, its
+  executables, whether the guests' keyboard and mouse go to the input driver, where its window is
+  placed -- and in a session a key per application holds every guest but the owner to it and then
+  starts it, `0` letting them go. `lowlatd` is not given game mode (W5 replanned the same day).
+- **Started by the desktop's shell**, through the shell's own interfaces, so the application runs
+  unelevated as the shell's child whatever the host runs as, with the signed-in user's own
+  environment.
+- **Its first window found by its executables and placed**: by the executables its process runs,
+  never by the process the host started, which a launcher already running replaces; moved to the
+  middle of its monitor's working area or of a named output's, that monitor asked of the system by
+  the output's name.
+
+### Checked
+- On the development machine with no session, the test applications' launcher as the program:
+  from an elevated host and an unelevated one, started fresh -- the launcher the shell's child,
+  the client's process unelevated -- and handed to a launcher already running; the client's window
+  found and moved to the second monitor's middle as asked. A session with a client is not run yet.
+- **Found on the way**: an output's enumerated position is measured from the desktop's corner, the
+  space absolute input is expressed against, so a window placed there missed by the offset of a
+  monitor to the primary's left; the output's monitor is now asked of the system by its name.
+
 ## 2026-11-20 - W5.4: the scope through the C interface (minor 39)
 
 ### Built
