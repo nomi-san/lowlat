@@ -2046,6 +2046,15 @@ impl Display {
     /// look without waiting, its picture given back unread. Made again as it
     /// goes, as for any duplicated output.
     fn drain_pointer(&mut self) {
+        // **The shape from the system's own pointer**: the duplication gives
+        // none while the window is captured with its pointer left out
+        // (measured 2026-11-21), and its word on visibility is not taken
+        // either ([`Self::pointer`]).
+        if let Some(windowed) = self.window.as_mut()
+            && let Some(shape) = windowed.pointer.changed(&mut self.watch.raw)
+        {
+            self.watch.adopt(&shape);
+        }
         if self.duplicate().is_err() {
             return;
         }
@@ -2342,6 +2351,15 @@ impl Display {
         }
         let (x, y) = (cursor.x - output.left, cursor.y - output.top);
         let now_ms = clock::elapsed_ms(self.origin);
+        // **An application's window shows no pointer of its own, so whether a
+        // guest draws one is the system's show state**: the duplication is no
+        // witness while a window is captured with its pointer left out -- it
+        // reports the pointer not visible throughout, or says nothing of it at
+        // all where another process's capture leaves it out (measured
+        // 2026-11-21) -- and a guest told hidden takes its motion as relative.
+        if self.window.is_some() {
+            self.watch.visible = Some(cursor.showing);
+        }
         let watch = &mut self.watch;
         let picture = watch.picture.take();
         let fresh = watch.settle.look(watch.visible, picture, cursor, now_ms)?;
@@ -4639,6 +4657,153 @@ mod tests {
                 "the client's pictures stood still while the shell was in front"
             );
         });
+    }
+
+    /// **The pointer over an application's window is told as it is over the
+    /// output's own picture**: shown and not relative, the bits a guest is
+    /// told for the output itself. Read with the fixtures (as above:
+    /// `LOWLAT_SCOPE`, `LOWLAT_FX`), the client in front and the pointer moved
+    /// about the output's middle, over it, for two seconds each way. Needs
+    /// NVIDIA's encoder and a process of the signed-in user's, and moves the
+    /// pointer, so off by default.
+    #[test]
+    #[ignore = "requires NVIDIA's encoder, the stamped fixtures running and the signed-in user's account; moves the pointer"]
+    fn the_pointer_over_the_applications_window_is_told_as_over_its_output() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+        let paths = std::env::var("LOWLAT_SCOPE").expect("LOWLAT_SCOPE: the application's paths");
+        let launcher = std::env::var("LOWLAT_FX").expect("LOWLAT_FX: the fixtures' launcher");
+        std::process::Command::new(&launcher)
+            .arg("--focus=client")
+            .status()
+            .expect("the launcher");
+        std::thread::sleep(core::time::Duration::from_millis(800));
+        let scope = Arc::new(lowlat_inject::Scope::new(paths.split(';')));
+        let name = Display::application_output(&scope).expect("the application's output");
+        // The loop's own order -- a present, an acquire, the pointer -- with the
+        // pointer moved every 50 ms; the state settled at the end, the
+        // duplication's last word on visibility and the system's show state.
+        let watch = |display: &mut Display| {
+            let (x, y) = (
+                i32::midpoint(display.output.left, display.output.right),
+                i32::midpoint(display.output.top, display.output.bottom),
+            );
+            let began = Time::now();
+            let mut told = 0u32;
+            let mut moved = 0i32;
+            let mut landed = 0u32;
+            // How often the duplication's last word was visible, not, none.
+            let mut seen = [0u32; 3];
+            while clock::elapsed_ms(began) < 2000.0 {
+                if clock::elapsed_ms(began) > f64::from(moved) * 50.0 {
+                    let to = (x + (moved % 20) * 4, y + (moved % 7) * 3);
+                    // SAFETY: a point on the screen, no memory.
+                    unsafe { SetCursorPos(to.0, to.1) };
+                    landed += u32::from(
+                        duplication::cursor().is_some_and(|cursor| (cursor.x, cursor.y) == to),
+                    );
+                    moved += 1;
+                }
+                if display.wait_present(20) == Some(true) && display.acquire().is_ok() {
+                    let _ = display.converted();
+                    seen[match display.watch.visible {
+                        Some(true) => 0,
+                        Some(false) => 1,
+                        None => 2,
+                    }] += 1;
+                }
+                if display
+                    .pointer()
+                    .is_some_and(|seen| seen.reported.is_some())
+                {
+                    told += 1;
+                }
+            }
+            (
+                display.watch.visible,
+                duplication::cursor().map(|cursor| cursor.showing),
+                display.watch.settle.hidden(),
+                display.watch.settle.relative(),
+                (told, moved, landed, seen),
+            )
+        };
+        // **And its shape still follows**: a window of the test's own over the
+        // output, its pointer the hand and then the text cursor, each said with
+        // its own picture.
+        let shapes = |display: &mut Display| {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_HAND, IDC_IBEAM, LoadCursorW};
+            let over = PointerWindow::over(&display.output);
+            let mut said = Vec::new();
+            for shape in [IDC_HAND, IDC_IBEAM] {
+                // SAFETY: the system's shared pointer of that name.
+                over.set(unsafe { LoadCursorW(core::ptr::null_mut(), shape) } as usize);
+                let began = Time::now();
+                let mut last = None;
+                while clock::elapsed_ms(began) < 800.0 {
+                    if display.wait_present(20) == Some(true) && display.acquire().is_ok() {
+                        let _ = display.converted();
+                    }
+                    if let Some(seen) = display.pointer()
+                        && let Some(reported) = seen.reported
+                    {
+                        last = Some((seen.checksum, reported.hidden, reported.relative));
+                    }
+                }
+                // The picture told, by how its colour is kept: partly clear
+                // pixels, and those brighter than their alpha, which a
+                // premultiplied picture has none of.
+                let rgba = &display.watch.rgba;
+                println!(
+                    "  {}x{}: partly clear {} brighter than their alpha {}",
+                    display.watch.width,
+                    display.watch.height,
+                    rgba.chunks_exact(4)
+                        .filter(|p| p[3] > 0 && p[3] < 0xFF)
+                        .count(),
+                    rgba.chunks_exact(4)
+                        .filter(|p| p[0].max(p[1]).max(p[2]) > p[3])
+                        .count()
+                );
+                said.push(last);
+            }
+            said
+        };
+        let desktop = on_nvenc(&name, |display| (watch(display), shapes(display)));
+        let window = on_nvenc_window(&name, scope, |display| (watch(display), shapes(display)));
+        for (source, ((visible, showing, hidden, relative, (told, moved, landed, seen)), said)) in
+            [("output", &desktop), ("window", &window)]
+        {
+            println!(
+                "{source}: visible={visible:?} showing={showing:?} hidden={hidden} \
+                 relative={relative} messages={told} moves={moved} landed={landed} \
+                 acquires visible/not/none={seen:?}; hand then text said {said:?}"
+            );
+        }
+        let (desktop, desktop_shapes) = desktop;
+        let (window, window_shapes) = window;
+        assert!(
+            desktop.4.3[0] > 0 && window.4.3[0] + window.4.3[1] > 0,
+            "the duplication said nothing of the pointer: no evidence either way"
+        );
+        for said in [&desktop_shapes, &window_shapes] {
+            let checksums: Vec<_> = said.iter().map(|each| each.map(|seen| seen.0)).collect();
+            assert!(
+                checksums.iter().all(Option::is_some) && checksums[0] != checksums[1],
+                "the pointer's shape did not follow, said {said:?}"
+            );
+            assert!(
+                said.iter().flatten().all(|seen| !seen.1 && !seen.2),
+                "a shape was told hidden or relative, said {said:?}"
+            );
+        }
+        assert_eq!(
+            (window.2, window.3),
+            (desktop.2, desktop.3),
+            "the pointer over the window told otherwise than over the output"
+        );
+        assert!(
+            !window.2 && !window.3,
+            "the pointer over the window told hidden or relative"
+        );
     }
 
     /// A picture by the first present, as the loop's first tick takes one: a

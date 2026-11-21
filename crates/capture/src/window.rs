@@ -62,22 +62,28 @@ use lowlat_drivers::wgc::{
     Apartment, Error, IDirect3DDxgiInterfaceAccess, IGraphicsCaptureItemInterop, Wgc, check, query,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HWND, LPARAM, RECT, WAIT_OBJECT_0,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, HWND, LPARAM, POINT, RECT,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFOEXW, MonitorFromWindow,
+    BI_RGB, BITMAP, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits,
+    GetMonitorInfoW, GetObjectW, HBITMAP, MONITOR_DEFAULTTONEAREST, MONITORINFOEXW,
+    MonitorFromWindow, RGBQUAD, ReleaseDC,
 };
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, SetEvent, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GA_ROOTOWNER, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindow,
-    GetWindowLongPtrW, IsIconic, IsWindow, IsWindowVisible, WS_EX_TOOLWINDOW,
+    CURSORINFO, EnumWindows, GA_ROOTOWNER, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetCursorInfo,
+    GetForegroundWindow, GetIconInfo, GetWindow, GetWindowLongPtrW, HCURSOR, ICONINFO, IsIconic,
+    IsWindow, IsWindowVisible, WS_EX_TOOLWINDOW,
 };
+
+use crate::duplication::{Kind, Shape};
 
 /// The frame pool's buffers: the one a picture is held in until the next
 /// take, and one for the system to write the next into.
@@ -232,6 +238,207 @@ pub fn topmost(holds: &mut dyn FnMut(HWND) -> bool) -> Option<HWND> {
     // runs; its answer is the stop.
     unsafe { EnumWindows(Some(each), (&raw mut walk) as LPARAM) };
     (!walk.found.is_null()).then_some(walk.found)
+}
+
+/// The system's own pointer, read from its pictures: **what a window's
+/// capture takes in place of the duplication's word on the pointer**. A
+/// capture that leaves the pointer out of its pictures leaves the duplication
+/// no witness of it either -- it says the pointer is not visible, or nothing of
+/// it at all, and gives no shape (measured 2026-11-21).
+#[derive(Debug, Default)]
+pub struct SystemPointer {
+    /// The pointer last read, by its handle: a shape is read again only once
+    /// the system's pointer is another.
+    last: usize,
+}
+
+impl SystemPointer {
+    /// The pointer's shape, in one of the duplication's layouts with its bytes
+    /// in `raw`, once the system's pointer is another than the last read;
+    /// nothing while it is the same, or where it cannot be read.
+    pub fn changed(&mut self, raw: &mut Vec<u8>) -> Option<Shape> {
+        let mut info = CURSORINFO {
+            cbSize: u32::try_from(core::mem::size_of::<CURSORINFO>()).ok()?,
+            flags: 0,
+            hCursor: core::ptr::null_mut(),
+            ptScreenPos: POINT { x: 0, y: 0 },
+        };
+        // SAFETY: a structure of its own size, written by the call.
+        if unsafe { GetCursorInfo(&raw mut info) } == 0 || info.hCursor.is_null() {
+            return None;
+        }
+        let handle = info.hCursor as usize;
+        if handle == self.last {
+            return None;
+        }
+        let shape = shape_of(info.hCursor, raw)?;
+        self.last = handle;
+        Some(shape)
+    }
+}
+
+/// A bitmap the system handed over, deleted as it goes.
+struct Bitmap(HBITMAP);
+
+impl Drop for Bitmap {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: a bitmap this owns, deleted once.
+            unsafe { DeleteObject(self.0) };
+        }
+    }
+}
+
+/// A bitmap's size, `(width, height)`.
+fn size_of_bitmap(bitmap: HBITMAP) -> Option<(u32, u32)> {
+    let mut seen = BITMAP {
+        bmType: 0,
+        bmWidth: 0,
+        bmHeight: 0,
+        bmWidthBytes: 0,
+        bmPlanes: 0,
+        bmBitsPixel: 0,
+        bmBits: core::ptr::null_mut(),
+    };
+    let size = i32::try_from(core::mem::size_of::<BITMAP>()).ok()?;
+    // SAFETY: a bitmap handle and a structure of the size given.
+    if unsafe { GetObjectW(bitmap, size, (&raw mut seen).cast()) } != size {
+        return None;
+    }
+    Some((
+        u32::try_from(seen.bmWidth).ok()?,
+        u32::try_from(seen.bmHeight).ok()?,
+    ))
+}
+
+/// The bytes a row of `width` pixels at `bits` a pixel takes in a picture
+/// read from the system: whole four-byte words.
+fn stride(width: u32, bits: u32) -> u32 {
+    (width * bits).div_ceil(32) * 4
+}
+
+/// A bitmap's rows, top first, at `bits` a pixel, into `into`.
+fn read_rows(
+    bitmap: HBITMAP,
+    width: u32,
+    height: u32,
+    bits: u16,
+    into: &mut Vec<u8>,
+) -> Option<()> {
+    /// The header and room for a one-bit picture's two colours, which the
+    /// call writes after it.
+    #[repr(C)]
+    struct Info {
+        header: BITMAPINFOHEADER,
+        colours: [RGBQUAD; 2],
+    }
+    let mut info = Info {
+        header: BITMAPINFOHEADER {
+            biSize: u32::try_from(core::mem::size_of::<BITMAPINFOHEADER>()).ok()?,
+            biWidth: i32::try_from(width).ok()?,
+            // Negative: the rows top first.
+            biHeight: -i32::try_from(height).ok()?,
+            biPlanes: 1,
+            biBitCount: bits,
+            biCompression: BI_RGB,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        colours: [RGBQUAD {
+            rgbBlue: 0,
+            rgbGreen: 0,
+            rgbRed: 0,
+            rgbReserved: 0,
+        }; 2],
+    };
+    into.clear();
+    into.resize(stride(width, u32::from(bits)) as usize * height as usize, 0);
+    // SAFETY: the screen's own context, released below.
+    let dc = unsafe { GetDC(core::ptr::null_mut()) };
+    if dc.is_null() {
+        return None;
+    }
+    // SAFETY: a bitmap, a buffer of every row it has at this depth, and a
+    // header with room for the colours a one-bit picture writes.
+    let rows = unsafe {
+        GetDIBits(
+            dc,
+            bitmap,
+            0,
+            height,
+            into.as_mut_ptr().cast(),
+            (&raw mut info).cast(),
+            DIB_RGB_COLORS,
+        )
+    };
+    // SAFETY: the context taken above, released once.
+    unsafe { ReleaseDC(core::ptr::null_mut(), dc) };
+    (u32::try_from(rows).ok()? == height).then_some(())
+}
+
+/// A pointer's shape from its own pictures, in the duplication's layouts:
+/// **its two masks, AND then XOR, where it has no colour picture**; its colour
+/// straight where any of it carries alpha; else its colour with the AND mask
+/// as the alpha -- the masked layout, which inverts where the mask keeps the
+/// screen.
+fn shape_of(cursor: HCURSOR, raw: &mut Vec<u8>) -> Option<Shape> {
+    let mut icon = ICONINFO {
+        fIcon: 0,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: core::ptr::null_mut(),
+        hbmColor: core::ptr::null_mut(),
+    };
+    // SAFETY: a pointer handle and a structure the call fills; the bitmaps it
+    // makes are this side's to delete.
+    if unsafe { GetIconInfo(cursor, &raw mut icon) } == 0 {
+        return None;
+    }
+    let (mask, colour) = (Bitmap(icon.hbmMask), Bitmap(icon.hbmColor));
+    let hot_x = i32::try_from(icon.xHotspot).unwrap_or(0);
+    let hot_y = i32::try_from(icon.yHotspot).unwrap_or(0);
+    if colour.0.is_null() {
+        // The masks one above the other, the pointer half the bitmap's height.
+        let (width, height) = size_of_bitmap(mask.0)?;
+        read_rows(mask.0, width, height, 1, raw)?;
+        return Some(Shape {
+            kind: Kind::Monochrome,
+            width,
+            height: height / 2,
+            pitch: stride(width, 1),
+            hot_x,
+            hot_y,
+        });
+    }
+    let (width, height) = size_of_bitmap(colour.0)?;
+    read_rows(colour.0, width, height, 32, raw)?;
+    let alpha = raw.chunks_exact(4).any(|bgra| bgra[3] != 0);
+    if !alpha {
+        let mut and = Vec::new();
+        read_rows(mask.0, width, height, 1, &mut and)?;
+        let pitch = stride(width, 1) as usize;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let kept = and.get(y * pitch + x / 8)? & (0x80 >> (x % 8)) != 0;
+                *raw.get_mut((y * width as usize + x) * 4 + 3)? = if kept { 0xFF } else { 0 };
+            }
+        }
+    }
+    Some(Shape {
+        kind: if alpha {
+            Kind::Colour
+        } else {
+            Kind::MaskedColour
+        },
+        width,
+        height,
+        pitch: width * 4,
+        hot_x,
+        hot_y,
+    })
 }
 
 /// What a session was asked to do that the system it runs on has no way to:
@@ -1080,5 +1287,110 @@ mod tests {
                 "the capture did not close with its window"
             );
         }
+    }
+
+    /// **A pointer of two masks reads as the monochrome layout, its hotspot
+    /// with it**: a pointer of the test's own, a band of each of the four
+    /// pixels a mask pair makes -- black, white, clear, inverting -- drawn as
+    /// the duplication's shape of it is.
+    #[test]
+    fn a_pointer_of_two_masks_reads_as_its_masks() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateCursor, DestroyCursor};
+        // 32 rows of 4 bytes in bands of 8 -- black, white, clear, inverting:
+        // the AND mask keeps the screen in the lower half, the XOR mask sets
+        // the second band and the fourth.
+        let and: Vec<u8> = (0..32 * 4)
+            .map(|at| if at / 4 < 16 { 0x00 } else { 0xFF })
+            .collect();
+        let xor: Vec<u8> = (0..32 * 4)
+            .map(|at| {
+                if matches!(at / 4 / 8, 1 | 3) {
+                    0xFF
+                } else {
+                    0x00
+                }
+            })
+            .collect();
+        // SAFETY: this module, masks of the size given; destroyed below.
+        let cursor = unsafe {
+            CreateCursor(
+                GetModuleHandleW(core::ptr::null()),
+                3,
+                5,
+                32,
+                32,
+                and.as_ptr().cast(),
+                xor.as_ptr().cast(),
+            )
+        };
+        assert!(!cursor.is_null(), "no pointer made");
+        let mut raw = Vec::new();
+        let shape = shape_of(cursor, &mut raw);
+        // SAFETY: the pointer made above, once.
+        unsafe { DestroyCursor(cursor) };
+        let shape = shape.expect("the pointer read");
+        assert_eq!(shape.kind, Kind::Monochrome);
+        assert_eq!((shape.width, shape.height), (32, 32));
+        assert_eq!((shape.hot_x, shape.hot_y), (3, 5));
+        let mut rgba = Vec::new();
+        assert_eq!(
+            crate::duplication::pointer_rgba(&shape, &raw, &mut rgba),
+            Some((32, 32))
+        );
+        let pixel = |x: usize, y: usize| rgba[(y * 32 + x) * 4..(y * 32 + x) * 4 + 4].to_vec();
+        assert_eq!(pixel(10, 3), [0, 0, 0, 0xFF], "black");
+        assert_eq!(pixel(10, 11), [0xFF; 4], "white");
+        assert_eq!(pixel(10, 19)[3], 0, "clear");
+        assert_ne!(pixel(10, 28)[3], 0, "inverting, drawn");
+    }
+
+    /// **The system's own pointers read as shapes of their own**: the arrow
+    /// and the text pointer, each in a layout the wire carries, each its own
+    /// picture.
+    #[test]
+    fn the_systems_pointers_read_as_shapes_of_their_own() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDC_ARROW, IDC_IBEAM, LoadCursorW};
+        let read = |name| {
+            // SAFETY: the system's shared pointer of that name, never destroyed.
+            let cursor = unsafe { LoadCursorW(core::ptr::null_mut(), name) };
+            let mut raw = Vec::new();
+            let shape = shape_of(cursor, &mut raw).expect("the system's pointer read");
+            let mut rgba = Vec::new();
+            let size = crate::duplication::pointer_rgba(&shape, &raw, &mut rgba)
+                .expect("a pointer the wire carries");
+            (shape.kind, size, rgba)
+        };
+        let arrow = read(IDC_ARROW);
+        let text = read(IDC_IBEAM);
+        let hand = read(windows_sys::Win32::UI::WindowsAndMessaging::IDC_HAND);
+        // How the colour of a pointer with alpha is kept: a pixel brighter
+        // than its alpha is no premultiplied one.
+        let above = |rgba: &[u8]| {
+            rgba.chunks_exact(4)
+                .filter(|p| p[0].max(p[1]).max(p[2]) > p[3])
+                .count()
+        };
+        let partial = |rgba: &[u8]| {
+            rgba.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[3] < 0xFF)
+                .count()
+        };
+        eprintln!(
+            "the arrow {:?} {:?}, the text pointer {:?} {:?}, the hand {:?} {:?}: \
+             partly clear pixels {} and brighter than their alpha {}",
+            arrow.0,
+            arrow.1,
+            text.0,
+            text.1,
+            hand.0,
+            hand.1,
+            partial(&hand.2),
+            above(&hand.2)
+        );
+        assert_ne!(arrow.2, text.2, "two pointers read alike");
+        assert!(
+            arrow.2.chunks_exact(4).any(|rgba| rgba[3] != 0),
+            "the arrow read with nothing to see"
+        );
     }
 }

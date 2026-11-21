@@ -96,6 +96,9 @@ pub(super) struct Windowed {
     /// When the system last refused a capture, while it does.
     refused: Option<Time>,
     said_lacking: bool,
+    /// The pointer's shape, read from the system's own pointer: the
+    /// duplication gives none while a window is captured without it.
+    pub(super) pointer: window::SystemPointer,
 }
 
 impl core::fmt::Debug for Windowed {
@@ -137,6 +140,7 @@ impl Windowed {
             pending: false,
             refused: None,
             said_lacking: false,
+            pointer: window::SystemPointer::default(),
         })
     }
 
