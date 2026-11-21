@@ -1557,6 +1557,7 @@ overlay is `hidden` ([§8.1](#81-three-states-never-conflated)):
 |---|---|---|
 | Windows desktop duplication | the show state, or a pointer whose picture is one value throughout | the duplication's own visibility of the pointer, kept from the last frame that carried a pointer update |
 | Windows, the host's own display read from its driver | the show state, or a pointer whose picture is one value throughout | the driver's report of its hardware cursor: not visible -- drawn by the system, or not drawn at all -- and so with no hardware cursor |
+| Windows, an application's window (§7.4) | the show state, or a pointer whose picture is one value throughout | the show state: the window's picture never carries the pointer, so a guest draws one whenever the system shows one |
 | X11 | cursor visibility notifications from the fixes extension | not built |
 | compositor-mediated | the cursor mode reported alongside the stream | not built |
 | scanout | no direct source; the session's ([07 §2.1](07-platforms.md)) | plane presence, debounced ([§8.4](#84-deriving-hidden-from-plane-presence)) |
@@ -1566,6 +1567,20 @@ collapse and the false-positive rate is highest. It is flagged in
 [07-platforms.md](07-platforms.md) as a backend selection input, not something to paper over
 here. *Corrected 2026-10-14:* what scanout lacks is intent; its plane is the overlay state,
 which a far side is meant to read as relative motion.
+
+*Added 2026-11-21, at W5's gate* ([impl-plan-windows.md](impl-plan-windows.md) W5.2): **an
+application's window takes its pointer from the system's own** -- its visibility from the show
+state, its shape read from the pointer's own pictures as the system's pointer changes -- **since
+the duplication is no witness of the pointer while a window is captured with the pointer left
+out**. Measured: the duplication of the window's output then reports the pointer not visible
+throughout, and gives no shape; with another process's capture of that kind running, the
+duplication of any output says nothing of the pointer at all. A guest of an application was told
+hidden, took its motion as relative and drew no pointer. A pointer's own pictures give its shape
+in the duplication's three layouts: its two masks where it has no colour picture, its colour
+where any of it carries alpha, else its colour with the AND mask as the alpha. *Found the same
+day, not changed:* the duplication hands a colour pointer over premultiplied, where the pointer's
+own pictures keep it straight, and the host sends it as straight -- a colour pointer's soft edges
+go out a little darker from the duplication than from the window's source.
 
 *Added 2026-10-16, at W3.4's review:* **the host's own display read from its driver**
 ([11 §1.7](11-drivers.md)) takes the shape and the hotspot from the driver as well, and a

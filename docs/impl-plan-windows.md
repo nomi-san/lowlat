@@ -3115,7 +3115,16 @@ The decisions are recorded once, here.
   submit to converted at the median and 10.4 at p95, against the capture's 9.0 to 9.1 to its
   arrival (W5's measurement); the client's native menu in the picture; **with another program in
   front, the picture stayed on the client and its stamps went on**. A session with a client is
-  W5's gate.
+  W5's gate. *Corrected 2026-11-21, at W5's gate* ([05 §8.2](05-host.md)): **every guest was told
+  the pointer hidden over the application's window**, and took its motion as relative and drew no
+  pointer: the output's duplication, kept for the pointer, reports it not visible throughout
+  while the window is captured with the pointer left out, and gives no shape. The window's
+  pointer now takes its visibility from the system's show state and its shape from the system's
+  own pointer, read from its pictures as it changes. Checked by a test of the window's pointer
+  against the output's, the pointer moved over the application's window and given a hand and a
+  text pointer by a window of the test's own: before, the duplication said not visible for 147 to
+  150 pictures of 148 to 151 and the guest was told hidden, three runs of three; after, the same
+  bits as the output's and both shapes followed.
 - [x] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
   followed as its processes open and close their sound; each one's process held, so its number
   cannot pass to another process under the capture, and the capture closed when it exits; read
@@ -3202,6 +3211,8 @@ recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-21: W5.2 corrected at W5's gate: the pointer over an application's window was told
+  hidden to every guest; it now takes its visibility and its shape from the system's own pointer.
 - 2026-11-21: W5.5 built and checked: the reference host holds its guests to an application
   from its console, starting it through the desktop's shell, unelevated, and placing its first
   window.

@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-21 - W5.2 corrected: the pointer over an application's window
+
+### Fixed
+- **A guest of an application was told the pointer hidden, always** -- found at W5's gate, with
+  established clients on the reference host: each took its motion as relative and drew no
+  pointer, the pointer seen on the host's own monitor alone. The output's duplication, kept for
+  the pointer, is no witness of it while the window is captured with the pointer left out: it
+  reports the pointer not visible throughout and gives no shape ([05 §8.2](05-host.md)). The
+  window's pointer now takes its visibility from the system's show state and its shape from the
+  system's own pointer, read from its pictures as it changes -- its two masks, its colour, or its
+  colour with its mask as the alpha, the layouts the duplication gives.
+
+### Checked
+- A pointer of the test's own of two masks read back as them, pixel for pixel, and the system's
+  arrow and text pointer as shapes of their own.
+- On the development machine with the test applications, the window's pointer against the
+  output's, moved over the application's window: before the fix the duplication said not visible
+  for all but the first picture and the pointer was told hidden, three runs of three; after it,
+  the same bits as the output's, and a hand and a text pointer shown by a window of the test's
+  own both followed.
+
+### Found, not changed
+- **The duplication hands a colour pointer over premultiplied**, where the pointer's own pictures
+  keep it straight, and the host sends it as straight: a colour pointer's soft edges go out a
+  little darker from a duplicated output than from an application's window.
+
 ## 2026-11-21 - W5.5: the reference host holds its guests to an application
 
 ### Built
