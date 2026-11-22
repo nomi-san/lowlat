@@ -213,14 +213,25 @@ jobs:
       # static library: the one thing that links the client the way an
       # application does, and the one build of the toolkit, which a fresh
       # checkout makes. Started with no peer, it names that library and leaves.
+      # **Compiled by Visual Studio's own clang-cl**, which ships with the
+      # standard library it compiles against: that library refuses a Clang
+      # older than its own, and the runner's standalone LLVM, first on the
+      # path, fell behind the image's Visual Studio (Clang 20 against an MSVC
+      # asking for 22).
       - name: The demo against the client-only static library
         run: |
           cargo rustc --release -p lowlat-sdk --no-default-features --features client --crate-type staticlib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item target\release\lowlat.lib "$env:RUNNER_TEMP\lowlat-client.lib"
           . scripts\vs-env.ps1
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $clang = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang `
+            -find 'VC\Tools\Llvm\x64\bin\clang-cl.exe' | Select-Object -First 1
+          if (-not $clang) { "no clang-cl of Visual Studio's own"; exit 1 }
+          & $clang --version
+          $clang = $clang -replace '\\', '/'
           Push-Location examples\client
-          cmake --preset win-x64-clang-release "-DLOWLAT_LIB=$env:RUNNER_TEMP\lowlat-client.lib"
+          cmake --preset win-x64-clang-release "-DCMAKE_CXX_COMPILER=$clang" "-DLOWLAT_LIB=$env:RUNNER_TEMP\lowlat-client.lib"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset win-x64-clang-release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
