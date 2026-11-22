@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-22 - The reference host tells its guests as it closes
+
+### Changed
+- **Ctrl+C in the C# reference host tells every connected guest the host closed** before it
+  stops ([examples/csharp](../examples/csharp/README.md)): each is ended with the disconnect
+  status a client shows as the host having closed, and the host waits up to two seconds for them
+  to go, its event loop reaping each, before the stop -- which tells a peer nothing, so each had
+  waited out its own deadline to learn the host had gone.
+
+### Checked
+- The reference host's drive with no service behind it, unchanged; and Ctrl+C sent to its console
+  while its signaling could reach nothing: it said it was closing, with no guest to tell, and
+  exited cleanly. A session with a client is the maintainer's.
+
 ## 2026-11-22 - W5.2 corrected: a window the application hides gives way
 
 ### Fixed
