@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-22 - CI: vcpkg's packages kept per runner image
+
+### Fixed
+- **Every Windows run built FFmpeg again, 13 to 20 minutes of its step**, though the cache
+  of vcpkg's packages was found every time: its key was the manifests alone, so the set saved
+  once, on 2026-10-29, was restored by every run since and never saved again -- a cache whose
+  key hit is not -- while vcpkg used none of it, finding a package only under the compiler and
+  tools it was built with, which the image had moved. The key now names the runner's image as
+  well, in CI and in the release build: the first run on each image builds the packages and
+  keeps them, and the runs after it restore them.
+
+### Checked
+- The key's value formed as the step forms it; the cache's behaviour on the pushed branch's
+  runs, a first one saving and a second restoring.
+
 ## 2026-11-22 - CI: the demo compiled by Visual Studio's own clang-cl
 
 ### Fixed
