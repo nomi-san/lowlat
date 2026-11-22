@@ -5,7 +5,8 @@
 // Compiled ahead of time, one variant per layout (scripts/gen-d3d11-convert.sh):
 // NV12 and P010, the two-plane 4:2:0 layouts at eight and ten bits; AYUV and
 // Y410, the packed full-chroma words at eight and ten; each the compute pass
-// and the draw's pixel shaders, with the vertex shader every draw shares. The
+// and the draw's pixel shaders, with the vertex shader every draw shares; and
+// each again placed (PLACED), the picture at a place on a larger target. The
 // two forms are the same arithmetic and land on the same samples. The rules
 // are the Linux conversion's: BT.709, limited range with the eight- and
 // ten-bit constants kept apart, chroma as the mean of each 2x2 block, the edge
@@ -13,8 +14,8 @@
 // and written as the exact normalised value of its integer, so the result does
 // not depend on how a driver rounds a float into a normalised store; a ten-bit
 // sample of the two-plane layout lands in the high ten bits of its sixteen.
-// The views' own sizes bound the work; the one constant places a picture on a
-// larger target.
+// The views' own sizes bound the work, so no constant is needed but the placed
+// variant's place.
 
 // BT.709, and not selectable: a receiver applies the inverse unconditionally
 // with nothing on the wire saying which matrix was used.
@@ -43,9 +44,13 @@ static const float C_OFFSET = 128.0 / 255.0;
 // green and blue below are those channels whatever order memory holds them in.
 Texture2D<float4> source : register(t0);
 
-// Where the source's picture lies on the target, for a picture placed on a
-// larger canvas -- a window at its place on its monitor: its top left there,
-// and its size. A size of zero is the source over the whole target.
+#if defined(PLACED)
+
+// Where the source's picture lies on the target, a window at its place on its
+// monitor: its top left there, and its size. **A variant of its own, never a
+// branch in the conversion every picture takes**: a place asked about in each
+// fetch read the source's size again per sample, and cost the duplicated
+// desktop a tenth of each conversion on an AMD integrated GPU (measured).
 cbuffer Place : register(b0)
 {
     int2 place_at;
@@ -54,29 +59,31 @@ cbuffer Place : register(b0)
 
 float3 fetch(int2 at)
 {
+    // **The target around the picture is black**, whatever the buffer the
+    // picture comes in holds past it. Inside, every pixel is the picture's
+    // own, so nothing is clamped.
+    int2 from = at - place_at;
     float3 colour;
-    if (place_size.x > 0)
-    {
-        // **Placed, the target around the picture is black**, whatever the
-        // buffer the picture comes in holds past it. Inside, every pixel is
-        // the picture's own, so nothing is clamped.
-        int2 from = at - place_at;
-        if (all(from >= 0) && all(from < place_size))
-            colour = source.Load(int3(from, 0)).rgb;
-        else
-            colour = float3(0.0, 0.0, 0.0);
-    }
+    if (all(from >= 0) && all(from < place_size))
+        colour = source.Load(int3(from, 0)).rgb;
     else
-    {
-        // Clamped rather than wrapped. An odd width or height leaves one
-        // column or row whose partner is off the edge, and repeating the last
-        // pixel is the only choice that does not invent colour at the border.
-        uint w, h;
-        source.GetDimensions(w, h);
-        colour = source.Load(int3(min(at, int2(w, h) - 1), 0)).rgb;
-    }
+        colour = float3(0.0, 0.0, 0.0);
     return colour;
 }
+
+#else
+
+float3 fetch(int2 at)
+{
+    // Clamped rather than wrapped. An odd width or height leaves one column or
+    // row whose partner is off the edge, and repeating the last pixel is the
+    // only choice that does not invent colour at the border.
+    uint w, h;
+    source.GetDimensions(w, h);
+    return source.Load(int3(min(at, int2(w, h) - 1), 0)).rgb;
+}
+
+#endif
 
 float luma_of(float3 c)
 {

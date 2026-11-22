@@ -1466,7 +1466,8 @@ impl Display {
     /// around it and black all over while it shows none; the output's
     /// duplication kept for the pointer, which the capture of a window leaves
     /// out. **Never the output's own picture**, whatever the capture of a
-    /// window does. Converted always: no encoder reads the window in place.
+    /// window does. Converted always, by the placed conversion: no encoder
+    /// reads the window in place, and only this display places a picture.
     pub fn open_window(
         device: &Arc<Device>,
         name: &str,
@@ -1480,6 +1481,7 @@ impl Display {
         }
         let mut display =
             Self::open_with(device, name, layout, size, register, Source::Duplication)?;
+        display.converter = Converter::placing(device, layout)?;
         display.window = Some(super::window::Windowed::new(device, scope)?);
         lowlat_common::log_info!(
             "display: {name} shows the application's window in place of its own picture"

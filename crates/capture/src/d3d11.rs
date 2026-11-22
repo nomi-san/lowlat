@@ -90,23 +90,32 @@ impl Layout {
         matches!(self, Self::Ayuv | Self::Y410)
     }
 
-    const fn code(self) -> &'static [u8] {
-        match self {
-            Self::Nv12 => code::NV12,
-            Self::P010 => code::P010,
-            Self::Ayuv => code::AYUV,
-            Self::Y410 => code::Y410,
+    /// The compute pass, the placed variant's where `placed`.
+    const fn code(self, placed: bool) -> &'static [u8] {
+        match (self, placed) {
+            (Self::Nv12, false) => code::NV12,
+            (Self::P010, false) => code::P010,
+            (Self::Ayuv, false) => code::AYUV,
+            (Self::Y410, false) => code::Y410,
+            (Self::Nv12, true) => code::NV12_PLACED,
+            (Self::P010, true) => code::P010_PLACED,
+            (Self::Ayuv, true) => code::AYUV_PLACED,
+            (Self::Y410, true) => code::Y410_PLACED,
         }
     }
 
     /// The pixel shaders that draw a target plane by plane, the second absent
-    /// for a packed layout.
-    const fn drawn(self) -> [Option<&'static [u8]>; 2] {
-        match self {
-            Self::Nv12 => [Some(code::NV12_LUMA), Some(code::NV12_CHROMA)],
-            Self::P010 => [Some(code::P010_LUMA), Some(code::P010_CHROMA)],
-            Self::Ayuv => [Some(code::AYUV_PIXEL), None],
-            Self::Y410 => [Some(code::Y410_PIXEL), None],
+    /// for a packed layout; the placed variant's where `placed`.
+    const fn drawn(self, placed: bool) -> [Option<&'static [u8]>; 2] {
+        match (self, placed) {
+            (Self::Nv12, false) => [Some(code::NV12_LUMA), Some(code::NV12_CHROMA)],
+            (Self::P010, false) => [Some(code::P010_LUMA), Some(code::P010_CHROMA)],
+            (Self::Ayuv, false) => [Some(code::AYUV_PIXEL), None],
+            (Self::Y410, false) => [Some(code::Y410_PIXEL), None],
+            (Self::Nv12, true) => [Some(code::NV12_LUMA_PLACED), Some(code::NV12_CHROMA_PLACED)],
+            (Self::P010, true) => [Some(code::P010_LUMA_PLACED), Some(code::P010_CHROMA_PLACED)],
+            (Self::Ayuv, true) => [Some(code::AYUV_PIXEL_PLACED), None],
+            (Self::Y410, true) => [Some(code::Y410_PIXEL_PLACED), None],
         }
     }
 }
@@ -238,8 +247,8 @@ pub struct Place {
 }
 
 impl Place {
-    /// The source over the whole target, as an unplaced conversion has it: a
-    /// size of nothing, which the shader reads as no place at all.
+    /// The source over the whole target: the unplaced conversion, which reads
+    /// no place at all.
     pub const WHOLE: Self = Self {
         x: 0,
         y: 0,
@@ -282,6 +291,36 @@ enum Pass {
     },
 }
 
+impl Pass {
+    /// The pass by the draws when `drawn`, else by the compute pass, of the
+    /// placed variant where `placed`.
+    fn made(device: &Device, layout: Layout, drawn: bool, placed: bool) -> Result<Self, Error> {
+        if drawn {
+            let mut planes = [None, None];
+            for (plane, code) in planes.iter_mut().zip(layout.drawn(placed)) {
+                if let Some(code) = code {
+                    *plane = Some(device.pixel_shader(code)?);
+                }
+            }
+            Ok(Self::Draw {
+                vertex: device.vertex_shader(code::VERTEX)?,
+                planes,
+            })
+        } else {
+            Ok(Self::Compute(device.compute_shader(layout.code(placed))?))
+        }
+    }
+}
+
+/// The placed variant's pass and the place register it reads, bound for its
+/// passes alone, with what the register was last set to: written again only
+/// when a conversion asks for another place.
+struct Placing {
+    pass: Pass,
+    place: Com<ID3D11Buffer>,
+    placed: Cell<Place>,
+}
+
 /// The conversion into one layout, on one device.
 pub struct Converter {
     pass: Pass,
@@ -293,10 +332,12 @@ pub struct Converter {
     /// the view holds its texture, so no other can be made there while it
     /// is kept.
     source: Option<(usize, Com<ID3D11ShaderResourceView>)>,
-    /// The shader's place register, bound for every pass, and what it was
-    /// last set to: written again only when a conversion asks for another.
-    place: Com<ID3D11Buffer>,
-    placed: Cell<Place>,
+    /// The placed variant, for a converter made to place pictures
+    /// ([`Converter::placing`]). **Its own shaders, never a place read in
+    /// those every picture takes**: asked in each fetch, the place cost the
+    /// duplicated desktop a tenth of each conversion on an AMD integrated GPU
+    /// (measured 2026-11-22).
+    placing: Option<Placing>,
 }
 
 impl core::fmt::Debug for Converter {
@@ -305,37 +346,39 @@ impl core::fmt::Debug for Converter {
             .field("layout", &self.layout)
             .field("drawn", &matches!(self.pass, Pass::Draw { .. }))
             .field("viewed", &self.source.is_some())
+            .field("placing", &self.placing.is_some())
             .finish()
     }
 }
 
 impl Converter {
     pub fn new(device: &Device, layout: Layout) -> Result<Self, Error> {
-        Self::made(device, layout, draws(device))
+        Self::made(device, layout, draws(device), false)
     }
 
-    /// The conversion by the draws when `drawn`, else by the compute pass.
-    fn made(device: &Device, layout: Layout, drawn: bool) -> Result<Self, Error> {
-        let pass = if drawn {
-            let mut planes = [None, None];
-            for (plane, code) in planes.iter_mut().zip(layout.drawn()) {
-                if let Some(code) = code {
-                    *plane = Some(device.pixel_shader(code)?);
-                }
-            }
-            Pass::Draw {
-                vertex: device.vertex_shader(code::VERTEX)?,
-                planes,
-            }
+    /// [`Converter::new`] that also places a picture on a larger target
+    /// ([`Converter::convert_placed`]): a window at its place on its monitor.
+    pub fn placing(device: &Device, layout: Layout) -> Result<Self, Error> {
+        Self::made(device, layout, draws(device), true)
+    }
+
+    /// The conversion by the draws when `drawn`, else by the compute pass,
+    /// with the placed variant beside it where `placing`.
+    fn made(device: &Device, layout: Layout, drawn: bool, placing: bool) -> Result<Self, Error> {
+        let placing = if placing {
+            Some(Placing {
+                pass: Pass::made(device, layout, drawn, true)?,
+                place: device.constants(&Place::NOTHING.words())?,
+                placed: Cell::new(Place::NOTHING),
+            })
         } else {
-            Pass::Compute(device.compute_shader(layout.code())?)
+            None
         };
         Ok(Self {
-            pass,
+            pass: Pass::made(device, layout, drawn, false)?,
             layout,
             source: None,
-            place: device.constants(&Place::WHOLE.words())?,
-            placed: Cell::new(Place::WHOLE),
+            placing,
         })
     }
 
@@ -355,7 +398,9 @@ impl Converter {
     /// [`Converter::convert`] with the source's picture at `place` on the
     /// target and black around it: a window drawn at its place on its
     /// monitor. A picture's pixels past the target's edges are left out, as
-    /// the monitor leaves them out.
+    /// the monitor leaves them out. **A converter made to place pictures
+    /// alone** ([`Converter::placing`]); another refuses any place but
+    /// [`Place::WHOLE`].
     pub fn convert_placed(
         &mut self,
         device: &Device,
@@ -424,11 +469,19 @@ impl Converter {
         if target.layout != self.layout {
             return Err(Error::Unavailable);
         }
-        if self.placed.get() != place {
-            device.set_constants(&self.place, &place.words());
-            self.placed.set(place);
-        }
-        match (&self.pass, &target.views) {
+        // **The whole source is the unplaced variant's**, which reads no
+        // constant: nothing is bound for it.
+        let (pass, constants) = if place == Place::WHOLE {
+            (&self.pass, None)
+        } else {
+            let placing = self.placing.as_ref().ok_or(Error::Unavailable)?;
+            if placing.placed.get() != place {
+                device.set_constants(&placing.place, &place.words());
+                placing.placed.set(place);
+            }
+            (&placing.pass, Some(&placing.place))
+        };
+        match (pass, &target.views) {
             (Pass::Compute(shader), Views::Unordered(views)) => {
                 let targets: [*mut ID3D11UnorderedAccessView; 2] = views
                     .each_ref()
@@ -444,7 +497,7 @@ impl Converter {
                 device.dispatch(
                     shader,
                     &[view],
-                    Some(&self.place),
+                    constants,
                     targets.get(..bound).unwrap_or_default(),
                     (columns.div_ceil(8), rows.div_ceil(8)),
                 )?;
@@ -458,7 +511,7 @@ impl Converter {
                 ];
                 for ((plane, rendered), size) in planes.iter().zip(views).zip(sizes) {
                     if let (Some(plane), Some(rendered)) = (plane, rendered) {
-                        device.draw(vertex, plane, &[view], Some(&self.place), rendered, size)?;
+                        device.draw(vertex, plane, &[view], constants, rendered, size)?;
                     }
                 }
             }
@@ -768,13 +821,71 @@ mod tests {
         }
     }
 
+    /// Whether compiled shader code declares a constant buffer: the
+    /// instructions of its program chunk walked for the declaration.
+    fn declares_constants(code: &[u8]) -> bool {
+        // The instruction that declares a constant buffer, and the one whose
+        // length is in the word after it.
+        const DCL_CONSTANT_BUFFER: u32 = 0x59;
+        const CUSTOMDATA: u32 = 0x35;
+        let word = |at: usize| u32::from_le_bytes(code[at..at + 4].try_into().expect("a word"));
+        assert_eq!(&code[..4], b"DXBC", "not compiled shader code");
+        let chunks = word(28) as usize;
+        let program = (0..chunks)
+            .map(|chunk| word(32 + chunk * 4) as usize)
+            .find(|&at| matches!(&code[at..at + 4], b"SHEX" | b"SHDR"))
+            .expect("a program chunk")
+            + 8;
+        // The version, the length in words, then the instructions.
+        let words = word(program + 4) as usize;
+        let mut at = 2;
+        while at < words {
+            let token = word(program + at * 4);
+            let opcode = token & 0x7ff;
+            if opcode == DCL_CONSTANT_BUFFER {
+                return true;
+            }
+            let len = if opcode == CUSTOMDATA {
+                word(program + (at + 1) * 4)
+            } else {
+                (token >> 24) & 0x7f
+            };
+            at += (len as usize).max(1);
+        }
+        false
+    }
+
+    /// **The duplicated desktop's conversion reads no constant, and the placed
+    /// one reads its place**: no unplaced shader declares a constant buffer,
+    /// the vertex shader neither, and every placed one does. A place read in
+    /// the shaders every picture takes cost an AMD integrated GPU a tenth of
+    /// each conversion (measured 2026-11-22).
+    #[test]
+    fn the_unplaced_conversion_reads_no_constant() {
+        for layout in [Layout::Nv12, Layout::P010, Layout::Ayuv, Layout::Y410] {
+            for placed in [false, true] {
+                let drawn = layout.drawn(placed).into_iter().flatten();
+                for code in core::iter::once(layout.code(placed)).chain(drawn) {
+                    assert_eq!(
+                        declares_constants(code),
+                        placed,
+                        "{layout:?} placed={placed}: a constant buffer declared={}",
+                        !placed
+                    );
+                }
+            }
+        }
+        assert!(!declares_constants(code::VERTEX), "the vertex shader");
+    }
+
     /// **A placed picture lands at its place, sample for sample, on black**:
     /// every sample of the picture placed at (4, 2) on a larger target is the
     /// unplaced conversion's at the place's offset, every sample around it is
     /// black at the layout's depth, a place partly past the target's left
     /// edge leaves out what lies past it, and an unplaced conversion after a
-    /// placed one is the whole source again. In every layout, on every adapter
-    /// that renders, by both passes, each against itself unplaced. Needs a
+    /// placed one is the whole source again; a converter not made to place
+    /// refuses a place. In every layout, on every adapter that renders, by
+    /// both passes, each placed variant against its own unplaced one. Needs a
     /// GPU, so off by default.
     #[test]
     #[ignore = "requires a GPU"]
@@ -806,7 +917,8 @@ mod tests {
                     Layout::Nv12 | Layout::Ayuv => (16, 128, 128),
                     Layout::P010 | Layout::Y410 => (64, 512, 512),
                 };
-                let mut converter = Converter::made(&device, layout, by_draws).expect("the shader");
+                let mut converter =
+                    Converter::made(&device, layout, by_draws, true).expect("the shaders");
                 converter
                     .convert(&device, texture.as_ptr(), &whole)
                     .expect("the conversion");
@@ -819,6 +931,16 @@ mod tests {
                     width,
                     height,
                 };
+                assert!(
+                    matches!(
+                        Converter::made(&device, layout, by_draws, false)
+                            .expect("the shaders")
+                            .convert_placed(&device, texture.as_ptr(), &canvas, place),
+                        Err(Error::Unavailable)
+                    ),
+                    "{} {layout:?}: a converter not made to place took a place",
+                    adapter.description
+                );
                 converter
                     .convert_placed(&device, texture.as_ptr(), &canvas, place)
                     .expect("the placed conversion");
@@ -910,7 +1032,7 @@ mod tests {
                     continue;
                 };
                 for (target, by_draws) in [(&computed, false), (&drawn, true)] {
-                    Converter::made(&device, layout, by_draws)
+                    Converter::made(&device, layout, by_draws, false)
                         .expect("the shaders")
                         .convert(&device, source.as_ptr(), target)
                         .expect("the conversion");
