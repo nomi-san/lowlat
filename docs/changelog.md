@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-22 - CI: the demo compiled by Visual Studio's own clang-cl
+
+### Fixed
+- **CI's Windows job stopped at the demo's build when its image moved on**, nothing of ours
+  changed: the Windows Server 2025 image with Visual Studio 2026 went from 20261103.298 to
+  20261116.315, its Visual Studio from 18.11 to 18.12 and MSVC from 14.51 to 14.52, whose
+  standard library refuses a Clang older than 22, while the image's standalone LLVM stayed at
+  20.1.8 -- first on the path, where the demo's preset finds `clang-cl`. The step now compiles
+  the demo with Visual Studio's own clang-cl, found by the installer's query and named to
+  CMake: it ships with the standard library it compiles against. The presets and a local build
+  are as they were.
+
+### Checked
+- The installer's query and the path handed to CMake, in the step's own form, on the
+  development machine against its compiler tools (its Visual Studio has no clang of its own);
+  the step itself on the pushed branch's run.
+
 ## 2026-11-22 - W5.2 corrected: a duplicated desktop converted as before
 
 ### Fixed
