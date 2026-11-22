@@ -3,6 +3,74 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-22 - W5.2 corrected: a window the application hides gives way
+
+### Fixed
+- **A launcher's splash, hidden as its main window showed, held the picture on its last frame**
+  -- found at W5's retest with established clients: the main window, given no front, waited unseen
+  until the splash was destroyed. The window followed was kept until it closed, and a hidden one
+  has not. A window of the application on the screen now comes before the one followed when that
+  one is hidden or minimised, which keeps its last picture only where the application shows none
+  ([05 §7.4](05-host.md)).
+
+### Checked
+- The choice between the window in front, the one followed, on the screen or not, and the
+  application's topmost, each way, its two new rules each broken once and seen to fail.
+- On the development machine, two windows of the test's own that never take the front, the first
+  followed, then the second shown and the first hidden: the picture on the second 31 ms after;
+  with the second hidden too, kept on it; the first shown again, back on it 27 ms after. With the
+  rule as it was, still on the hidden first after 3 s.
+
+## 2026-11-21 - W5.6: the pointer held to the application's window, Alt+Tab among its windows
+
+### Changed
+- **Every seat is held while a scope is set, the owner's too**, Guide included
+  ([05 §7.4](05-host.md)): every seat is shown the application alone, and the owner, left free
+  behind that picture, steered the whole desktop unseen -- its pointer anywhere on it, its Alt+Tab
+  raising the system's switcher -- as W5's first session with a client found.
+
+### Fixed
+- **A held guest's click could land beside the application.** A click was judged at the window
+  under the system's pointer, which follows a move on the input driver's mouse 0.15 to 0.4 ms late
+  (measured): a move off the application and a click at once was judged on the application and
+  landed on the window beside it, twelve times in twelve with the driver on. A click is now judged
+  where the guest put the pointer.
+
+### Built
+- **The pointer stays on the window the picture shows** -- the application's window in front, on
+  its display: a position past it kept at its edge, and a click or a scroll asked past it going
+  nowhere rather than onto that edge, where a window's border resizes it. Motion by deltas goes in
+  under the system's clip of that window, set by the host without widening a clip of the
+  application's own, set again as the window moves, and let go by the host as the application
+  leaves the front, the guest goes, its motion turns to positions or the scope is cleared -- the
+  system lets go of it neither as another window takes the front nor as the window moves.
+- **Tab under Alt brings the application's next window forward** in place of the system's
+  switcher, which the picture would not show: the windows the switcher lists, in the order they are
+  stacked at the first Tab, stepped on while Alt stays held, Shift backwards, a minimised one
+  restored. **With none of them in front it brings the application's topmost forward**, whatever
+  has the front -- found at the maintainer's retest, a launcher's main window left unfocused as its
+  splash went: a held guest's keys went nowhere before Tab was looked at, and a lone window had
+  nothing to step to.
+
+### Checked
+- The new checks of the input path -- the owner held, a position kept on the window, a click past
+  it going nowhere and one on it judged at the guest's point, nothing of the window on the output,
+  Alt+Tab's steps, the window cut to its display, the clip's rule, the order's steps, the desktop's
+  pixels against the screen's, motion by deltas, a pad's Guide on the bus -- each broken once and
+  seen to fail, twenty breaks.
+- On the development machine, elevated as the signed-in user, the host's own input path given a
+  guest's messages by a probe, the test applications and a window of the probe's own beside the
+  application: a move off the application and a click at once -- **nothing reached the window
+  beside it, twelve of twelve each way in, the owner's as well**, the application's window not
+  resized; a click on the application went in; deltas held at the window's corner, the clip let go
+  at the guest's next pass once another program was in front and at its next position; Alt+Tab,
+  Alt+Tab again and Shift+Alt+Tab moved between the application's two windows each way in, a
+  minimised one restored, the key typed after Alt's release reaching the window in front.
+- From behind, the probe's own window in front, each way in: Alt+Tab brought the application's
+  topmost window forward and the next Tab under the same Alt its other one, the key after Alt's
+  release reaching it; the application's one window alone came forward; a Tab with no Alt moved
+  nothing. Seven more breaks of the new checks, all seen to fail.
+
 ## 2026-11-21 - W5.2 corrected: the pointer over an application's window
 
 ### Fixed

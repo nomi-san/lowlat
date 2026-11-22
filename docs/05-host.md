@@ -1424,7 +1424,10 @@ full path as the system names the image a process runs, letters compared without
 as the file system compares them. **A window is the application's when the process of its root
 window runs one of them**: a child a helper process draws into belongs to the window it sits in,
 and a popup of the application's own -- a menu, a tooltip, a dialog -- is its own root. **The
-owner is never held.** The setting is live: each seated guest takes it at once, a guest admitted
+owner is never held.** *Amended 2026-11-21* ([impl-plan-windows.md](impl-plan-windows.md) W5.6):
+**every seat is held while the scope is set, the owner's too**, Guide refused to it as to any
+guest: every seat is shown the application alone, and an owner left free behind that picture
+steers the desktop unseen. The setting is live: each seated guest takes it at once, a guest admitted
 later from its admission; `lowlatd --scope PATH`, once for each executable, holds the guests from
 its start, and an application sets and clears it through `lowlat_host_set_scope`
 ([06 §3](06-api.md), *added 2026-11-20*).
@@ -1436,6 +1439,17 @@ For a held guest:
   the pointer is rather than where the keys go. **A release always goes in**: what went down
   while the application was in front comes up wherever the focus is now, and a release for what
   never went down is dropped, as it is anywhere.
+- *Amended 2026-11-21* (W5.6): **the pointer stays on the window the picture shows** -- the
+  application's window in front, on its display. A position past it is kept at its edge, and a
+  button or the wheel asked past it goes nowhere rather than landing on that edge, where a
+  window's border resizes it and its caption's buttons close it. **A click is judged where the guest put the
+  pointer**, not where the system's pointer is: that follows a move on the input driver's mouse
+  0.15 to 0.4 ms late (measured 2026-11-21), and a click judged there landed beside the
+  application. Motion by deltas -- an application holding the pointer -- goes in under the
+  system's clip of that window, set by the host without widening a clip of the application's own,
+  set again as the window moves, and let go by the host as the application leaves the front, the
+  guest goes or the scope is cleared: the system lets go of it neither as another window takes the
+  front nor as the window moves. The desk's own mouse is held by that clip meanwhile.
 - **The application leaving the front releases what the guest holds** -- keys and buttons up, a
   sixteen-button pad centred, a pad sent as its reports given its product's report at rest -- as a
   revoked permission does. It is asked as input arrives and on each pass of the guest's loop as
@@ -1450,7 +1464,13 @@ For a held guest:
   *Checked 2026-11-20:* **a key refused under Alt is followed by one keystroke of the system's
   unassigned virtual key**, so the Alt let go next is part of a chord to the window in front and
   not its menu key: Alt let go alone opens a window's menu, whose loop takes the keys after it,
-  and a game in it looks frozen.
+  and a game in it looks frozen. *Amended 2026-11-21* (W5.6): **Tab under Alt brings the
+  application's next window to the front** in place of the system's switcher, which the picture
+  would not show: the application's windows the switcher lists, in the order they are stacked at
+  the first Tab, stepped on while Alt stays held, Shift backwards, a minimised one restored. **With
+  none of them in front it brings the application's topmost forward** -- Alt by the peer's mask,
+  its press having gone nowhere -- whatever has the front: a launcher's main window left
+  unfocused as its splash goes has no other way back for a guest held to it.
 - What the application's own process opens -- its file dialog among it -- stays reachable, as W5
   says.
 
@@ -1475,10 +1495,15 @@ application alone.** While the scope is set, the stream shows the application's 
 of its output's picture (§2), on the output the window is on. The window is the one in front
 while it is the application's -- a dialog or a menu of the application's comes in its owner's
 picture; else the one shown last, for as long as it is open, covered or not; else the
-application's topmost on the screen; else none, and the canvas is black. The stream is rebuilt as
+application's topmost on the screen; else none, and the canvas is black. *Corrected 2026-11-22*
+([impl-plan-windows.md](impl-plan-windows.md) W5.2): **the one shown last while it is on the
+screen**, covered or not; else the application's topmost on the screen; else the one shown last
+while it is open, hidden or minimised, at its last picture; else none. A launcher's splash
+hidden as its main window showed, that window given no front, had held the picture on the
+splash's last frame. The stream is rebuilt as
 the scope is set and cleared, and as the window goes to another output, never as the picture
 moves between the application's windows. **One stream serves every seat, so the owner sees what a
-held guest sees**, and while the scope is set a request for another output waits for it to be
+held guest sees** -- and is held as one (*amended 2026-11-21*, above) -- and while the scope is set a request for another output waits for it to be
 cleared: a held guest could otherwise move the picture off the application. **A host showing an
 application runs as the signed-in user**, elevated so its input reaches an application that runs
 elevated ([impl-plan-windows.md](impl-plan-windows.md) W5); a host of the system account

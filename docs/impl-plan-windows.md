@@ -2949,6 +2949,11 @@ The decisions are recorded once, here.
   process opens -- a file dialog, an overlay drawn inside it -- stays reachable, and is said so
   rather than closed: running the application under another account would close it, and breaks
   per-user launchers and copy protection, so it is not this phase's. The owner is never held.
+  *Amended 2026-11-21, at W5's gate, the maintainer's decision:* **every seat is held while a
+  scope is set, the owner's too**, Guide included: every seat is shown the application alone, and
+  an owner left free behind that picture steered the whole desktop unseen -- its pointer anywhere
+  on it, its Alt+Tab to the system's switcher -- as the gate's first session found. The scope is
+  still the host's to clear.
 - **The picture is the application's window, by the system's capture of a window**, measured
   before it was taken. On the same pictures it arrives 0.2 to 0.5 ms after a capture of the whole
   display at the median and under 0.75 ms at p95 -- for a windowed, a borderless and an
@@ -2966,7 +2971,10 @@ The decisions are recorded once, here.
   pass, and the application's own file dialog, reachable under the first decision, can make such
   a copy and run it. Not the process the host started: a launcher already running hands the launch
   to itself and exits. Not a tree of processes: a store's client holds its own browser and every
-  game it started.
+  game it started. *Amended 2026-11-21 (W5.6):* **the pointer is held to the window the picture
+  shows, and a button or the wheel is judged where the guest put the pointer** -- the system's own
+  pointer follows a move on the input driver's mouse a fraction of a millisecond late, and the
+  window under it let through a click that then landed beside the application.
 - **A fixed canvas, the size of the application's monitor**, the window drawn at its own place on
   it and the rest black. Switching between the application's windows, moving or resizing them
   never rebuilds the stream; the monitor's mode moving, or the window going to a monitor of
@@ -2977,7 +2985,9 @@ The decisions are recorded once, here.
 - **The canvas shows the foreground window alone**: one capture of the application's foreground
   window, moved when the foreground moves to another of its windows, and live on the last of them
   while the foreground is elsewhere. Every visible window of the application composed in order is
-  left for later; it changes neither the canvas nor the gate.
+  left for later; it changes neither the canvas nor the gate. *Amended 2026-11-22, at W5's gate:*
+  live on the last of them while it is on the screen; one the application hid or minimised gives
+  way to its topmost on the screen, and keeps its last picture only where there is none.
 - **The sound is the application's own**: a capture of each running listed process and the
   processes it started, mixed -- a client built on a browser plays its sound from a child of its
   window's process. Measured before it is built, as the picture was. *Amended 2026-11-20, at W5.0's
@@ -2989,8 +2999,8 @@ The decisions are recorded once, here.
   that gap away. A guest hearing the owner's call or notifications would undo the scope.
 - **The owner turns it on.** The integrating application sets the scope live -- an application's
   launch command and its paths -- and it stays until cleared; every guest but the owner is held
-  meanwhile. A client chooses nothing: established clients have no way to, and the machine is the
-  owner's.
+  meanwhile -- *amended 2026-11-21:* the owner too, above. A client chooses nothing: established
+  clients have no way to, and the machine is the owner's.
 - **On the wire it is a desktop host**: advertised as one, no other host mode announced, guests
   admitted by the same flags. The scope is the host's alone.
 - **Windows first.** Capturing a window, a process's sound, the foreground and placing a window are
@@ -3084,7 +3094,10 @@ The decisions are recorded once, here.
   reached the game, its mouse's absolute positions landed at the pixel asked, its relative moves
   moved the pointer and its buttons acted in the game -- once, at the very start of a match, an
   absolute move did not land and the next one did. **So such a game is played with
-  `virtual_input` on, on the primary display.**
+  `virtual_input` on, on the primary display.** *Amended 2026-11-21 (W5.6):* the owner is held
+  as every guest is; Tab under Alt brings the application's next window to the front in place of
+  the system's switcher; and a held guest's pointer is kept on the window the picture shows, its
+  clicks judged where it put the pointer.
 - [x] **W5.2 the picture**: the capture of a window -- its interval at 1 ms, its secondary windows
   in, the cursor from the host's own pointer source, each picture timed as it arrives -- drawn at
   its place on the canvas by the conversion, following the foreground; black before the
@@ -3124,7 +3137,15 @@ The decisions are recorded once, here.
   against the output's, the pointer moved over the application's window and given a hand and a
   text pointer by a window of the test's own: before, the duplication said not visible for 147 to
   150 pictures of 148 to 151 and the guest was told hidden, three runs of three; after, the same
-  bits as the output's and both shapes followed.
+  bits as the output's and both shapes followed. *Corrected 2026-11-22, at W5's gate*
+  ([05 §7.4](05-host.md)): **a launcher's splash hidden as its main window showed, that window
+  given no front, held the picture on the splash's last frame** -- the window followed was kept
+  until it closed, and a hidden one has not -- while the main window waited unseen. A window of the
+  application on the screen now comes before the one followed when that one is hidden or
+  minimised, which keeps its last picture only where the application shows none. Checked by two
+  windows of the test's own that never take the front, the first followed, then the second shown
+  and the first hidden: the picture on the second 31 ms after; with the rule as it was, still on
+  the first after 3 s.
 - [x] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
   followed as its processes open and close their sound; each one's process held, so its number
   cannot pass to another process under the capture, and the capture closed when it exits; read
@@ -3202,15 +3223,74 @@ The decisions are recorded once, here.
   launcher the shell's child, the client's process unelevated -- and handed to a launcher already
   running, which took it as it should; the client's window found and moved to the second
   monitor's middle as asked. A session with a client is W5's gate.
+- [x] **W5.6 the pointer held to the application's window, and Alt+Tab among its windows**
+  (*planned 2026-11-21, at W5's gate*): every seat held while a scope is set, the owner's too,
+  Guide refused to it there as to any guest; a held guest's absolute positions kept on the window
+  the picture shows -- the application's window in front, on its display -- and a button or the
+  wheel asked past it going nowhere, never landing on its edge, judged at the position the guest
+  asked for rather than at the system's pointer; motion by deltas under the system's clip of that
+  window, set by the host without widening a clip the application set itself, set again as the
+  window moves, and let go by the host as the application leaves the front, the guest goes or the
+  scope is cleared; Tab under Alt bringing the application's next window to the front -- the
+  windows the system's switcher lists, in the order they are stacked at the first Tab, stepped on
+  while Alt stays held, Shift backwards, a minimised one restored -- and, with none of them in
+  front, the topmost of them brought forward. Checked by the test applications and a window of the
+  test's own beside them, both ways in.
+  *Measured first, 2026-11-21*, on the development machine, elevated as the signed-in user, the
+  host's own input path given a guest's messages by a probe. **The gate's first session was the
+  owner's**: the owner was never held and every seat is shown the application alone, so its
+  pointer roamed the desktop and its Alt+Tab raised the system's switcher, neither in the picture.
+  For a held guest: **a move through the batch input call is in the system's pointer before the
+  call returns** (40 of 40), **a move on the input driver's mouse 0.15 to 0.4 ms after** (148 us
+  at the median, 314 at most; 0 of 40 by the first read), so a move off the application and a
+  click at once, judged at the system's pointer, **put 12 clicks of 12 on the window beside it
+  with the driver on**, none through the batch call, and every move off reached that window either
+  way. The system's clip of the pointer holds both ways in at 1.8 us a call, and the system lets
+  go of it neither as another window takes the front by itself nor as the window moves: it stays
+  where it was set. A click the clip held at the window's edge landed on its border and resized
+  it. After a refused Tab under Alt the front was given to the application's other window every
+  time -- both ways in, twice under one Alt, a minimised window restored first -- and the key
+  typed after Alt's release reached it, no menu opened.
+  *Built and checked 2026-11-21* ([05 §7.4](05-host.md)): the owner held as the rest, Guide
+  refused to it as to any guest; the expander keeping a held guest's position on the window the
+  input layer names, remembering a position asked past it, and judging a click at the point it put
+  the pointer; the input layer on Windows naming that window -- the root owner of the window in
+  front, the application's, its frame cut to its monitor -- clipping the pointer to it around
+  motion by deltas, letting the clip go as the window in front stops being the application's, as
+  a position goes in and as the scope moves, and bringing the application's windows forward in
+  the switcher's order. **Run**: the new checks of the input path, each broken once and seen to
+  fail, twenty breaks; on the development machine, elevated as the signed-in user, the same probe
+  through the host's own input path, nothing done by the probe that the host should do: a move off
+  the application and a click at once -- **nothing reached the window beside it, twelve of twelve
+  each way in, the owner's as well**, the application's window not resized; a click on it in;
+  deltas held at the window's corner, the clip let go at the guest's next pass once another
+  program was in front, and at its next position; Alt+Tab, again under the same Alt and with
+  Shift moved between the application's two windows each way in, a minimised one restored, the
+  next key reaching the window in front; with another program in front, nothing moved. A session
+  with a client is W5's gate. *Found at W5's gate, 2026-11-22* (the maintainer's retest, a
+  launcher's splash then its main window, unfocused): **with none of the application's windows in
+  front, Alt+Tab could not bring one back** -- a held guest's keys went nowhere before Tab was
+  looked at, and a lone window had nothing to step to. Now Tab under Alt -- Alt by the peer's
+  mask, its press having gone nowhere -- brings the application's topmost window forward from
+  behind, whatever has the front, and steps on from there. **Run**, the same probe with its own
+  window in front: from behind each way in, the application's topmost forward and the next Tab
+  under the same Alt on to its other window, the key after Alt's release reaching it; the
+  application's one window alone, forward; a Tab with no Alt, nothing.
 
 **Gate:** on the development machine, the reference host with established clients and the test
-applications: a guest who is not the owner held to the application -- nothing outside it seen, heard or reached, the
-owner unheld -- switching between its windows with no rebuild, its menus in the picture, its sound
-alone; a launcher-style game through its launcher to a match, its anti-cheat included; the
-recorded figures as W5.0 and W5.2 measure them.
+applications: every seat, the owner's too, held to the application -- nothing outside it seen,
+heard or reached, the pointer on its window -- switching between its windows with no rebuild and
+by Alt+Tab, its menus in the picture, its sound alone; a launcher-style game through its launcher
+to a match, its anti-cheat included; the recorded figures as W5.0 and W5.2 measure them.
 
 ## Change log
 
+- 2026-11-22: W5.2 corrected and W5.6 completed at W5's retest: a window the application hides
+  gives way to one of its windows on the screen; Alt+Tab brings the application forward from
+  behind.
+- 2026-11-21: W5.6 planned, built and checked at W5's gate: every seat held while a scope is set,
+  the owner too; the pointer kept on the application's window and a click judged where the guest
+  put it; Alt+Tab among the application's windows.
 - 2026-11-21: W5.2 corrected at W5's gate: the pointer over an application's window was told
   hidden to every guest; it now takes its visibility and its shape from the system's own pointer.
 - 2026-11-21: W5.5 built and checked: the reference host holds its guests to an application

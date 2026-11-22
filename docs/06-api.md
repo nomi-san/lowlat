@@ -439,7 +439,10 @@ neither carry nor re-send the stream's fields.
 `lowlat_host_get_scope`, holds every guest but the owner to one application
 ([05 §7.4](05-host.md)) -- its keys, motion and pads in only while the application is in front, its
 clicks and wheel only over its windows, and every seat, the owner's too, shown the application's
-window on black and hearing its own processes. The structure, its bounds and its calls are declared
+window on black and hearing its own processes. *Amended 2026-11-21* (W5.6): **the owner is held
+as well**, Guide included; a held guest's pointer is kept on the application's window and its
+clicks and wheel judged where it put the pointer; and Tab under Alt brings the application's next
+window to the front. The structure, its bounds and its calls are declared
 where the header is compiled for Windows and nowhere else, as the input configuration is.
 
 - **The application is its executables, each by its full path** in UTF-8 -- from a drive or a
