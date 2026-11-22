@@ -4442,6 +4442,124 @@ mod tests {
         });
     }
 
+    /// A window of this test's own, solid white, at (`x`, `y`) of the desktop,
+    /// that never takes the front: shown, clicked or not.
+    fn unfocused_window(x: i32, y: i32, width: i32, height: i32) -> *mut core::ffi::c_void {
+        use windows_sys::Win32::Graphics::Gdi::CreateSolidBrush;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, RegisterClassW, WNDCLASSW, WS_EX_NOACTIVATE, WS_POPUP, WS_VISIBLE,
+        };
+        let name: Vec<u16> = "lowlat-window-source-test-unfocused\0"
+            .encode_utf16()
+            .collect();
+        // SAFETY: as `white_window`'s, the window made never to take the front.
+        let window = unsafe {
+            let module = GetModuleHandleW(core::ptr::null());
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(plain),
+                hInstance: module,
+                hbrBackground: CreateSolidBrush(0x00FF_FFFF),
+                lpszClassName: name.as_ptr(),
+                // SAFETY: the rest of the class is plain data, zero by default.
+                ..core::mem::zeroed()
+            };
+            RegisterClassW(&raw const class);
+            CreateWindowExW(
+                WS_EX_NOACTIVATE,
+                name.as_ptr(),
+                name.as_ptr(),
+                WS_POPUP | WS_VISIBLE,
+                x,
+                y,
+                width,
+                height,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                module,
+                core::ptr::null(),
+            )
+        };
+        assert!(!window.is_null(), "the test's window");
+        window
+    }
+
+    /// **A window the application hides gives way to another of its windows
+    /// on the screen, the front given to neither**, as a launcher's splash goes
+    /// while its main window shows unfocused: two windows of the test's own
+    /// that never take the front, held to the test's own executable -- the
+    /// first followed; the second shown and the first hidden, and the picture
+    /// on the second; the second hidden too, and the picture kept on it, the
+    /// last shown; the first shown again, and the picture on it. Needs
+    /// NVIDIA's encoder, a display and a process of the signed-in user's, so
+    /// off by default.
+    #[test]
+    #[ignore = "requires NVIDIA's encoder, a display and the signed-in user's account"]
+    fn a_window_the_application_hides_gives_way_to_another_of_its_windows() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DestroyWindow, GetForegroundWindow, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+        };
+        let splash = unfocused_window(200, 150, 640, 480);
+        pump();
+        let me = std::env::current_exe().expect("the test's own path");
+        let scope = Arc::new(lowlat_inject::Scope::new([me.as_os_str()]));
+        let name = Display::application_output(&scope).expect("the window's output");
+        on_nvenc_window(&name, scope, |display| {
+            let follows = |display: &mut Display, window, what: &str| {
+                let began = Time::now();
+                loop {
+                    pump();
+                    if display.wait_present(100) == Some(true) {
+                        let _ = display.acquire();
+                    }
+                    if display.followed_window() == Some(window) {
+                        return clock::elapsed_ms(began);
+                    }
+                    assert!(
+                        clock::elapsed_ms(began) < 3000.0,
+                        "{what}: not followed in 3 s, the picture on {:?}",
+                        display.followed_window()
+                    );
+                }
+            };
+            follows(display, splash, "the first window");
+            let main = unfocused_window(900, 300, 800, 500);
+            // SAFETY: the test's own window.
+            unsafe { ShowWindow(splash, SW_HIDE) };
+            let moved = follows(display, main, "the second, the first hidden");
+            // SAFETY: no arguments.
+            let front = unsafe { GetForegroundWindow() };
+            assert!(
+                front != main && front != splash,
+                "the front went to the test's window"
+            );
+            // SAFETY: the test's own window.
+            unsafe { ShowWindow(main, SW_HIDE) };
+            for _ in 0..20 {
+                pump();
+                if display.wait_present(100) == Some(true) {
+                    let _ = display.acquire();
+                }
+            }
+            assert_eq!(
+                display.followed_window(),
+                Some(main),
+                "the last window shown was dropped with none on the screen"
+            );
+            // SAFETY: the test's own window.
+            unsafe { ShowWindow(splash, SW_SHOWNOACTIVATE) };
+            let back = follows(display, splash, "the first again, the second hidden");
+            println!(
+                "window source: on the second {moved:.0} ms after the first hid, back on the first {back:.0} ms after it showed"
+            );
+            // SAFETY: the test's own windows.
+            unsafe {
+                DestroyWindow(main);
+                DestroyWindow(splash);
+            }
+        });
+    }
+
     /// The stamp a fixture draws at (8, 8) of its window's client area
     /// (local/probes/2026-11-19/game-mode/fx.h), read off a converted canvas:
     /// the picture's submit time in microseconds, its number, and whether its

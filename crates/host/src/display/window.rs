@@ -6,9 +6,10 @@
 //!
 //! **The picture follows the window in front while it is the application's**,
 //! and stays on the last of the application's windows while another
-//! program's is in front: the capture of a window goes on behind others. With
-//! none of the application's windows followed yet, the topmost of them on the
-//! screen is taken.
+//! program's is in front, for as long as that window is on the screen: the
+//! capture of a window goes on behind others. With none of the application's
+//! windows followed, or the one followed hidden or minimised, the topmost of
+//! them on the screen is taken.
 //!
 //! **Never the desktop.** A capture the system refuses -- it refuses every
 //! one to a host of the system account -- leaves the canvas black, and is
@@ -78,6 +79,31 @@ pub(super) fn output_of_application(scope: &Arc<Scope>) -> Option<String> {
     window::output_of(shown)
 }
 
+/// The window the picture shows, from `front`, the application's window in
+/// front and on the screen; `followed`, the one followed while it has not
+/// closed, and whether it is on the screen; and `topmost`, the application's
+/// topmost window on the screen, asked only where it decides: the one in
+/// front; else the one followed while it is on the screen, covered or not;
+/// else the application's topmost; else the one followed, hidden or
+/// minimised, at its last picture; else none.
+///
+/// **A window of the application on the screen comes before one it hid**: a
+/// launcher's splash hidden as its main window shows, and that window not
+/// given the front, held the picture on the splash's last frame.
+fn choose(
+    front: Option<*mut c_void>,
+    followed: Option<(*mut c_void, bool)>,
+    topmost: impl FnOnce() -> Option<*mut c_void>,
+) -> Option<*mut c_void> {
+    if front.is_some() {
+        return front;
+    }
+    match followed {
+        Some((window, true)) => Some(window),
+        _ => topmost().or(followed.map(|(window, _)| window)),
+    }
+}
+
 /// The application's window as an output's picture.
 pub(super) struct Windowed {
     wgc: Wgc,
@@ -144,24 +170,19 @@ impl Windowed {
         })
     }
 
-    /// The window the picture shows now: the application's in front; else
-    /// the one followed, while it has not closed -- covered, hidden or
-    /// minimised, its last picture stays; else the application's topmost on
-    /// the screen; else none.
+    /// The window the picture shows now ([`choose`]).
     fn wanted(&mut self) -> Option<*mut c_void> {
-        if let Some(front) = window::foreground()
-            && window::on_screen(front)
-            && self.judge.holds_window(front)
-        {
-            return Some(front);
-        }
-        if let Some(followed) = &self.followed
-            && !followed.capture.closed()
-        {
-            return Some(followed.window);
-        }
         let judge = &mut self.judge;
-        window::topmost(&mut |each| judge.holds_window(each))
+        let front = window::foreground()
+            .filter(|&front| window::on_screen(front) && judge.holds_window(front));
+        let followed = self
+            .followed
+            .as_ref()
+            .filter(|followed| !followed.capture.closed())
+            .map(|followed| (followed.window, window::on_screen(followed.window)));
+        choose(front, followed, || {
+            window::topmost(&mut |each| judge.holds_window(each))
+        })
     }
 
     /// Move the capture onto the window the picture shows now, where that is
@@ -300,5 +321,49 @@ impl Windowed {
             place,
             arrived: Some(picture.arrived),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(n: usize) -> *mut c_void {
+        core::ptr::without_provenance_mut(n)
+    }
+
+    fn unasked() -> Option<*mut c_void> {
+        panic!("the application's topmost was asked for")
+    }
+
+    /// **The picture takes a window of the application's on the screen
+    /// before one it hid**: the window in front first; the one followed while
+    /// it is on the screen, covered or not, no other asked for; one hidden or
+    /// minimised giving way to the application's topmost on the screen, and
+    /// kept at its last picture where there is none.
+    #[test]
+    fn the_picture_takes_a_window_on_the_screen_before_one_hidden() {
+        let (front, splash, main) = (window(1), window(2), window(3));
+        assert_eq!(
+            choose(Some(front), Some((splash, false)), unasked),
+            Some(front)
+        );
+        assert_eq!(
+            choose(None, Some((splash, true)), unasked),
+            Some(splash),
+            "a covered window was left"
+        );
+        assert_eq!(
+            choose(None, Some((splash, false)), || Some(main)),
+            Some(main),
+            "a hidden window held the picture"
+        );
+        assert_eq!(
+            choose(None, Some((splash, false)), || None),
+            Some(splash),
+            "the last picture was dropped"
+        );
+        assert_eq!(choose(None, None, || Some(main)), Some(main));
+        assert_eq!(choose(None, None, || None), None);
     }
 }
