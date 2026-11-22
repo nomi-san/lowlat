@@ -24,6 +24,10 @@ lowlat-hid-proto.workspace = true
 windows-sys = { version = "0.61", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    # A held guest's pointer kept on the application's window: the window's
+    # frame as its picture is placed, and the display it is on.
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
     # A process's image named as the file system compares names.
     "Win32_Globalization",
     "Win32_Security",

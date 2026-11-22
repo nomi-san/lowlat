@@ -180,6 +180,11 @@ pub struct Devices {
     /// The application the owner holds the host's guests to, judged here as
     /// input arrives, where one is set.
     scope: Option<crate::scope::Judge>,
+    /// The system's clip of the pointer this guest set, keeping its motion by
+    /// deltas on the application's window.
+    clip: crate::scope::Clip,
+    /// The application's windows this guest's Tabs under one Alt step through.
+    switch: crate::scope::Switch,
     _aware: Aware,
 }
 
@@ -230,16 +235,33 @@ impl Devices {
             refusing: false,
             desktop,
             scope: None,
+            clip: crate::scope::Clip::default(),
+            switch: crate::scope::Switch::default(),
             _aware: aware,
         })
     }
 
     /// Hold this guest to one application, or to none (docs/05-host.md
-    /// section 7.4). Whether the guest is the owner, whom nothing holds, is the
-    /// expander's to say; what the application had been asked here is
-    /// forgotten with it.
+    /// section 7.4) -- the owner as well. What the application had been asked
+    /// here is forgotten with it, and the clip this guest set let go of.
     pub fn set_scope(&mut self, scope: Option<std::sync::Arc<crate::Scope>>) {
+        self.clip.release();
+        self.switch = crate::scope::Switch::default();
         self.scope = scope.map(crate::scope::Judge::new);
+    }
+
+    /// The pointer kept on the application's window the picture shows, before
+    /// motion by deltas goes in; let go of where no window of it is in front.
+    fn confine(&mut self) {
+        let window = self
+            .scope
+            .as_mut()
+            .and_then(crate::scope::Judge::shown)
+            .and_then(crate::scope::on_its_display);
+        match window {
+            Some(window) => self.clip.hold(window),
+            None => self.clip.release(),
+        }
     }
 
     /// Move the guest's keys and pointer to a keyboard and a mouse of the
@@ -582,8 +604,15 @@ impl Devices {
             false
         };
         if on_bus {
-            self.play_on_bus(id, bus_report(product, &report, self.guide));
+            self.play_on_bus(id, bus_report(product, &report, self.presses_guide()));
         }
+    }
+
+    /// Whether a pad played on the bus from its reports keeps Guide: as the
+    /// expander says, and never while the host holds its guests to one
+    /// application, which holds the owner too (docs/05-host.md section 7.4).
+    fn presses_guide(&self) -> bool {
+        self.guide && self.scope.is_none()
     }
 
     /// A report pad's state onto the bus, as the sixteen-button pad its own
@@ -642,7 +671,7 @@ impl Devices {
                 None
             };
             if let Some((id, product, report)) = held {
-                self.play_on_bus(id, bus_report(product, &report, self.guide));
+                self.play_on_bus(id, bus_report(product, &report, self.presses_guide()));
             }
         }
     }
@@ -817,6 +846,18 @@ impl Devices {
 
 impl Sink for Devices {
     fn emit(&mut self, device: Device, events: &[Event]) {
+        // **A held guest's motion by deltas stays on the application's
+        // window** (docs/05-host.md section 7.4): the system's clip of the
+        // pointer, set before it goes in, holds whichever way it goes in. A
+        // position is kept on the window by the expander instead, and lets the
+        // clip go: the desk's own mouse is held by it too.
+        if self.scope.is_some() {
+            match device {
+                Device::Pointer if moves_by_deltas(events) => self.confine(),
+                Device::PointerAbsolute => self.clip.release(),
+                _ => {}
+            }
+        }
         match device {
             Device::Keyboard => match self.hid.as_ref().map(|hid| hid.ready) {
                 Some(true) => self.keys_to_hid(events),
@@ -904,9 +945,27 @@ impl Sink for Devices {
     }
 
     fn gate(&mut self, at: event::Gate) -> bool {
-        match self.scope.as_mut() {
-            Some(judge) => judge.gate(at, &mut self.desktop),
-            None => true,
+        let Some(judge) = self.scope.as_mut() else {
+            return true;
+        };
+        let open = judge.gate(at, &mut self.desktop);
+        // **The application gone from the front lets the clip go**: the
+        // system keeps it for the window it was set for, and the desk's own
+        // mouse with it.
+        if !open && at == event::Gate::Front {
+            self.clip.release();
+        }
+        open
+    }
+
+    fn bounds(&mut self) -> Option<event::Bounds> {
+        let window = self.scope.as_mut()?.shown()?;
+        crate::scope::on_its_display(window).map(crate::scope::on_desktop)
+    }
+
+    fn next_window(&mut self, backwards: bool, again: bool) {
+        if let Some(judge) = self.scope.as_mut() {
+            self.switch.step(judge, backwards, again);
         }
     }
 
@@ -1799,6 +1858,14 @@ fn key_input(stroke: Stroke, down: bool) -> INPUT {
     }
 }
 
+/// Whether a pointer's events move it by deltas, as an application holding
+/// the pointer is moved.
+fn moves_by_deltas(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|e| e.kind == event::EV_REL && (e.code == event::REL_X || e.code == event::REL_Y))
+}
+
 fn mouse_input(dx: i32, dy: i32, data: u32, flags: u32) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
@@ -2440,6 +2507,37 @@ mod tests {
             .iter()
             .map(|&(code, down)| keyboard.stroke(u16::from(code), down))
             .collect()
+    }
+
+    /// **Motion by deltas is what the clip holds**: either axis moved by a
+    /// delta, and neither a wheel's turn nor a position.
+    #[test]
+    fn deltas_are_the_motion_the_clip_holds() {
+        let ev = |kind, code, value| Event { kind, code, value };
+        assert!(moves_by_deltas(&[ev(event::EV_REL, event::REL_Y, 3)]));
+        assert!(moves_by_deltas(&[
+            ev(event::EV_KEY, 0x110, 1),
+            ev(event::EV_REL, event::REL_X, -2),
+        ]));
+        assert!(!moves_by_deltas(&[ev(event::EV_REL, 0x08, 1)]));
+        assert!(!moves_by_deltas(&[ev(event::EV_ABS, 0x00, 500)]));
+    }
+
+    /// **A pad played on the bus from its reports loses Guide while a scope
+    /// holds the guests**, the owner among them, and has it again once the
+    /// scope is cleared.
+    #[test]
+    fn a_held_owners_bus_pad_has_no_guide() {
+        let mut sink = Devices::create("scope-guide").expect("a guest's devices");
+        sink.guide(true);
+        assert!(sink.presses_guide());
+        let me = std::env::current_exe().expect("this test's own path");
+        sink.set_scope(Some(std::sync::Arc::new(crate::Scope::new([
+            me.as_os_str()
+        ]))));
+        assert!(!sink.presses_guide(), "a held owner's pad kept Guide");
+        sink.set_scope(None);
+        assert!(sink.presses_guide());
     }
 
     /// An ordinary key is its code, the E0 half carried as the prefix flag.

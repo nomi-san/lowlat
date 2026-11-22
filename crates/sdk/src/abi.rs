@@ -79,7 +79,7 @@ pub enum lowlat_status {
     /// No event arrived within the timeout. Not an error.
     LOWLAT_TIMEOUT = 1,
     /// The scope was taken and this process cannot capture a window, so every
-    /// guest but the owner is held and every seat is shown black (minor 39;
+    /// guest is held, the owner too, and every seat is shown black (minor 39;
     /// Windows alone). The system serves the capture of a window per signed-in
     /// user and refuses a host of the system account: run the host as that
     /// user. Not an error, since nothing asked for was refused; in the

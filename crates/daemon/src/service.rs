@@ -1092,7 +1092,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "lowlatd: --virtual-pads refused, pads play as the Xbox pad, error={error}"
         );
     }
-    // **Every guest but the owner held to one application** where the owner
+    // **Every guest held to one application, the owner too,** where the owner
     // names its executables, each `--scope` one full path (docs/05-host.md
     // section 7.4).
     #[cfg(windows)]

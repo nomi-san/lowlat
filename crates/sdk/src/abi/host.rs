@@ -301,7 +301,7 @@ pub const LOWLAT_SCOPE_PATHS_MAX: usize = 16;
 #[cfg(windows)]
 pub const LOWLAT_SCOPE_PATH_MAX: usize = 1024;
 
-/// The application every guest but the owner is held to, on Windows alone
+/// The application every guest is held to, the owner too, on Windows alone
 /// (minor 39; docs/05-host.md section 7.4): its executables, each by the full
 /// path the system names the image a process runs by.
 ///
@@ -2483,15 +2483,17 @@ pub unsafe extern "C" fn lowlat_host_get_input_config(
     }
 }
 
-/// Hold every guest but the owner to one application, or let them all go,
+/// Hold every guest to one application, the owner too, or let them all go,
 /// while a host runs (minor 39; Windows alone; docs/05-host.md section 7.4).
 ///
 /// **A held guest sees, hears and steers the application alone**: its keys,
 /// its motion and its pads go in only while one of the application's windows
-/// is in front, its clicks and its wheel only over one; every seat, the
-/// owner's too, is shown the application's window on black, and hears its own
-/// processes. Each seated guest takes it at once, and one approved later from
-/// its admission. **The owner is never held.**
+/// is in front, its pointer is kept on the window shown and its clicks and its
+/// wheel go in only there, and Tab under Alt brings the application's next
+/// window forward; every seat is shown the application's window on black, and
+/// hears its own processes. Each seated guest takes it at once, and one
+/// approved later from its admission. **The owner is held as well**, Guide
+/// included: it is shown the application alone too.
 ///
 /// **Taken even where this process cannot capture a window, and said so.**
 /// The system serves the capture of a window per signed-in user, so a host of
@@ -2580,7 +2582,7 @@ fn scope_paths(scope: &lowlat_host_scope) -> Option<Vec<&str>> {
         .collect()
 }
 
-/// The application every guest but the owner is held to now (minor 39;
+/// The application every guest is held to now, the owner too (minor 39;
 /// Windows alone).
 ///
 /// **The setting and not the state**: the paths as the host keeps them, each

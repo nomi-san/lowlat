@@ -52,9 +52,11 @@ const MOD_CAPS: u32 = 0x2000;
 /// The modifier bits for left and right Command, Windows or Super.
 const MOD_GUI: u32 = 0x0400 | 0x0800;
 
-/// The modifier bits for left and right Alt, and for left and right Control.
+/// The modifier bits for left and right Alt, for left and right Control, and
+/// for left and right Shift.
 const MOD_ALT: u32 = 0x0100 | 0x0200;
 const MOD_CTRL: u32 = 0x0040 | 0x0080;
+const MOD_SHIFT: u32 = 0x0001 | 0x0002;
 
 /// The peer's codes a guest held to one application never presses
 /// (docs/05-host.md section 7.4): the Windows keys, Print Screen -- which
@@ -71,6 +73,7 @@ const USAGE_TAB: u16 = 43;
 const USAGE_ESCAPE: u16 = 41;
 const USAGE_ALTS: [u16; 2] = [226, 230];
 const USAGE_CTRLS: [u16; 2] = [224, 228];
+const USAGE_SHIFTS: [u16; 2] = [225, 229];
 
 /// The peer's codes for the eight modifiers, Control to right Command.
 const MODIFIERS: core::ops::RangeInclusive<u16> = 224..=231;
@@ -205,6 +208,23 @@ pub trait Sink {
     /// refused, and the Alt that comes up next must not open the menu of the
     /// application in front.
     fn mask_alt(&mut self) {}
+
+    /// Where a held guest's pointer may be (docs/05-host.md section 7.4): the
+    /// application's window the picture shows, on its display. Asked as an
+    /// absolute position arrives, of a sink that holds its guests
+    /// ([`Sink::scoped`]); **nothing where none can be said, and the position
+    /// then goes nowhere.**
+    fn bounds(&mut self) -> Option<Bounds> {
+        None
+    }
+
+    /// Bring the application's next window to the front for a held guest's
+    /// Tab under Alt, as the system's own switcher would in its place:
+    /// `backwards` with Shift down as well, `again` for a Tab after another
+    /// under the same Alt, which steps on through the order the first took.
+    /// With none of the application's windows in front, its topmost comes
+    /// forward.
+    fn next_window(&mut self, _backwards: bool, _again: bool) {}
 }
 
 /// What a guest held to one application needs of it before its input goes in
@@ -214,8 +234,25 @@ pub enum Gate {
     /// The application in front: keys, pointer motion, pads.
     Front,
     /// The application's window under the pointer as well: buttons and the
-    /// wheel, which act where the pointer is rather than where the keys go.
+    /// wheel, which act where the pointer is rather than where the keys go --
+    /// the system's own pointer, while it moves by deltas.
     Pointer,
+    /// The application's window at this point of the desktop as well, in its
+    /// own pixels measured from its corner, as [`Place`] is: buttons and the
+    /// wheel where a position put the pointer. **Not the system's pointer**,
+    /// which follows a position a fraction of a millisecond late on some ways
+    /// in, so a click judged there lands where the window was not asked about.
+    At { x: i32, y: i32 },
+}
+
+/// A rectangle of the desktop in its own pixels, measured from its corner as
+/// [`Place`] is: its left and top edges in, its right and bottom out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
 }
 
 /// Which locks are on.
@@ -313,6 +350,16 @@ impl Extents {
     }
 }
 
+/// Where a held guest's absolute position put the pointer, in the desktop's
+/// pixels measured from its corner, and whether the guest's own position lay
+/// past the application's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct At {
+    x: i32,
+    y: i32,
+    outside: bool,
+}
+
 /// One guest's input state and the expansion that reads it.
 #[derive(Debug)]
 pub struct Injector {
@@ -347,6 +394,10 @@ pub struct Injector {
     /// it ended up. Nothing reports a pointer's hotspot, and the difference
     /// between this and where the display then drew the pointer is exactly it.
     commanded: Option<(i32, i32)>,
+    /// Where the last absolute position put the pointer of a guest held to
+    /// one application, and whether the guest's own position lay past the
+    /// application's window: what its next click is judged by.
+    at: Option<At>,
     /// Whether an application on the host holds the pointer, which is a
     /// peer-independent statement that motion is being used to aim rather
     /// than to point (docs/05-host.md section 7).
@@ -369,6 +420,9 @@ pub struct Injector {
     /// Whether the application the host is held to was in front when last
     /// asked: its going is when what the guest holds comes up.
     front: bool,
+    /// Whether a held guest's Tab under the Alt it holds now has already
+    /// brought another of the application's windows forward.
+    switching: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
     /// What has arrived, for the line a live run is read from.
@@ -406,12 +460,14 @@ impl Injector {
             absolute: false,
             last_abs: None,
             commanded: None,
+            at: None,
             relative: false,
             num_lock: None,
             caps_lock: None,
             floor: true,
             owner: false,
             front: true,
+            switching: false,
             pads: [None; MAX_PADS],
             tally: Tally::default(),
             scratch: [Event {
@@ -450,8 +506,10 @@ impl Injector {
     /// own overlay -- the system's game bar, a launcher's -- which reaches
     /// past whatever a guest was given to play, so for a guest that does not
     /// own the host a press of Guide alone is dropped and a whole state is
-    /// taken without it. A pad presented as its product keeps its own button,
-    /// which is the product's.
+    /// taken without it -- **and for the owner while the host holds its
+    /// guests to one application** (docs/05-host.md section 7.4), which holds
+    /// the owner as well. A pad presented as its product keeps its own
+    /// button, which is the product's.
     pub fn set_owner(&mut self, owner: bool, out: &mut impl Sink) {
         self.owner = owner;
         out.guide(owner);
@@ -475,10 +533,9 @@ impl Injector {
     /// and let go of what the guest holds if it is not.
     ///
     /// **On a timer as well as as input arrives**, for the reason the pointer
-    /// is: the owner brings another program to the front while the guest
+    /// is: the desk brings another program to the front while the guest
     /// holds a key and sends nothing, and the key is typed into that program
-    /// by the system's own repeat until the guest's release comes. The owner
-    /// is never held.
+    /// by the system's own repeat until the guest's release comes.
     pub fn follow_gate(&mut self, out: &mut impl Sink) {
         if !self.held(out) {
             self.front = true;
@@ -489,9 +546,16 @@ impl Injector {
     }
 
     /// Whether this guest is held to one application: a host that holds its
-    /// guests to one, and a guest that is not the owner.
+    /// guests to one. **The owner as well** (docs/05-host.md section 7.4):
+    /// every seat is shown the application alone, and an owner left free
+    /// behind that picture steers the desktop unseen.
     fn held(&self, out: &impl Sink) -> bool {
-        !self.owner && out.scoped()
+        out.scoped()
+    }
+
+    /// Whether this guest may press Guide: the owner, while nothing holds it.
+    fn presses_guide(&self, out: &impl Sink) -> bool {
+        self.owner && !self.held(out)
     }
 
     /// Whether input that needs `at` goes in, letting go of what the guest
@@ -503,7 +567,18 @@ impl Injector {
         }
         let front = out.gate(Gate::Front);
         self.follow(front, out);
-        front && (at == Gate::Front || out.gate(Gate::Pointer))
+        front && (at == Gate::Front || self.under(out))
+    }
+
+    /// Whether a click or a scroll lands on the application: **where the
+    /// guest put the pointer** while it points -- nowhere past the window it
+    /// is held to, rather than on that window's edge -- and where the system's
+    /// pointer is while it moves by deltas.
+    fn under(&self, out: &mut impl Sink) -> bool {
+        match self.at {
+            Some(at) if self.absolute => !at.outside && out.gate(Gate::At { x: at.x, y: at.y }),
+            _ => out.gate(Gate::Pointer),
+        }
     }
 
     /// The application in front or not, as just asked: its going releases
@@ -581,6 +656,8 @@ impl Injector {
                 let pressed = message.a2 != 0;
                 if !pressed || self.admits(Gate::Front, out) {
                     self.keyboard(message.a0, message.a1, pressed, out);
+                } else {
+                    self.behind(message.a0, message.a1, out);
                 }
             }
             op::MOUSE_BUTTON if self.pointer_allowed() => {
@@ -617,7 +694,7 @@ impl Injector {
                 let Some(bit) = gamepad::bit_for_index(message.a0) else {
                     return;
                 };
-                if bit == gamepad::bit::GUIDE && !self.owner {
+                if bit == gamepad::bit::GUIDE && !self.presses_guide(out) {
                     return;
                 }
                 let Some(index) = self.standard_pad(message.a2, out) else {
@@ -903,7 +980,7 @@ impl Injector {
         };
         let at = |offset: usize| i16::from_be_bytes(pair(offset));
         let mut buttons = u16::from_be_bytes(pair(0));
-        if !self.owner {
+        if !self.presses_guide(out) {
             buttons &= !gamepad::bit::GUIDE;
         }
         let Some(index) = self.standard_pad(id, out) else {
@@ -963,6 +1040,21 @@ impl Injector {
             || (usage == USAGE_ESCAPE && (alt || ctrl))
     }
 
+    /// A held guest's key pressed while none of the application's windows is
+    /// in front, which goes nowhere -- **but Tab under Alt brings the
+    /// application's topmost window forward** (docs/05-host.md section 7.4):
+    /// a launcher's main window left unfocused as its splash went, or one
+    /// shown behind another program, has no other way back for a guest held
+    /// to it. A Tab after it under the same Alt steps on. Alt is the peer's
+    /// mask alone here, its press having gone nowhere either.
+    fn behind(&mut self, code: u32, modifiers: u32, out: &mut impl Sink) {
+        if code != u32::from(USAGE_TAB) || modifiers & MOD_ALT == 0 {
+            return;
+        }
+        let again = core::mem::replace(&mut self.switching, true);
+        out.next_window(modifiers & MOD_SHIFT != 0, again);
+    }
+
     /// Whether this guest holds any of the keys the peer names by these codes.
     fn holds_any(&self, usages: &[u16]) -> bool {
         usages.iter().any(|&usage| {
@@ -982,6 +1074,12 @@ impl Injector {
             traced(code, modifiers, pressed, 0, "no-key");
             return;
         };
+        // An Alt let go ends a run of Tabs under it, as a key with no Alt down
+        // anywhere does: the next Tab under an Alt starts the order afresh.
+        let alt = modifiers & MOD_ALT != 0 || self.holds_any(&USAGE_ALTS);
+        if !alt || (!pressed && USAGE_ALTS.contains(&peer_code)) {
+            self.switching = false;
+        }
         // **A guest held to one application presses nothing that reaches past
         // it** (docs/05-host.md section 7.4): the keys that open the shell or
         // switch away from the application, and those that act on the host's
@@ -992,8 +1090,18 @@ impl Injector {
             if self.refused_in_scope(peer_code, modifiers) {
                 // **A key refused under Alt leaves the Alt alone**, and an Alt
                 // let go alone is the window's menu key.
-                if modifiers & MOD_ALT != 0 || self.holds_any(&USAGE_ALTS) {
+                if alt {
                     out.mask_alt();
+                }
+                // **Tab under Alt brings the application's next window to the
+                // front** in place of the system's switcher, which the picture
+                // would not show: Shift steps backwards, and a Tab after
+                // another under the same Alt steps on. A press reaches here
+                // only while the application is in front.
+                if alt && peer_code == USAGE_TAB {
+                    let backwards = modifiers & MOD_SHIFT != 0 || self.holds_any(&USAGE_SHIFTS);
+                    let again = core::mem::replace(&mut self.switching, true);
+                    out.next_window(backwards, again);
                 }
                 traced(code, modifiers, pressed, key, "scope");
                 return;
@@ -1216,36 +1324,86 @@ impl Injector {
 
         self.last_abs = None;
         self.absolute = true;
-        self.used = 0;
-        // **Recorded where it is actually injected**, past the permission gate
-        // and past the arbiter, because it is read as evidence of where the
-        // pointer was put. A position that was refused was not commanded.
-        self.commanded = Some((x, y));
         let place = self.extents.place;
-        self.push(
-            EV_ABS,
-            ABS_X,
-            scale(
-                x,
-                self.extents.width,
-                place.x,
-                place.width,
-                place.desktop_width,
-            ),
-        );
-        self.push(
-            EV_ABS,
-            ABS_Y,
-            scale(
-                y,
-                self.extents.height,
-                place.y,
-                place.height,
-                place.desktop_height,
-            ),
-        );
+        let axes = if self.held(out) {
+            self.held_axes(x, y, out)
+        } else {
+            // **Recorded where it is actually injected**, past the permission
+            // gate and past the arbiter, because it is read as evidence of
+            // where the pointer was put. A position that was refused was not
+            // commanded.
+            self.commanded = Some((x, y));
+            Some((
+                scale(
+                    x,
+                    self.extents.width,
+                    place.x,
+                    place.width,
+                    place.desktop_width,
+                ),
+                scale(
+                    y,
+                    self.extents.height,
+                    place.y,
+                    place.height,
+                    place.desktop_height,
+                ),
+            ))
+        };
+        let Some((across, down)) = axes else {
+            return;
+        };
+        self.used = 0;
+        self.push(EV_ABS, ABS_X, across);
+        self.push(EV_ABS, ABS_Y, down);
         self.report();
         self.flush(Device::PointerAbsolute, out);
+    }
+
+    /// The axes a held guest's position goes in at (docs/05-host.md section
+    /// 7.4): **on the application's window the picture shows**, a position
+    /// past it kept at its edge and remembered as past it, so that a click
+    /// asked there goes nowhere rather than onto that edge -- a window's
+    /// border resizes it, its caption's buttons close it. Nothing where none of the
+    /// window is on the captured output, and a click after it goes nowhere
+    /// either.
+    fn held_axes(&mut self, x: i32, y: i32, out: &mut impl Sink) -> Option<(i32, i32)> {
+        let place = self.extents.place;
+        let (width, height) = (self.extents.width, self.extents.height);
+        let spans = out
+            .bounds()
+            .and_then(|bounds| on_output(bounds, place))
+            .filter(|_| width > 0 && height > 0);
+        let Some((across, down)) = spans else {
+            self.at = Some(At {
+                x: 0,
+                y: 0,
+                outside: true,
+            });
+            return None;
+        };
+        let (px, py) = (pixel(x, width, place.width), pixel(y, height, place.height));
+        let outside = !across.contains(&px) || !down.contains(&py);
+        let px = px.clamp(*across.start(), *across.end());
+        let py = py.clamp(*down.start(), *down.end());
+        let (dx, dy) = (i64::from(place.x) + px, i64::from(place.y) + py);
+        self.at = Some(At {
+            x: i32::try_from(dx).unwrap_or(i32::MAX),
+            y: i32::try_from(dy).unwrap_or(i32::MAX),
+            outside,
+        });
+        self.commanded = Some(if outside {
+            (
+                picture(px, width, place.width),
+                picture(py, height, place.height),
+            )
+        } else {
+            (x, y)
+        });
+        Some((
+            axis(dx, place.desktop_width),
+            axis(dy, place.desktop_height),
+        ))
     }
 
     /// Release every key this guest holds, as a withdrawn keyboard permission
@@ -1253,6 +1411,7 @@ impl Injector {
     /// they came (docs/05-host.md section 7).
     pub fn release_keys(&mut self, out: &mut impl Sink) {
         self.release_keys_but(out, |_| false);
+        self.switching = false;
         // The peer's locks are no longer known, rather than known to be off.
         // Its next message sets the baseline again without toggling anything.
         self.num_lock = None;
@@ -1483,14 +1642,33 @@ fn detents(units: i32) -> i32 {
 /// measured, every position a pixel up and to the left, and an output's first
 /// column on the neighbouring output's last.
 fn scale(value: i32, extent: u32, origin: u32, within: u32, desktop: u32) -> i32 {
-    let extent = i64::from(extent);
-    let desktop = i64::from(desktop);
-    if extent <= 0 || desktop <= 0 {
+    if extent == 0 || desktop == 0 {
         return 0;
     }
+    axis(i64::from(origin) + pixel(value, extent, within), desktop)
+}
+
+/// The captured output's pixel a coordinate in the picture names, clamped
+/// into the picture first: [`scale`]'s first two steps.
+fn pixel(value: i32, extent: u32, within: u32) -> i64 {
+    let extent = i64::from(extent.max(1));
     let clamped = i64::from(value).clamp(0, extent);
-    let pixel = (clamped * i64::from(within) / extent).clamp(0, (i64::from(within) - 1).max(0));
-    let placed = i64::from(origin) + pixel;
+    (clamped * i64::from(within) / extent).clamp(0, (i64::from(within) - 1).max(0))
+}
+
+/// The coordinate in the picture an output's pixel is at: [`pixel`] the
+/// other way.
+fn picture(pixel: i64, extent: u32, within: u32) -> i32 {
+    i32::try_from(pixel * i64::from(extent) / i64::from(within.max(1))).unwrap_or(i32::MAX)
+}
+
+/// The absolute axis value aimed at a desktop pixel's centre: [`scale`]'s
+/// last step.
+fn axis(placed: i64, desktop: u32) -> i32 {
+    if desktop == 0 {
+        return 0;
+    }
+    let desktop = i64::from(desktop);
     #[allow(
         clippy::cast_possible_truncation,
         reason = "the quotient is clamped to the axis range, which is 65535"
@@ -1499,6 +1677,26 @@ fn scale(value: i32, extent: u32, origin: u32, within: u32, desktop: u32) -> i32
         ((2 * placed + 1) * (i64::from(ABS_RANGE) + 1) / (2 * desktop))
             .clamp(0, i64::from(ABS_RANGE)) as i32
     }
+}
+
+/// The captured output's pixels a rectangle of the desktop covers, on each
+/// axis: nothing where none of it is on the output.
+fn on_output(
+    bounds: Bounds,
+    place: Place,
+) -> Option<(
+    core::ops::RangeInclusive<i64>,
+    core::ops::RangeInclusive<i64>,
+)> {
+    let span = |from: i32, to: i32, origin: u32, within: u32| {
+        let first = (i64::from(from) - i64::from(origin)).max(0);
+        let last = (i64::from(to) - 1 - i64::from(origin)).min(i64::from(within) - 1);
+        (first <= last).then_some(first..=last)
+    };
+    Some((
+        span(bounds.left, bounds.right, place.x, place.width)?,
+        span(bounds.top, bounds.bottom, place.y, place.height)?,
+    ))
 }
 
 #[allow(
@@ -1551,6 +1749,12 @@ mod tests {
         rested: Vec<u32>,
         /// How many keystrokes of no key were typed for an Alt.
         masks: u32,
+        /// Where a held guest's pointer may be, in the desktop's pixels.
+        bounds: Option<Bounds>,
+        /// The points of the desktop a click or a scroll was judged at.
+        judged: Vec<(i32, i32)>,
+        /// The application's next window asked for: backwards, and again.
+        switched: Vec<(bool, bool)>,
     }
 
     impl Sink for Recorder {
@@ -1584,9 +1788,12 @@ mod tests {
         }
 
         fn gate(&mut self, at: Gate) -> bool {
+            if let Gate::At { x, y } = at {
+                self.judged.push((x, y));
+            }
             self.scope.is_none_or(|(front, under)| match at {
                 Gate::Front => front,
-                Gate::Pointer => under,
+                Gate::Pointer | Gate::At { .. } => under,
             })
         }
 
@@ -1596,6 +1803,14 @@ mod tests {
 
         fn mask_alt(&mut self) {
             self.masks += 1;
+        }
+
+        fn bounds(&mut self) -> Option<Bounds> {
+            self.bounds
+        }
+
+        fn next_window(&mut self, backwards: bool, again: bool) {
+            self.switched.push((backwards, again));
         }
     }
 
@@ -3226,10 +3441,16 @@ mod tests {
     }
 
     /// A guest held to one application, the application in front and under
-    /// the pointer.
+    /// the pointer, its window the whole output.
     fn held_guest() -> (Injector, Recorder) {
         let out = Recorder {
             scope: Some((true, true)),
+            bounds: Some(Bounds {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            }),
             ..Recorder::default()
         };
         (injector(), out)
@@ -3353,16 +3574,249 @@ mod tests {
         );
     }
 
-    /// **The owner is never held**: with another program in front its keys,
-    /// the Windows key among them, and its clicks go in.
+    /// **The owner is held as every guest is while a scope is set**: every
+    /// seat is shown the application alone, so behind another program its
+    /// keys and clicks go nowhere, the Windows key never goes in, and Guide
+    /// neither as a button nor in a whole state. With no scope set, all of
+    /// them do.
     #[test]
-    fn the_owner_is_never_held() {
+    fn the_owner_is_held_while_a_scope_is_set() {
         let (mut inject, mut out) = held_guest();
         inject.set_owner(true, &mut out);
         out.scope = Some((false, false));
-        inject.on_control(&key(227, true), &mut out);
+        inject.on_control(&key(4, true), &mut out);
         inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
-        assert_eq!(out.keys_at(1), vec![code(227), BTN_LEFT]);
+        assert!(
+            out.keys_at(1).is_empty(),
+            "the owner's input went in behind the application"
+        );
+
+        out.scope = Some((true, true));
+        inject.on_control(&key(227, true), &mut out);
+        inject.on_control(&control(op::GAMEPAD_BUTTON, 5, 1, 1), &mut out);
+        inject.on_control(
+            &state(1, &pad_state_body(gamepad::bit::GUIDE, 0, 0, 0, 0, 0, 0)),
+            &mut out,
+        );
+        assert!(
+            out.keys_at(1).is_empty(),
+            "a held owner pressed {:?}",
+            out.keys_at(1)
+        );
+
+        out.scope = None;
+        out.batches.clear();
+        inject.on_control(&key(227, true), &mut out);
+        inject.on_control(&control(op::GAMEPAD_BUTTON, 5, 1, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![code(227), gamepad::key::MODE]);
+    }
+
+    /// **A held guest's pointer stays on the application's window**: a
+    /// position on it goes in as asked, one past it at the window's edge and
+    /// recorded as put there, on each axis alone.
+    #[test]
+    fn a_held_guests_pointer_stays_on_the_applications_window() {
+        let (mut inject, mut out) = held_guest();
+        out.bounds = Some(Bounds {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        });
+        let at = |x: i32, y: i32| {
+            vec![
+                (ABS_X, scale(x, 1920, 0, 1920, 1920)),
+                (ABS_Y, scale(y, 1080, 0, 1080, 1080)),
+            ]
+        };
+        for (asked, put) in [
+            ((300, 400), (300, 400)),
+            ((50, 900), (100, 599)),
+            ((1900, 10), (499, 200)),
+            ((300, 1080), (300, 599)),
+        ] {
+            out.batches.clear();
+            inject.on_control(
+                &control(op::MOUSE_MOTION, 0, asked.0 as u32, asked.1 as u32),
+                &mut out,
+            );
+            assert_eq!(abs(&out), at(put.0, put.1), "asked {asked:?}");
+            assert_eq!(inject.commanded(), Some(put), "asked {asked:?}");
+        }
+
+        // With nothing held, the same position goes where it was asked.
+        let (mut free, mut out) = (injector(), Recorder::default());
+        free.on_control(&control(op::MOUSE_MOTION, 0, 50, 900), &mut out);
+        assert_eq!(abs(&out), at(50, 900));
+    }
+
+    /// **A click asked past the window goes nowhere** rather than onto its
+    /// edge, and the wheel with it; on the window, a click is judged where the
+    /// guest put the pointer -- not where the system's pointer is -- and goes
+    /// nowhere where that point is not the application's. A button pressed on
+    /// the window still comes up past it.
+    #[test]
+    fn a_held_guests_click_past_the_window_goes_nowhere() {
+        let (mut inject, mut out) = held_guest();
+        out.bounds = Some(Bounds {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        });
+        let motion = |x: u32, y: u32| control(op::MOUSE_MOTION, 0, x, y);
+        inject.on_control(&motion(50, 900), &mut out);
+        out.batches.clear();
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(&control(op::MOUSE_WHEEL, 0, 120, 0), &mut out);
+        assert!(
+            out.batches.is_empty(),
+            "a click or a scroll went in past the window"
+        );
+        assert!(
+            out.judged.is_empty(),
+            "a point past the window was asked about"
+        );
+
+        inject.on_control(&motion(300, 400), &mut out);
+        out.batches.clear();
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![BTN_LEFT]);
+        assert_eq!(out.judged, vec![(300, 400)]);
+        inject.on_control(&motion(50, 900), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 0, 0), &mut out);
+        assert_eq!(
+            out.keys_at(0),
+            vec![BTN_LEFT],
+            "the dragged button stayed down"
+        );
+
+        out.scope = Some((true, false));
+        inject.on_control(&motion(300, 400), &mut out);
+        out.batches.clear();
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert!(
+            out.batches.is_empty(),
+            "a click went in where the point is not the application's"
+        );
+
+        // Moved by deltas, a click is judged at the system's pointer.
+        out.scope = Some((true, true));
+        out.judged.clear();
+        inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert!(
+            out.judged.is_empty(),
+            "a click after deltas was judged at a position"
+        );
+        assert_eq!(out.keys_at(1), vec![BTN_LEFT]);
+    }
+
+    /// **No window of the application on the captured output, and the
+    /// pointer goes nowhere**, nor a click after it: nothing said where it may
+    /// be, or a window wholly past the output.
+    #[test]
+    fn with_no_window_on_the_output_a_held_guests_pointer_goes_nowhere() {
+        for bounds in [
+            None,
+            Some(Bounds {
+                left: 1920,
+                top: 0,
+                right: 2500,
+                bottom: 500,
+            }),
+        ] {
+            let (mut inject, mut out) = held_guest();
+            out.bounds = bounds;
+            inject.on_control(&control(op::MOUSE_MOTION, 0, 300, 400), &mut out);
+            inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+            assert!(out.batches.is_empty(), "{bounds:?}: something went in");
+        }
+    }
+
+    /// **Tab under Alt brings the application's next window forward**: still
+    /// never typed, its Alt masked, each Tab under one Alt stepping on, Shift
+    /// stepping backwards, and an Alt let go starting the order afresh -- by
+    /// a held Alt or the peer's mask alone. Escape under Alt switches nothing,
+    /// and with nothing held Alt+Tab is the system's own.
+    #[test]
+    fn alt_tab_brings_the_applications_next_window_forward() {
+        let (mut inject, mut out) = held_guest();
+        inject.on_control(&key(226, true), &mut out);
+        inject.on_control(&key(43, true), &mut out);
+        inject.on_control(&key(43, false), &mut out);
+        inject.on_control(&key(43, true), &mut out);
+        inject.on_control(&key(225, true), &mut out);
+        inject.on_control(&key(43, true), &mut out);
+        inject.on_control(&key(225, false), &mut out);
+        inject.on_control(&key(41, true), &mut out);
+        // Alt let go and pressed again, the peer's mask saying Alt throughout.
+        inject.on_control(&control(op::KEYBOARD, 226, 0x0100, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 226, 0x0100, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 1), &mut out);
+        assert_eq!(
+            out.switched,
+            vec![(false, false), (false, true), (true, true), (false, false)]
+        );
+        assert!(
+            !out.keys_at(1).contains(&code(43)),
+            "a Tab went in under Alt"
+        );
+        assert_eq!(out.masks, 5);
+
+        // The mask alone, no Alt held here: a fresh order each time it lets
+        // go between.
+        inject.on_control(&key(226, false), &mut out);
+        out.switched.clear();
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0200, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0200, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0201, 1), &mut out);
+        inject.on_control(&key(4, true), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 1), &mut out);
+        assert_eq!(
+            out.switched,
+            vec![(false, false), (true, true), (false, false)]
+        );
+
+        let (mut free, mut out) = (injector(), Recorder::default());
+        free.on_control(&key(226, true), &mut out);
+        free.on_control(&key(43, true), &mut out);
+        assert!(out.switched.is_empty());
+        assert_eq!(out.keys_at(1), vec![code(226), code(43)]);
+    }
+
+    /// **Alt+Tab brings the application forward from behind**: with none of
+    /// its windows in front, a held guest's Alt goes nowhere and its Tab under
+    /// it -- by the peer's mask -- asks for the application's window, no Alt
+    /// masked since none went down; a Tab after it under the same Alt, the
+    /// application now in front, steps on. A Tab with no Alt in the mask, and
+    /// Escape under Alt, ask for nothing.
+    #[test]
+    fn alt_tab_brings_the_application_forward_from_behind() {
+        let (mut inject, mut out) = held_guest();
+        out.scope = Some((false, false));
+        inject.on_control(&control(op::KEYBOARD, 226, 0x0100, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 41, 0x0100, 1), &mut out);
+        assert!(out.switched.is_empty(), "{:?}", out.switched);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 1), &mut out);
+        assert_eq!(out.switched, vec![(false, false)]);
+        assert!(
+            out.batches.is_empty(),
+            "a key went in behind the application"
+        );
+        assert_eq!(out.masks, 0, "an Alt was masked that never went down");
+
+        out.scope = Some((true, true));
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0101, 1), &mut out);
+        assert_eq!(out.switched, vec![(false, false), (true, true)]);
+
+        // Alt let go, the application behind again: afresh.
+        inject.on_control(&control(op::KEYBOARD, 226, 0, 0), &mut out);
+        out.scope = Some((false, false));
+        inject.on_control(&control(op::KEYBOARD, 43, 0x0100, 1), &mut out);
+        assert_eq!(out.switched.last(), Some(&(false, false)));
     }
 
     /// **The keys that reach past the application never go in from a held

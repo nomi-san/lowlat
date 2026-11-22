@@ -881,7 +881,7 @@ pub struct Admission {
     /// ([`Admission::set_virtual_pads`]).
     #[cfg(windows)]
     virtual_pads: bool,
-    /// The application every guest but the owner is held to
+    /// The application every guest is held to, the owner too
     /// ([`Admission::set_scope`]).
     #[cfg(windows)]
     scope: Option<std::sync::Arc<lowlat_inject::Scope>>,
@@ -1020,19 +1020,20 @@ impl Admission {
         }
     }
 
-    /// Hold every guest but the owner to one application, or let them all go
+    /// Hold every guest to one application, the owner too, or let them all go
     /// (docs/05-host.md section 7.4), live: a held guest's keys, pointer
     /// motion and pads go in only while the application is in front, its
-    /// clicks and its wheel only over the application's windows, and the keys
-    /// that reach past it never; what it holds comes up as the application
-    /// leaves the front. Each seated guest takes it on its next pass, and a
-    /// guest admitted later from its admission.
+    /// pointer kept on the application's window and its clicks and its wheel
+    /// only there, Tab under Alt bringing the application's next window
+    /// forward, and the keys that reach past it never; what it holds comes up
+    /// as the application leaves the front. Each seated guest takes it on its
+    /// next pass, and a guest admitted later from its admission.
     #[cfg(windows)]
     pub fn set_scope(&mut self, scope: Option<lowlat_inject::Scope>) {
         let scope = scope.map(std::sync::Arc::new);
         match scope.as_deref() {
             Some(held) => lowlat_common::log_info!(
-                "input: every guest but the owner held to one application, paths={}",
+                "input: every guest held to one application, the owner too, paths={}",
                 held.paths().count()
             ),
             None => lowlat_common::log_info!("input: no guest held to an application"),
@@ -1046,7 +1047,7 @@ impl Admission {
         self.tell_guests(Ask::Scope(scope));
     }
 
-    /// The application every guest but the owner is held to, if any.
+    /// The application every guest is held to, the owner too, if any.
     #[cfg(windows)]
     #[must_use]
     pub fn scope(&self) -> Option<&lowlat_inject::Scope> {
@@ -3374,7 +3375,7 @@ fn drive<M: Media>(
                     lowlat_common::log_info!(
                         "guest: number={} held to an application={}",
                         args.guest,
-                        u8::from(scope.is_some() && !args.owner)
+                        u8::from(scope.is_some())
                     );
                     if let Some(input) = input.as_mut() {
                         input.sink.set_scope(scope);

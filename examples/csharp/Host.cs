@@ -262,7 +262,7 @@ internal sealed class Host
         (Environment.GetEnvironmentVariable("LOWLAT_SCOPE") ?? "")
             .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    /// Hold every guest but the owner to the application `paths` names, or let
+    /// Hold every guest to the application `paths` names, the owner too, or let
     /// them all go with none, and say what the host now holds. **A scope this
     /// process cannot show is taken all the same**: the guests are held and
     /// shown black, and the status says why.
@@ -322,7 +322,7 @@ internal sealed class Host
     /// back when the guests are let go; nothing where no hold turned it.
     private bool? inputBefore;
 
-    /// Hold every guest but the owner to `app` and start it. **Held first**, so
+    /// Hold every guest to `app`, the owner too, and start it. **Held first**, so
     /// the guests are held from its first window; the input driver's keyboard
     /// and mouse switched on where it asks for them, since a game under an
     /// anti-cheat that refuses injected pointer moves takes the driver's

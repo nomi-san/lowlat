@@ -51,7 +51,7 @@ as the system account in the console session
 `LOWLAT_APPLICATIONS` names a JSON file of applications
 (`{"applications": [{"name", "program", "arguments", "directory", "executables":
 [...], "virtualInput", "place"}]}`); in a session, key `1` to `9` holds every
-guest but the owner to that application and starts it, and `0` lets them go
+guest, the owner too, to that application and starts it, and `0` lets them go
 ([05 §7.4](../../docs/05-host.md), [06 §3](../../docs/06-api.md)). The guests
 are held before the start, so from its first window. The program is started by
 the desktop's shell, so unelevated, and its first window is found by the

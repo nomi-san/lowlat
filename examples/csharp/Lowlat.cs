@@ -205,7 +205,7 @@ internal struct HostInputConfig
     }
 }
 
-/// The application every guest but the owner is held to (minor 39; Windows
+/// The application every guest is held to, the owner too (minor 39; Windows
 /// alone): its executables by their full paths, `ScopePath` bytes each, a
 /// count of zero holding nobody.
 [StructLayout(LayoutKind.Sequential)]

@@ -622,7 +622,7 @@ pub(crate) struct Shared {
     /// that changes: the same counter and lock as the live video above.
     own_asked: AtomicU32,
     own_display: std::sync::Mutex<OwnDisplay>,
-    /// The application every guest but the owner is held to, for the
+    /// The application every guest is held to, the owner too, for the
     /// picture ([`Stream::set_scope`]).
     #[cfg(windows)]
     scope: ScopeCell,
@@ -879,7 +879,7 @@ fn level_word(level: usize) -> u32 {
     u32::try_from(level).unwrap_or(u32::MAX)
 }
 
-/// The application every guest but the owner is held to, as the picture
+/// The application every guest is held to, the owner too, as the picture
 /// takes it (docs/05-host.md section 7.4): what was set last, a counter
 /// bumped at each set, and the mark the last build read it at.
 ///

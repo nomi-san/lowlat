@@ -134,7 +134,7 @@ _ = Task.Run(async () =>
 #if WINDOWS
 // **The input switches and the scope, live**, which a session's checks move
 // mid-session: `i` the guests' keyboard and mouse, `p` the pads sent as their
-// reports, `s` every guest but the owner held to `LOWLAT_SCOPE`'s executables.
+// reports, `s` every guest, the owner too, held to `LOWLAT_SCOPE`'s executables.
 Console.WriteLine(
     "keys: i switches the keyboard and mouse, p the pads, on the input driver; "
     + "s holds the guests to LOWLAT_SCOPE, or lets them go; "
