@@ -204,12 +204,15 @@ jobs:
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
           "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$env:RUNNER_TEMP\vcpkg-cache,readwrite" >> $env:GITHUB_ENV
+          "VCPKG_IMAGE=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_ENV
 
+      # A set per runner image, as CI's: vcpkg finds a package again only under
+      # the compiler and tools it was built with, which the image moves.
       - name: vcpkg's packages
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
+          key: vcpkg-${{ env.VCPKG_IMAGE }}-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
 
       - name: The shader compiler
         run: |

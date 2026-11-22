@@ -160,7 +160,11 @@ jobs:
         run: python scripts/fetch-wdk.py
 
       # vcpkg at the baseline both manifests name, so its ports are theirs, with
-      # the packages it builds kept between runs.
+      # the packages it builds kept between runs -- **a set per runner image**:
+      # vcpkg finds a package again only under the compiler and tools it was
+      # built with, which the image moves, and a cache whose key hit is never
+      # saved again. Keyed on the manifests alone, the set saved once was
+      # restored by every run with none of it used, FFmpeg built each time.
       - name: vcpkg
         run: |
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
@@ -171,12 +175,13 @@ jobs:
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vcpkg-cache" | Out-Null
           "VCPKG_ROOT=$vcpkg" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$env:RUNNER_TEMP\vcpkg-cache,readwrite" >> $env:GITHUB_ENV
+          "VCPKG_IMAGE=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_ENV
 
       - name: vcpkg's packages
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-cache
-          key: vcpkg-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
+          key: vcpkg-${{ env.VCPKG_IMAGE }}-${{ hashFiles('.github/windows-tools/vcpkg.json', 'examples/client/vcpkg.json') }}
 
       # The runner has no GPU and no codec library: an LGPL pair built by vcpkg,
       # its decoders alone, is what the software backend's clips decode through,
