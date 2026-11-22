@@ -90,7 +90,11 @@ if (offline || session is null)
     return 0;
 }
 
+// **Ctrl+C closes the host rather than the process**: the loops below end, and
+// every guest is told the host is closing before it stops. The event loop has
+// a token of its own, since it reaps each guest as it goes.
 using var cancel = new CancellationTokenSource();
+using var pumping = new CancellationTokenSource();
 Console.CancelKeyPress += (_, args) => { args.Cancel = true; cancel.Cancel(); };
 
 // Who each attempt is with, so an event can be addressed back over signaling.
@@ -103,7 +107,7 @@ var peers = new Dictionary<string, string>();
 // away.
 Signaling? current = null;
 var events = Task.Run(
-    () => host.PumpEvents(() => current, peers, cancel.Token), cancel.Token);
+    () => host.PumpEvents(() => current, peers, pumping.Token), pumping.Token);
 
 // **A dropped connection reconnects rather than exits.** The service's edge
 // closes an idle socket, a network moves, a service restarts; a host that
@@ -214,13 +218,19 @@ while (!cancel.IsCancellationRequested)
 }
 
 cancel.Cancel();
+// **Every guest told before the host goes**, the event loop still reaping
+// them: a stop tells a peer nothing, and each would wait out its own deadline
+// to learn the host had gone.
+var told = host.EndEveryGuest(TimeSpan.FromSeconds(2));
+Console.WriteLine($"host: closing, {told} guest(s) told");
+pumping.Cancel();
 try
 {
     await events;
 }
 catch (OperationCanceledException)
 {
-    // Expected: the pump stops with the token.
+    // Expected: the pump stops with its token.
 }
 host.Stop();
 host.Destroy();

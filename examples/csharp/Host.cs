@@ -105,6 +105,35 @@ internal sealed class Host
 
     public void Stop() => Native.lowlat_host_stop(handle);
 
+    /// What a guest is told as the host closes: **the protocol's own
+    /// disconnect status for a host that closed**, which a client shows as
+    /// such, not this API's numbering.
+    private const int HostClosed = 4;
+
+    /// End every connected guest, telling each the host is closing, and wait
+    /// up to `within` for the roster to empty as the event loop reaps them.
+    /// **Before a stop, which tells a peer nothing**: each would otherwise
+    /// wait out its own deadline to learn the host had gone. Answers how many
+    /// were told.
+    public int EndEveryGuest(TimeSpan within)
+    {
+        var guests = Roster();
+        foreach (var guest in guests)
+        {
+            var ended = Native.lowlat_host_kick_guest(handle, guest.Number, HostClosed);
+            if (ended != Status.Ok)
+            {
+                Console.WriteLine($"host: guest {guest.Number} not told: {Text.Describe(ended)}");
+            }
+        }
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (guests.Count > 0 && Roster().Count > 0 && waited.Elapsed < within)
+        {
+            Thread.Sleep(50);
+        }
+        return guests.Count;
+    }
+
     public void Destroy()
     {
         Native.lowlat_host_destroy(handle);

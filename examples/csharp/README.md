@@ -38,6 +38,11 @@ Remove-Item Env:LOWLAT_OFFLINE
 $env:LOWLAT_SESSION = '<session id>'; dotnet run --project examples/csharp
 ```
 
+**Ctrl+C closes the host**: every connected guest is told the host closed -- the
+disconnect status a client shows as such -- and given up to two seconds to go
+before the host stops. A stop alone tells a peer nothing, so each would wait out
+its own deadline to learn the host had gone.
+
 On Linux, capture needs the elevated capability, so `lowlat_can_host` answers
 `LOWLAT_ERR_DISPLAY_UNREACHABLE` as an ordinary user. Run as root for a session
 that carries pictures; everything else works either way. On Windows an ordinary
