@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-22 - W5.2 corrected: a duplicated desktop converted as before
+
+### Fixed
+- **Since W5.2 the duplicated desktop's conversion cost an AMD integrated GPU a tenth more**,
+  found on review against the code before game mode: the place an application's window is
+  drawn at was one constant read by every conversion, and asked in each sample's fetch it read
+  the source's size four times a 2x2 block where once had served. On the Raphael integrated GPU
+  the NV12 conversion of a 2560x1440 desktop went from 0.417 to 0.466 ms at the median and of
+  1920x1080 from 0.237 to 0.264, the draws nine percent dearer; on the RX 9060 XT a hundredth
+  dearer (0.0220 against 0.0222 ms); on the RTX 5060 the compute pass measured as before and the
+  draws five percent dearer. **The placed conversion is a variant of its own now**
+  ([05 §3](05-host.md)), compiled apart and made by the window source alone; every other picture
+  is converted by the shaders byte for byte as they were before W5.2, which read no constant.
+
+### Checked
+- The shaders regenerated: the unplaced ones byte for byte those before W5.2, the placed ones
+  added beside them. A test that no unplaced shader declares a constant and every placed one
+  does, broken three ways and seen to fail. The conversion's GPU tests on the RTX 5060, the
+  RX 9060 XT and the integrated GPU: the reference in every layout each writes, a placed picture
+  on black and past an edge against its own unplaced conversion, a converter not made to place
+  refusing a place (broken once and seen to fail), and the draws against the compute pass.
+- The duplicated desktop's conversion timed against the code before W5.2, both built apart and
+  run alternately three times, 2560x1440, 3000 conversions each: as before on all three GPUs --
+  the integrated GPU's NV12 0.421 against 0.421 ms at the median (0.471 with W5.2's one shader),
+  the RTX 5060's 0.028 against 0.028, the RX 9060 XT's alike within its noise. And the window's
+  placed conversion against W5.2's: three percent cheaper on the integrated GPU (0.512 to 0.497
+  ms for NV12), four on the RTX 5060's NV12 draws, alike elsewhere.
+
 ## 2026-11-22 - The reference host tells its guests as it closes
 
 ### Changed

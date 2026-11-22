@@ -3145,7 +3145,12 @@ The decisions are recorded once, here.
   minimised, which keeps its last picture only where the application shows none. Checked by two
   windows of the test's own that never take the front, the first followed, then the second shown
   and the first hidden: the picture on the second 31 ms after; with the rule as it was, still on
-  the first after 3 s.
+  the first after 3 s. *Corrected 2026-11-22* ([05 §3](05-host.md)): **the conversion's place
+  cost every duplicated desktop a tenth of its conversion on an AMD integrated GPU** -- one set
+  of shaders asked each sample whether its picture was placed, and read the source's size four
+  times a block for it. The placed conversion is a variant of its own now, compiled apart and
+  made by the window source alone; every other picture is converted by the shaders as they were
+  before W5.2, byte for byte, which read no constant.
 - [x] **W5.3 the sound**: a capture per sounding process of the application, none taken twice,
   followed as its processes open and close their sound; each one's process held, so its number
   cannot pass to another process under the capture, and the capture closed when it exits; read
@@ -3285,6 +3290,8 @@ to a match, its anti-cheat included; the recorded figures as W5.0 and W5.2 measu
 
 ## Change log
 
+- 2026-11-22: W5.2 corrected on review: the placed conversion a variant of its own, so a
+  duplicated desktop is converted as before W5.2.
 - 2026-11-22: W5.2 corrected and W5.6 completed at W5's retest: a window the application hides
   gives way to one of its windows on the screen; Alt+Tab brings the application forward from
   behind.

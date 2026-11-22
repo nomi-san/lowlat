@@ -332,6 +332,16 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   faster and has no packed render targets. Intel's encoder takes this conversion as NVIDIA's
   does: its runtime's own conversion of the captured picture added 0.8 to 2.8 ms inside the
   encode and took its matrix from the stated colour description the wrong way round.
+- **A picture placed on a canvas has a conversion of its own** (*2026-11-22*,
+  [impl-plan-windows.md](impl-plan-windows.md) W5.2). The application's window shown in an
+  output's place (§2) is drawn at its place on black by a placed variant of each shader above,
+  compiled apart and made by that source alone, its place read from one constant. Every other
+  picture -- a duplicated desktop, the driver's frames -- is converted by shaders that read no
+  constant. **Never a branch in the shaders every picture takes**: asked in each sample's fetch,
+  the place read the source's size four times a block where once had served, and the duplicated
+  desktop's NV12 conversion on an AMD integrated GPU went from 0.417 to 0.466 ms at 2560x1440
+  and from 0.237 to 0.264 at 1920x1080, its draws nine percent dearer; an RX 9060 XT took a
+  hundredth more, and an RTX 5060 computed it as before and drew it five percent dearer.
 - **One conversion target per in-flight slot.** A ring of four. Frames in flight must not share
   a destination, or the encoder reads a surface that the next iteration is already
   overwriting.
