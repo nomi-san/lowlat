@@ -1190,9 +1190,27 @@ pixel asked, relative moves and buttons -- so such a game is played with `virtua
   the host cursor is hidden". The trigger is the intent (`relative`,
   [§8.1](#81-three-states-never-conflated)) -- the show state, or a picture of one value --
   read as each motion arrives, not the overlay.
-- **Pen and touch are deferred** (*2026-10-31*), as in the opcode catalog
-  ([01 §11.1](01-protocol.md)): their message is dropped on both platforms, so a guest's pen
-  moves nothing here.
+- **A guest's pen is a pen of the host's own** (*2026-11-26*; the message is
+  [01 §11.1](01-protocol.md)'s). *On Windows* each guest has a synthetic pen of the system's own,
+  made at its first message on the guest's thread. Its position is placed as an absolute
+  pointer's is, so it reaches every display and, for a guest held to an application, stays on the
+  window the picture shows; its pressure, turn, both tilts, barrel button and eraser go with it,
+  and **a barrel button's double click is one more lift and touch**. It needs what the pointer
+  needs, the permission and the floor; a touch keeps the floor as a held button does, and for a
+  held guest a touch begins only where a click would land, judged where the pen is, and hovers
+  anywhere else.
+  - **The system lifts a pen it hears nothing from, half a second after its last frame**
+    (measured 521 to 524 ms, Windows 11 24H2), as an ordinary lift: a long press becomes a tap
+    and a drag drops. So a pen in range is told again every 100 ms while nothing new arrives --
+    the guest's loop passes at least every 50 ms -- at about 70 us a frame.
+  - **What a pen holds is cancelled, never lifted.** A release of everything, the pointer
+    withdrawn or lost to another guest, the application leaving the front and the guest's end
+    each destroy the guest's pen, which is what a window is told is a cancel -- a frame saying so
+    arrives as a lift, and a lift is a tap where the pen is. The next message makes another.
+  - Where the system has no synthetic pointer, Windows 10 before 1809, or refuses one, the pen
+    drives the pointer: a position over the whole desktop, and the left button for its touch.
+  - *On Linux* a guest's pen goes nowhere yet; there is no tablet device here. **Touch is
+    deferred**, on both platforms.
 - **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
   injector.** The SDK invents no permission model beyond them; they arrive from signaling
   ([04 §3](04-signaling.md)). The gate belongs next to the pressed state rather than in the

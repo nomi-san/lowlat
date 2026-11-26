@@ -576,7 +576,7 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 23 | gamepad state | pad, 0, 0, plus 15-byte body | v1 |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
-| 30 | pen | position, pressure and rotation, stream, tilts and flags | deferred |
+| 30 | pen | position, pressure and rotation, stream, tilts and flags | v1, on Windows (*2026-11-26*) |
 | 31 | pad report | length, pad, product and flags, plus the report | v1 (*Phase 14*) |
 | 35 | diagnostics | bit flags | v1 |
 

@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-26 - The pen on the host, on Windows
+
+### Added
+- **A guest's pen is a pen of the host's own on Windows** ([05 §7](05-host.md)): a synthetic
+  pen of the system's for each guest, made at its first message on the guest's thread, its
+  position placed as an absolute pointer's -- every display, and for a guest held to an
+  application the window the picture shows -- with its pressure, turn, tilts, barrel button and
+  eraser, a barrel button's double click one more lift and touch. It needs the pointer and the
+  floor; a touch keeps the floor as a held button does, and for a held guest begins only where
+  a click would land. Where the system has no synthetic pointer the pen drives the pointer. On
+  Linux it still goes nowhere.
+- **A pen in range is told again every 100 ms** while nothing new arrives: the system lifts a
+  pen it hears nothing from 521 to 524 ms after its last frame (measured), as an ordinary lift.
+- **What a pen holds is cancelled, never lifted**: a release of everything, the pointer
+  withdrawn or lost, the application leaving the front and the guest's end destroy the guest's
+  pen, which is what a window is told is a cancel; a frame's own cancel arrives as a lift, and a
+  lift is a tap.
+
+### Checked
+- The expansion: the whole report and the ranges held, the eraser, leaving range, the double
+  click, the stream byte, the pointer's gate, the cancel on each of the four paths, a held
+  guest's touch on the window alone. The sink: the frame for every change, the pixel back from
+  the axis value on a desktop left of the primary, the frame's parts. A stroke into a window of
+  the test's own (labelled): down on the pixel asked, held a second and a half on the refresh
+  alone, lifted, and a cancel seen as one. The pen through a host in the hermetic pair. Each
+  check broken once and caught, two of them live and one on Linux. The expansion allocates
+  nothing (Linux). The Windows bar; the Linux bar on the three crates touched, whose one failure
+  is again a test that needs a `localhost` answering on both families.
+
 ## 2026-11-26 - The pen from the client (minor 40)
 
 ### Added
