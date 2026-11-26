@@ -36,13 +36,7 @@ pub(crate) fn session() -> ! {
             None
         }
     };
-    let clip = match dbus::Clip::connect() {
-        Ok(clip) => Some(clip),
-        Err(error) => {
-            lowlat_common::log_warn!("session: no clipboard to own, error={error}");
-            None
-        }
-    };
+    let clip = wait_for_clipboard();
     // **Watched rather than asked for, which is the whole reason this is here
     // and not in the service.** A session re-describes an output when it moves
     // and announces one that appears, but only to a client that is still
@@ -489,6 +483,53 @@ fn own_clipboard(
 /// How long the clipboard thread waits on the desktop before it looks at what
 /// a guest sent.
 const CLIP_TICK_MS: u64 = 200;
+
+/// How long a KDE session's clipboard is waited for at start, and how often it
+/// is asked in that time.
+const CLIP_WAIT_MS: u64 = 30_000;
+const CLIP_RETRY_MS: u64 = 500;
+
+/// The desktop's clipboard, waited for where it is on its way.
+///
+/// **Asked again for a while on KDE, because at login it is not there yet.**
+/// Klipper lives inside the shell, which is up before it has loaded the
+/// clipboard, and this unit starts as soon as the session is. A helper that
+/// asked once was refused and went without a clipboard until the next login,
+/// while one restarted later had it (measured on Plasma 6.8.3: the shell up about
+/// two seconds before the helper was refused). The capabilities are announced
+/// once, so the wait comes before them. Elsewhere there is no Klipper to wait
+/// for, and the first answer is the answer.
+fn wait_for_clipboard() -> Option<dbus::Clip> {
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|names| {
+        names
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("KDE"))
+    });
+    let began = std::time::Instant::now();
+    let wait = std::time::Duration::from_millis(CLIP_WAIT_MS);
+    let mut refused = false;
+    loop {
+        match dbus::Clip::connect() {
+            Ok(clip) => {
+                if refused {
+                    lowlat_common::log_info!(
+                        "session: the clipboard answered after {:.1}s",
+                        began.elapsed().as_secs_f64()
+                    );
+                }
+                return Some(clip);
+            }
+            Err(error) if !kde || began.elapsed() >= wait => {
+                lowlat_common::log_warn!("session: no clipboard to own, error={error}");
+                return None;
+            }
+            Err(_) => {
+                refused = true;
+                std::thread::sleep(std::time::Duration::from_millis(CLIP_RETRY_MS));
+            }
+        }
+    }
+}
 
 /// Take or let go of the screen, and say which happened.
 ///
