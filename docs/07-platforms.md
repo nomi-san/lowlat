@@ -558,6 +558,14 @@ rather than assumed**: a helper says whether its session has one, and a session 
 answered honestly instead of waited on. One mechanism ships today, and a desktop with a
 different one needs its own behind the same capability rather than a change anywhere above.
 
+*Added 2026-11-26:* **on KDE the clipboard is waited for at login, up to 30 s, asked every
+500 ms.** Klipper lives inside the shell, and the shell is up before it has loaded it, while
+the helper starts as soon as the graphical session does: measured on Plasma 6.8.3, the
+shell was up about two seconds before the helper asked once and was refused, announced no
+clipboard, and went without one for the whole session; a helper restarted later had it. The
+capabilities are announced once a connection, so the wait comes before them. Elsewhere there is
+no Klipper to wait for and the first answer stands.
+
 *Added 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **on Windows copied text
 is a value, not an ownership.** Text put with its bytes stays on the clipboard after the program
 that put it has gone, so the host, which runs in the session, puts a guest's text there itself

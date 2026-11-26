@@ -54,6 +54,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   unit tests 78 of 78, the two five times in five; the Linux bar on the four crates touched,
   whose one failure is again a test that needs a `localhost` answering on both families.
 
+## 2026-11-26 - The clipboard waited for at login on KDE
+
+### Fixed
+- **The session helper waits up to 30 s for KDE's clipboard as it starts**
+  ([07 §5.1](07-platforms.md)). Klipper loads inside the shell after the shell is up, and a
+  helper that asked once at login was refused and announced no clipboard for the whole session.
+
+### Checked
+- **KDE Plasma 6.8.3 on Wayland, CachyOS, at a login**: the helper was refused about two seconds
+  after the shell started before; with the wait, the clipboard crosses from the first guest of
+  the session.
 ## 2026-11-26 - Touch on the host, on Windows
 
 ### Added
