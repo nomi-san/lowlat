@@ -1396,7 +1396,13 @@ vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client appl
 - **Pads are sent as whole states**, one message per state the application reports, with an
   unchanged state for the same identifier not repeated; or as single button and axis
   changes. The host takes both and does not require one.
-- Pen and touch are deferred, as they are on the host.
+- **A pen is sent as its whole state** (*2026-11-26*, minor 40): its position mapped as a
+  pointer's is, the rest as the application reports it, on the first stream. **Its touch
+  follows the press guard**: a pen touching down outside the picture is sent hovering, without
+  the bits that say it is on the surface; once it is down inside, its touch goes wherever it is
+  dragged, held to the edge, and its lift always goes. Losing focus forgets the touch with
+  everything else, so the next one is new. A host injects it as a pen of its own
+  ([05 §7](05-host.md)).
 
 **A DualShock 4 or a DualSense is sent as its own report** (*C7, 2026-09-20*; the
 wire is [01 §11.1](01-protocol.md) and §11.2, the surface [06 §3b](06-api.md)). The

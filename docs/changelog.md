@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-26 - The pen from the client (minor 40)
+
+### Added
+- **The client sends a pen** ([10 §8](10-client.md), [06 §3b](06-api.md)):
+  `lowlat_client_send_pen` with a `lowlat_pen` and the `lowlat_pen_flag` bits, minor 40. Its
+  position goes through the viewport as a pointer's does, the rest as given, on the first
+  stream; a field past its range is refused. A pen touching down outside the picture is sent
+  hovering, as a press there is not sent, and once it is down inside it is dragged anywhere,
+  held to the edge, until it lifts. The message's layout is written once, in the core, for both
+  ends ([01 §11.1](01-protocol.md)). This host still drops it ([05 §7](05-host.md)).
+
+### Changed
+- **01 §11.1 named opcode 30 "pen and touch"**; it is a pen's, and its layout is written out,
+  the stream byte's other meaning with it: an established host drops a message whose byte is 3
+  or more.
+
+### Checked
+- The layout's bytes at the protocol's positions; every flags byte, every stream and each
+  field's ends read back as written; a stream byte from 3 is not a pen. The client's mapping
+  through a scaled viewport, nothing before one, the touch guard and its reset by a release of
+  everything; the pen reaching a host in its place among the keys; the call's ranges refused at
+  the boundary. Each new check broken once and caught. The Windows bar, and the Linux bar on
+  the three crates touched, whose one failure is a test that needs a `localhost` answering on
+  both families, which the distribution's does not.
+
 ## 2026-11-22 - CI: vcpkg's packages kept per runner image
 
 ### Fixed

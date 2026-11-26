@@ -1191,8 +1191,8 @@ pixel asked, relative moves and buttons -- so such a game is played with `virtua
   [§8.1](#81-three-states-never-conflated)) -- the show state, or a picture of one value --
   read as each motion arrives, not the overlay.
 - **Pen and touch are deferred** (*2026-10-31*), as in the opcode catalog
-  ([01 §11.1](01-protocol.md)) and on the client ([10 §8](10-client.md)): their message is dropped
-  on both platforms, so a guest's pen moves nothing here.
+  ([01 §11.1](01-protocol.md)): their message is dropped on both platforms, so a guest's pen
+  moves nothing here.
 - **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
   injector.** The SDK invents no permission model beyond them; they arrive from signaling
   ([04 §3](04-signaling.md)). The gate belongs next to the pressed state rather than in the

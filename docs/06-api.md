@@ -544,6 +544,7 @@ lowlat_status lowlat_client_send_control(lowlat_client *cl, uint8_t opcode, uint
                                          uint32_t a1, uint32_t a2);         /* minor 24 */
 lowlat_status lowlat_client_send_microphone(lowlat_client *cl, const int16_t *samples,
                                             uint32_t count);                /* minor 25 */
+lowlat_status lowlat_client_send_pen(lowlat_client *cl, const lowlat_pen *pen);  /* minor 40 */
 
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
                                           int16_t *samples, uint32_t *count);
@@ -1104,6 +1105,15 @@ an application makes up from a device that reports positions is its own to scale
 call never blocks**: reports cross a fixed ring to the
 session thread, and a ring that fills -- a thread that is not running -- drops the newest and
 counts it in `lowlat_client_status.input_dropped`.
+
+**The pen** (minor 40, *2026-11-26*): `lowlat_client_send_pen(cl, &pen)` with a `lowlat_pen`,
+its `size` first -- its position in the window's units, mapped through the viewport as a
+motion's is; `lowlat_pen_flag` bits; pressure from 0 to 1024, rotation from 0 to 359 degrees and
+two tilts within 90 either way -- sent on the first stream ([01 §11.1](01-protocol.md)). A field
+past its range, or a flag past the eight the enumeration names, is refused with
+`LOWLAT_ERR_INVALID_ARGUMENT`. The press guard applies to its touch: **a pen touching down
+outside the picture is sent hovering**, and once it is down inside it is dragged anywhere, held
+to the picture's edge, until it lifts ([10 §8](10-client.md)).
 
 **The application's own message** (minor 24, *2026-10-12*): `lowlat_client_send_control(cl,
 opcode, a0, a1, a2)` puts a header of the application's choosing on the control channel, for a
@@ -1845,6 +1855,9 @@ for planes when the kind is not its own.
 `LOWLAT_SCOPE_PATHS_MAX` and `LOWLAT_SCOPE_PATH_MAX`, and `lowlat_host_set_scope` and
 `lowlat_host_get_scope`, on Windows alone; the status `LOWLAT_SCOPE_NO_PICTURE` (200), on every
 platform as every status is. Nothing moves: the scope is no part of `lowlat_host_config`.
+
+**Minor 40** (2026-11-26) is the pen ([§3b](#3b-client)): `lowlat_client_send_pen`, with
+`lowlat_pen` and the `lowlat_pen_flag` bits. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

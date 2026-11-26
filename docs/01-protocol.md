@@ -576,7 +576,7 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 23 | gamepad state | pad, 0, 0, plus 15-byte body | v1 |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
-| 30 | pen and touch | packed | deferred |
+| 30 | pen | position, pressure and rotation, stream, tilts and flags | deferred |
 | 31 | pad report | length, pad, product and flags, plus the report | v1 (*Phase 14*) |
 | 35 | diagnostics | bit flags | v1 |
 
@@ -669,6 +669,18 @@ comes back, so a host sees one form of each report and never a checksum.
 **Opcode 32 is not a pad's.** It is the device passthrough of [§11.4b](#114b-the-guest-microphone),
 one opcode for several kinds of device with a fixed body, and a controller has the pair
 above.
+
+**Opcode 30 is a pen's whole state, and no body** (*2026-11-26*). The first argument is the
+position, **the horizontal half high** -- `x << 16 | y`, the other way round from opcode 26 --
+in the picture's own pixels, as absolute motion's are. The second is `pressure << 16 |
+rotation`: pressure from 0 to 1024, rotation in degrees below 360. The third is `stream << 24 |
+tilt x << 16 | tilt y << 8 | flags`, each tilt a signed byte of degrees within 90 either way, to
+the right and towards the user. The flags: 0x01 the pen has left the range the surface senses
+it at, 0x02 it is touching, 0x04 it is turned over to its eraser, 0x08 the eraser is touching,
+0x10 and 0x20 its first and second barrel buttons, 0x40 a tip is touching, 0x80 a barrel button
+was double clicked. **The stream byte also says whether the message is a pen**: a pen names the
+stream it is over, 0 to 2, and an established host drops a message whose byte is 3 or more
+without reading the rest of it.
 
 ### §11.2 Sent by the host
 
