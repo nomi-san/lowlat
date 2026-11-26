@@ -1908,6 +1908,25 @@ fn a_pen_reaches_the_host_in_the_pictures_pixels() {
             (op::KEYBOARD, 4, 0, 0),
         ]
     );
+    // **And the host's injector made a pen of it**: down at the picture's
+    // centre, then lifted.
+    let pen: Vec<(u16, i32)> = pair
+        .host
+        .injected
+        .events
+        .iter()
+        .filter(|(device, event)| {
+            // The horizontal axis and the touch: (EV_ABS, ABS_X), (EV_KEY, BTN_TOUCH).
+            *device == Device::Pen
+                && matches!((event.kind, event.code), (0x03, 0x00) | (0x01, 0x14a))
+        })
+        .map(|(_, event)| (event.code, event.value))
+        .collect();
+    let centre = (2 * 960 + 1) * 65536 / (2 * 1920);
+    assert_eq!(
+        pen,
+        vec![(0x00, centre), (0x14a, 1), (0x00, centre), (0x14a, 0)]
+    );
 }
 
 /// The microphone of a client that declared uncompressed sound reaches the

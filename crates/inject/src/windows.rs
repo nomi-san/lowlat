@@ -42,6 +42,7 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE,
     ERROR_IO_PENDING, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    POINT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -53,6 +54,10 @@ use windows_sys::Win32::System::StationsAndDesktops::{
     CloseDesktop, HDESK, OpenInputDesktop, SetThreadDesktop,
 };
 use windows_sys::Win32::System::Threading::CreateEventW;
+use windows_sys::Win32::UI::Controls::{
+    HSYNTHETICPOINTERDEVICE, POINTER_FEEDBACK_DEFAULT, POINTER_FEEDBACK_MODE, POINTER_TYPE_INFO,
+    POINTER_TYPE_INFO_0,
+};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
 };
@@ -64,9 +69,15 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
     SendInput, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE,
 };
+use windows_sys::Win32::UI::Input::Pointer::{
+    POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP,
+    POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, XBUTTON1, XBUTTON2,
+    GetSystemMetrics, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE,
+    PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, POINTER_INPUT_TYPE, PT_PEN, SM_CXSCREEN,
+    SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    XBUTTON1, XBUTTON2,
 };
 
 use crate::answers;
@@ -176,6 +187,8 @@ pub struct Devices {
     guide: bool,
     /// The input call is refusing, so the next refusal is not said again.
     refusing: bool,
+    /// The guest's pen, on a synthetic pen of the system's own.
+    pen: Pen,
     desktop: Option<Desktop>,
     /// The application the owner holds the host's guests to, judged here as
     /// input arrives, where one is set.
@@ -199,6 +212,7 @@ impl core::fmt::Debug for Devices {
             .field("mouse", &self.mouse)
             .field("virtual_pads", &self.virtual_pads)
             .field("hid_pads", &self.hid_pads.iter().flatten().count())
+            .field("pen", &self.pen.device.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -233,6 +247,7 @@ impl Devices {
             middle: answers::middle(guest),
             guide: false,
             refusing: false,
+            pen: Pen::default(),
             desktop,
             scope: None,
             clip: crate::scope::Clip::default(),
@@ -719,6 +734,7 @@ impl Devices {
     /// one message and nothing after it is still put in once it can be. The
     /// input driver's keyboard, mouse and pads are followed here too.
     pub fn tick(&mut self) {
+        self.refresh_pen();
         self.tick_keyboard();
         self.tick_mouse();
         self.tick_pads();
@@ -842,6 +858,372 @@ impl Devices {
         }
         self.refusing = false;
     }
+
+    /// A pen's events: its state kept, and a frame at each report's end.
+    fn pen_events(&mut self, events: &[Event]) {
+        for event in events {
+            if event.kind == event::EV_SYN {
+                self.pen_frame();
+            } else {
+                self.pen.now.take(event);
+            }
+        }
+    }
+
+    /// One report of the guest's pen, as a frame of its synthetic pen -- made
+    /// at the first -- or as the pointer where the system has none or refuses
+    /// one.
+    fn pen_frame(&mut self) {
+        let Some(flags) = pen_flags(&self.pen.sent, &self.pen.now) else {
+            return;
+        };
+        if !self.pen.as_pointer && self.pen.device.is_none() {
+            self.pen.device = PenDevice::make();
+            if self.pen.device.is_none() {
+                self.pen.as_pointer = true;
+                lowlat_common::log_warn!(
+                    "inject: no synthetic pen, the pen drives the pointer, error={}",
+                    last_error()
+                );
+            }
+        }
+        if self.pen.as_pointer {
+            self.pen_as_pointer();
+        } else {
+            let now = self.pen.now;
+            let frame = pen_info(flags, &now, desktop_pixel(now.x, now.y, desktop_now()));
+            self.inject_pen(&frame);
+        }
+        self.pen.sent = self.pen.now;
+        self.pen.at = Some(lowlat_common::clock::Time::now());
+    }
+
+    /// A frame into the guest's pen, attaching this thread to the input
+    /// desktop when the system refuses it, as the batch input call is.
+    fn inject_pen(&mut self, frame: &POINTER_TYPE_INFO) {
+        if self
+            .pen
+            .device
+            .as_ref()
+            .is_some_and(|pen| pen.inject(frame))
+        {
+            self.pen.refusing = false;
+            return;
+        }
+        let error = last_error();
+        if let Some(desktop) = Desktop::attach() {
+            self.desktop = Some(desktop);
+            if self
+                .pen
+                .device
+                .as_ref()
+                .is_some_and(|pen| pen.inject(frame))
+            {
+                self.pen.refusing = false;
+                return;
+            }
+        }
+        if !self.pen.refusing {
+            self.pen.refusing = true;
+            lowlat_common::log_warn!("inject: a pen frame refused, error={error}");
+        }
+    }
+
+    /// The guest's pen in range, told again where nothing new has been said
+    /// for [`PEN_REFRESH_MS`]: **the system lifts a pen it hears nothing
+    /// from**, half a second after its last frame. Asked on every pass of the
+    /// guest's loop, which passes at least every 50 ms.
+    fn refresh_pen(&mut self) {
+        let sent = self.pen.sent;
+        if self.pen.as_pointer || self.pen.device.is_none() || !sent.in_range() {
+            return;
+        }
+        if self
+            .pen
+            .at
+            .is_some_and(|at| lowlat_common::clock::elapsed_ms(at) < PEN_REFRESH_MS)
+        {
+            return;
+        }
+        let mut flags = POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE;
+        if sent.down() {
+            flags |= POINTER_FLAG_INCONTACT;
+        }
+        let frame = pen_info(flags, &sent, desktop_pixel(sent.x, sent.y, desktop_now()));
+        self.inject_pen(&frame);
+        self.pen.at = Some(lowlat_common::clock::Time::now());
+    }
+
+    /// Cancel what the guest's pen holds: **the device's end is what a window
+    /// is told is a cancel** -- a frame saying so arrives as a lift -- and the
+    /// next frame makes another. Where the pen drives the pointer, its button
+    /// comes up.
+    fn cancel_pen(&mut self) {
+        if self.pen.as_pointer && self.pen.sent.down() {
+            self.send(&[mouse_input(0, 0, 0, MOUSEEVENTF_LEFTUP)]);
+        }
+        self.pen.device = None;
+        self.pen.now = PenState::default();
+        self.pen.sent = PenState::default();
+        self.pen.at = None;
+    }
+
+    /// The pen as the pointer, where the system has no synthetic pen: a
+    /// position over the whole desktop while in range, and the left button
+    /// for its touch.
+    fn pen_as_pointer(&mut self) {
+        let (sent, now) = (self.pen.sent, self.pen.now);
+        let mut inputs = Inputs::new();
+        if now.in_range() {
+            inputs.push(mouse_input(now.x, now.y, 0, ABSOLUTE));
+        }
+        if now.down() != sent.down() {
+            let flags = if now.down() {
+                MOUSEEVENTF_LEFTDOWN
+            } else {
+                MOUSEEVENTF_LEFTUP
+            };
+            inputs.push(mouse_input(0, 0, 0, flags));
+        }
+        self.send(inputs.as_slice());
+    }
+}
+
+/// How often a pen in range is told again with nothing new to say. **The
+/// system lifts a held pen 521 to 524 ms after its last frame** (measured
+/// 2026-11-26, Windows 11 24H2): a fifth of that, so a loop running late by
+/// 400 ms is still in time, at 70 us a frame.
+const PEN_REFRESH_MS: f64 = 100.0;
+
+/// The system's synthetic pointer, which came with Windows 10 1809: **found
+/// at run time**, so a host on an older system still loads, and its guests'
+/// pens drive the pointer.
+#[derive(Clone, Copy)]
+struct PointerCalls {
+    create: unsafe extern "system" fn(
+        POINTER_INPUT_TYPE,
+        u32,
+        POINTER_FEEDBACK_MODE,
+    ) -> HSYNTHETICPOINTERDEVICE,
+    inject:
+        unsafe extern "system" fn(HSYNTHETICPOINTERDEVICE, *const POINTER_TYPE_INFO, u32) -> i32,
+    destroy: unsafe extern "system" fn(HSYNTHETICPOINTERDEVICE),
+}
+
+/// The calls, found once for the process.
+fn pointer_calls() -> Option<PointerCalls> {
+    static CALLS: std::sync::OnceLock<Option<(lowlat_common::dynlib::Library, PointerCalls)>> =
+        std::sync::OnceLock::new();
+    CALLS
+        .get_or_init(|| {
+            let user32 = lowlat_common::dynlib::Library::open_system(c"user32.dll")?;
+            // SAFETY: each type is the export's own signature as the system
+            // declares it, and the library stays mapped with the calls.
+            let calls = unsafe {
+                PointerCalls {
+                    create: user32.symbol(c"CreateSyntheticPointerDevice")?,
+                    inject: user32.symbol(c"InjectSyntheticPointerInput")?,
+                    destroy: user32.symbol(c"DestroySyntheticPointerDevice")?,
+                }
+            };
+            Some((user32, calls))
+        })
+        .as_ref()
+        .map(|(_, calls)| *calls)
+}
+
+/// A synthetic pen of the system's own, destroyed with this.
+struct PenDevice {
+    handle: HSYNTHETICPOINTERDEVICE,
+    calls: PointerCalls,
+}
+
+impl PenDevice {
+    /// One pen, its feedback the system's own; none where the system has no
+    /// synthetic pointer or refuses one.
+    fn make() -> Option<Self> {
+        let calls = pointer_calls()?;
+        // SAFETY: an export of the system's, with its own types.
+        let handle = unsafe { (calls.create)(PT_PEN, 1, POINTER_FEEDBACK_DEFAULT) };
+        (!handle.is_null()).then_some(Self { handle, calls })
+    }
+
+    fn inject(&self, frame: &POINTER_TYPE_INFO) -> bool {
+        // SAFETY: one frame from a live reference, into the device this made.
+        unsafe { (self.calls.inject)(self.handle, frame, 1) != 0 }
+    }
+}
+
+impl Drop for PenDevice {
+    fn drop(&mut self) {
+        // SAFETY: the device this made, destroyed once.
+        unsafe { (self.calls.destroy)(self.handle) };
+    }
+}
+
+/// A guest's pen: its device, made at the pen's first frame on the guest's
+/// thread, and what it was last told.
+#[derive(Default)]
+struct Pen {
+    device: Option<PenDevice>,
+    /// What the expander's events say, to the last of them.
+    now: PenState,
+    /// What the last frame told the system.
+    sent: PenState,
+    /// When that frame went in.
+    at: Option<lowlat_common::clock::Time>,
+    /// The system has no synthetic pen for this guest: the pen drives the
+    /// pointer.
+    as_pointer: bool,
+    /// A frame was refused, so the next refusal is not said again.
+    refusing: bool,
+}
+
+/// A pen at one moment, as its events say: where it is on the absolute
+/// axis, how it is held, which of its parts are down.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PenState {
+    x: i32,
+    y: i32,
+    pressure: i32,
+    rotation: i32,
+    tilt_x: i32,
+    tilt_y: i32,
+    pen: bool,
+    rubber: bool,
+    touching: bool,
+    barrel: bool,
+}
+
+impl PenState {
+    fn in_range(&self) -> bool {
+        self.pen || self.rubber
+    }
+
+    /// Touching, which a pen out of range is not.
+    fn down(&self) -> bool {
+        self.touching && self.in_range()
+    }
+
+    fn take(&mut self, event: &Event) {
+        let on = event.value != 0;
+        match (event.kind, event.code) {
+            (event::EV_ABS, event::ABS_X) => self.x = event.value,
+            (event::EV_ABS, event::ABS_Y) => self.y = event.value,
+            (event::EV_ABS, event::ABS_PRESSURE) => self.pressure = event.value,
+            (event::EV_ABS, event::ABS_Z) => self.rotation = event.value,
+            (event::EV_ABS, event::ABS_TILT_X) => self.tilt_x = event.value,
+            (event::EV_ABS, event::ABS_TILT_Y) => self.tilt_y = event.value,
+            (event::EV_KEY, event::BTN_TOOL_PEN) => self.pen = on,
+            (event::EV_KEY, event::BTN_TOOL_RUBBER) => self.rubber = on,
+            (event::EV_KEY, event::BTN_TOUCH) => self.touching = on,
+            (event::EV_KEY, event::BTN_STYLUS) => self.barrel = on,
+            _ => {}
+        }
+    }
+}
+
+/// The pointer flags a pen's frame says, from what the last frame told the
+/// system and what is so now; nothing for a pen out of range that stays so.
+fn pen_flags(sent: &PenState, now: &PenState) -> Option<POINTER_FLAGS> {
+    let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+    Some(match (sent.down(), now.in_range(), now.down()) {
+        (true, _, true) => contact | POINTER_FLAG_UPDATE,
+        (false, _, true) => contact | POINTER_FLAG_DOWN,
+        (true, true, false) => POINTER_FLAG_INRANGE | POINTER_FLAG_UP,
+        (true, false, false) => POINTER_FLAG_UP,
+        (false, true, false) => POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE,
+        (false, false, false) if sent.in_range() => POINTER_FLAG_UPDATE,
+        (false, false, false) => return None,
+    })
+}
+
+/// A pen's frame at a desktop pixel. **Pressure only while touching**; the
+/// turn and both tilts always; the eraser end in range is the pen turned
+/// over, and touching, its eraser.
+fn pen_info(flags: POINTER_FLAGS, now: &PenState, pixel: (i32, i32)) -> POINTER_TYPE_INFO {
+    use lowlat_core::pen::{PRESSURE_MAX, ROTATION_SPAN, TILT_MAX};
+    let mut held = 0;
+    if now.barrel {
+        held |= PEN_FLAG_BARREL;
+    }
+    if now.rubber {
+        held |= PEN_FLAG_INVERTED;
+        if now.down() {
+            held |= PEN_FLAG_ERASER;
+        }
+    }
+    let mut mask = PEN_MASK_ROTATION | PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
+    let pressure = if now.down() {
+        mask |= PEN_MASK_PRESSURE;
+        now.pressure.clamp(0, i32::from(PRESSURE_MAX))
+    } else {
+        0
+    };
+    let tilt = |value: i32| value.clamp(-i32::from(TILT_MAX), i32::from(TILT_MAX));
+    let origin = POINT { x: 0, y: 0 };
+    POINTER_TYPE_INFO {
+        r#type: PT_PEN,
+        Anonymous: POINTER_TYPE_INFO_0 {
+            penInfo: POINTER_PEN_INFO {
+                pointerInfo: POINTER_INFO {
+                    pointerType: PT_PEN,
+                    pointerId: 0,
+                    frameId: 0,
+                    pointerFlags: flags,
+                    sourceDevice: core::ptr::null_mut(),
+                    hwndTarget: core::ptr::null_mut(),
+                    ptPixelLocation: POINT {
+                        x: pixel.0,
+                        y: pixel.1,
+                    },
+                    ptHimetricLocation: origin,
+                    ptPixelLocationRaw: origin,
+                    ptHimetricLocationRaw: origin,
+                    dwTime: 0,
+                    historyCount: 0,
+                    InputData: 0,
+                    dwKeyStates: 0,
+                    PerformanceCount: 0,
+                    ButtonChangeType: 0,
+                },
+                penFlags: held,
+                penMask: mask,
+                pressure: pressure.unsigned_abs(),
+                rotation: now
+                    .rotation
+                    .clamp(0, i32::from(ROTATION_SPAN) - 1)
+                    .unsigned_abs(),
+                tiltX: tilt(now.tilt_x),
+                tiltY: tilt(now.tilt_y),
+            },
+        },
+    }
+}
+
+/// The desktop pixel an absolute axis value names, **as the system takes one
+/// back**: `value x width / 65536` from the desktop's corner, truncated, which
+/// the expander aims at each pixel's centre.
+fn desktop_pixel(x: i32, y: i32, desktop: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (left, top, width, height) = desktop;
+    let pixel = |value: i32, origin: i32, extent: i32| {
+        i32::try_from(i64::from(origin) + i64::from(value) * i64::from(extent) / 65536)
+            .unwrap_or(origin)
+    };
+    (pixel(x, left, width), pixel(y, top, height))
+}
+
+/// The desktop as the system lays it out now, in the physical pixels of a
+/// per-monitor aware thread: its corner and its size.
+fn desktop_now() -> (i32, i32, i32, i32) {
+    // SAFETY: reads of the system's metrics.
+    let metric = |index| unsafe { GetSystemMetrics(index) };
+    (
+        metric(SM_XVIRTUALSCREEN),
+        metric(SM_YVIRTUALSCREEN),
+        metric(SM_CXVIRTUALSCREEN),
+        metric(SM_CYVIRTUALSCREEN),
+    )
 }
 
 impl Sink for Devices {
@@ -854,7 +1236,7 @@ impl Sink for Devices {
         if self.scope.is_some() {
             match device {
                 Device::Pointer if moves_by_deltas(events) => self.confine(),
-                Device::PointerAbsolute => self.clip.release(),
+                Device::PointerAbsolute | Device::Pen => self.clip.release(),
                 _ => {}
             }
         }
@@ -886,6 +1268,13 @@ impl Sink for Devices {
                     }
                 }
             }
+            Device::Pen => self.pen_events(events),
+        }
+    }
+
+    fn cancel(&mut self, device: Device) {
+        if device == Device::Pen {
+            self.cancel_pen();
         }
     }
 
@@ -2501,6 +2890,384 @@ fn unplug(bus: &Bus, serial: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pen_at(pen: bool, rubber: bool, touching: bool) -> PenState {
+        PenState {
+            pen,
+            rubber,
+            touching,
+            ..PenState::default()
+        }
+    }
+
+    /// **Each change of a pen is the frame the system's pen takes**: in range,
+    /// down, moving, lifted to hovering, lifted out of range, out of range; and
+    /// nothing for a pen that was out of range and stays so.
+    #[test]
+    fn a_pens_change_is_its_frames_flags() {
+        let out = PenState::default();
+        let hover = pen_at(true, false, false);
+        let down = pen_at(true, false, true);
+        let eraser = pen_at(false, true, true);
+        let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        for (sent, now, flags) in [
+            (out, hover, Some(POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE)),
+            (hover, down, Some(contact | POINTER_FLAG_DOWN)),
+            (out, down, Some(contact | POINTER_FLAG_DOWN)),
+            (down, down, Some(contact | POINTER_FLAG_UPDATE)),
+            (down, eraser, Some(contact | POINTER_FLAG_UPDATE)),
+            (down, hover, Some(POINTER_FLAG_INRANGE | POINTER_FLAG_UP)),
+            (down, out, Some(POINTER_FLAG_UP)),
+            (hover, out, Some(POINTER_FLAG_UPDATE)),
+            (out, out, None),
+            // Touching with neither end in range is not touching.
+            (out, pen_at(false, false, true), None),
+        ] {
+            assert_eq!(pen_flags(&sent, &now), flags, "{sent:?} -> {now:?}");
+        }
+    }
+
+    /// **The pixel is the one the expander aimed at**: an axis value aimed at
+    /// a pixel's centre comes back as that pixel, on a desktop whose corner is
+    /// left of the primary display.
+    #[test]
+    fn an_axis_value_comes_back_as_its_pixel() {
+        let desktop = (-1920, -200, 4480, 1640);
+        let aimed = |pixel: i32, extent: i32| (2 * pixel + 1) * 65536 / (2 * extent);
+        for (px, py) in [(0, 0), (1, 1), (2239, 819), (4479, 1639)] {
+            assert_eq!(
+                desktop_pixel(aimed(px, 4480), aimed(py, 1640), desktop),
+                (-1920 + px, -200 + py)
+            );
+        }
+    }
+
+    /// **A frame says what the pen is doing and no more**: pressure only
+    /// while touching, held to its range; the turn and both tilts always,
+    /// held to theirs; the barrel button; the eraser end in range turned over
+    /// and, touching, the eraser.
+    #[test]
+    fn a_pens_frame_holds_its_parts_to_their_ranges() {
+        let frame = |now: PenState| {
+            let info = pen_info(POINTER_FLAG_INRANGE, &now, (7, 8));
+            // SAFETY: the frame is a pen's, as this test made it.
+            let pen = unsafe { info.Anonymous.penInfo };
+            (
+                info.r#type,
+                pen.pointerInfo.ptPixelLocation.x,
+                pen.pointerInfo.ptPixelLocation.y,
+                pen.penFlags,
+                pen.penMask,
+                pen.pressure,
+                pen.rotation,
+                pen.tiltX,
+                pen.tiltY,
+            )
+        };
+        let tilted = PenState {
+            pressure: 5000,
+            rotation: 400,
+            tilt_x: -120,
+            tilt_y: 120,
+            barrel: true,
+            ..pen_at(true, false, false)
+        };
+        let all_but_pressure = PEN_MASK_ROTATION | PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
+        assert_eq!(
+            frame(tilted),
+            (
+                PT_PEN,
+                7,
+                8,
+                PEN_FLAG_BARREL,
+                all_but_pressure,
+                0,
+                359,
+                -90,
+                90
+            )
+        );
+        let touching = PenState {
+            touching: true,
+            ..tilted
+        };
+        assert_eq!(frame(touching).4, all_but_pressure | PEN_MASK_PRESSURE);
+        assert_eq!(frame(touching).5, 1024);
+        assert_eq!(frame(pen_at(false, true, false)).3, PEN_FLAG_INVERTED);
+        assert_eq!(
+            frame(pen_at(false, true, true)).3,
+            PEN_FLAG_INVERTED | PEN_FLAG_ERASER
+        );
+    }
+
+    /// **The expander's reports make the frames a stroke needs**, the double
+    /// click as an up and a down: what a pen's messages put on this sink's
+    /// own state, frame by frame.
+    #[test]
+    fn a_pens_reports_make_a_strokes_frames() {
+        use lowlat_core::control::{Control, op};
+        use lowlat_core::pen::{Pen, flag};
+
+        #[derive(Default)]
+        struct Frames {
+            sent: PenState,
+            now: PenState,
+            flags: Vec<Option<POINTER_FLAGS>>,
+        }
+        impl Sink for Frames {
+            fn emit(&mut self, device: Device, events: &[Event]) {
+                assert_eq!(device, Device::Pen);
+                for event in events {
+                    if event.kind == event::EV_SYN {
+                        self.flags.push(pen_flags(&self.sent, &self.now));
+                        self.sent = self.now;
+                    } else {
+                        self.now.take(event);
+                    }
+                }
+            }
+        }
+
+        let mut inject = event::Injector::new(event::Extents::alone(1920, 1080));
+        let mut out = Frames::default();
+        for flags in [
+            0,
+            flag::TOUCHING,
+            flag::TOUCHING,
+            flag::TOUCHING | flag::DOUBLE_CLICK,
+            0,
+            flag::LEAVE,
+        ] {
+            let (a0, a1, a2) = Pen {
+                x: 100,
+                y: 100,
+                flags,
+                ..Pen::default()
+            }
+            .arguments();
+            let message = Control {
+                a0,
+                a1,
+                a2,
+                opcode: op::PEN_TOUCH,
+                body: &[],
+            };
+            inject.on_control(&message, &mut out);
+        }
+        let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        assert_eq!(
+            out.flags,
+            vec![
+                Some(POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE),
+                Some(contact | POINTER_FLAG_DOWN),
+                Some(contact | POINTER_FLAG_UPDATE),
+                Some(contact | POINTER_FLAG_UPDATE),
+                Some(POINTER_FLAG_INRANGE | POINTER_FLAG_UP),
+                Some(contact | POINTER_FLAG_DOWN),
+                Some(POINTER_FLAG_INRANGE | POINTER_FLAG_UP),
+                Some(POINTER_FLAG_UPDATE),
+            ]
+        );
+    }
+
+    /// **A stroke reaches a window as a pen's**: down on the pixel asked,
+    /// held a second and a half on the refresh alone -- the system lifts a pen
+    /// it hears nothing from after half of one -- then lifted; and a touch
+    /// cancelled as the device goes reaches the window as cancelled, where a
+    /// lift would not have. The window is the test's own, over the primary
+    /// display's centre, and never takes the focus.
+    #[test]
+    #[ignore = "puts a pen on the desk, over a window of the test's own"]
+    fn a_pens_stroke_reaches_a_window() {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::Input::Pointer::{GetPointerInfo, POINTER_FLAG_CANCELED};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE,
+            PeekMessageW, RegisterClassExW, TranslateMessage, UnregisterClassW, WM_POINTERACTIVATE,
+            WM_POINTERDOWN, WM_POINTERUP, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+        };
+
+        /// One pointer message the window was sent, and when.
+        #[derive(Debug, Clone, Copy)]
+        struct Seen {
+            at: Instant,
+            msg: u32,
+            flags: u32,
+            x: i32,
+            y: i32,
+        }
+        static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+        unsafe extern "system" fn window(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            const PA_NOACTIVATE: LRESULT = 3;
+            if msg == WM_POINTERACTIVATE {
+                return PA_NOACTIVATE;
+            }
+            if msg == WM_POINTERDOWN || msg == WM_POINTERUP {
+                // SAFETY: a structure the call fills, for the pointer the
+                // message names.
+                let mut info: POINTER_INFO = unsafe { core::mem::zeroed() };
+                let id = u32::try_from(wparam & 0xFFFF).unwrap_or(0);
+                if unsafe { GetPointerInfo(id, &mut info) } != 0 {
+                    SEEN.lock().unwrap().push(Seen {
+                        at: Instant::now(),
+                        msg,
+                        flags: info.pointerFlags,
+                        x: info.ptPixelLocation.x,
+                        y: info.ptPixelLocation.y,
+                    });
+                }
+                return 0;
+            }
+            // SAFETY: the system's own handling of everything else.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+
+        let mut devices = Devices::create("pen test").unwrap();
+        let class: Vec<u16> = "lowlat-pen-test\0".encode_utf16().collect();
+        // SAFETY: this module's own instance, a class of the test's own, and
+        // a window of it that the test destroys.
+        let (instance, hwnd) = unsafe {
+            let instance = GetModuleHandleW(core::ptr::null());
+            let class_info = WNDCLASSEXW {
+                cbSize: size::<WNDCLASSEXW>(),
+                style: 0,
+                lpfnWndProc: Some(window),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: core::ptr::null_mut(),
+                hCursor: core::ptr::null_mut(),
+                hbrBackground: core::ptr::null_mut(),
+                lpszMenuName: core::ptr::null(),
+                lpszClassName: class.as_ptr(),
+                hIconSm: core::ptr::null_mut(),
+            };
+            assert_ne!(RegisterClassExW(&class_info), 0);
+            let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_POPUP | WS_VISIBLE,
+                cx / 2 - 160,
+                cy / 2 - 160,
+                320,
+                320,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                instance,
+                core::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            (instance, hwnd)
+        };
+        let pump = |ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            // SAFETY: a message structure the call fills, dispatched on the
+            // thread that owns the window.
+            let mut msg: MSG = unsafe { core::mem::zeroed() };
+            while Instant::now() < until {
+                while unsafe { PeekMessageW(&mut msg, core::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+                {
+                    unsafe {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        pump(300);
+
+        // SAFETY: reads of the system's metrics.
+        let centre = unsafe {
+            (
+                GetSystemMetrics(SM_CXSCREEN) / 2,
+                GetSystemMetrics(SM_CYSCREEN) / 2,
+            )
+        };
+        // SAFETY: which window is at a point.
+        let under = unsafe {
+            WindowFromPoint(POINT {
+                x: centre.0,
+                y: centre.1,
+            })
+        };
+        assert_eq!(under, hwnd, "the test's window is not at the centre");
+        let (left, top, width, height) = desktop_now();
+        let aimed = |pixel: i32, origin: i32, extent: i32| {
+            (2 * (pixel - origin) + 1) * 65536 / (2 * extent)
+        };
+        let report = |in_range: bool, touching: bool| {
+            let event = |kind, code, value| Event { kind, code, value };
+            [
+                event(event::EV_ABS, event::ABS_X, aimed(centre.0, left, width)),
+                event(event::EV_ABS, event::ABS_Y, aimed(centre.1, top, height)),
+                event(event::EV_ABS, event::ABS_PRESSURE, 512),
+                event(event::EV_KEY, event::BTN_TOOL_PEN, i32::from(in_range)),
+                event(event::EV_KEY, event::BTN_TOUCH, i32::from(touching)),
+                event(event::EV_SYN, 0, 0),
+            ]
+        };
+
+        devices.emit(Device::Pen, &report(true, false));
+        pump(30);
+        devices.emit(Device::Pen, &report(true, true));
+        let held = Instant::now();
+        while held.elapsed() < Duration::from_millis(1500) {
+            devices.tick();
+            pump(20);
+        }
+        devices.emit(Device::Pen, &report(true, false));
+        pump(100);
+        devices.emit(Device::Pen, &report(false, false));
+        pump(100);
+        devices.emit(Device::Pen, &report(true, true));
+        pump(100);
+        devices.cancel(Device::Pen);
+        pump(300);
+
+        // SAFETY: the test's own window and class, as made above.
+        unsafe {
+            DestroyWindow(hwnd);
+            UnregisterClassW(class.as_ptr(), instance);
+        }
+        let seen = SEEN.lock().unwrap().clone();
+        let kinds: Vec<(u32, bool)> = seen
+            .iter()
+            .map(|seen| (seen.msg, seen.flags & POINTER_FLAG_CANCELED != 0))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (WM_POINTERDOWN, false),
+                (WM_POINTERUP, false),
+                (WM_POINTERDOWN, false),
+                (WM_POINTERUP, true),
+            ],
+            "{seen:?}"
+        );
+        assert_eq!(
+            (seen[0].x, seen[0].y),
+            centre,
+            "the pen went down elsewhere"
+        );
+        let lifted = seen[1].at.duration_since(seen[0].at);
+        assert!(
+            lifted >= Duration::from_millis(1400),
+            "the pen was lifted {lifted:?} after it went down"
+        );
+    }
 
     fn keys(keyboard: &mut Keyboard, codes: &[(u8, bool)]) -> Vec<Option<Stroke>> {
         codes

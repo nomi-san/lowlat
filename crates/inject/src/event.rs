@@ -10,6 +10,7 @@ use crate::gamepad::{self, MAX_PADS};
 use crate::usage;
 use lowlat_core::control::{Control, op};
 use lowlat_core::pad::{self, Inbound};
+use lowlat_core::pen;
 
 /// Event types, as the kernel numbers them.
 pub(crate) const EV_SYN: u16 = 0x00;
@@ -30,6 +31,18 @@ pub(crate) const REL_HWHEEL_HI_RES: u16 = 0x0c;
 
 pub(crate) const ABS_X: u16 = 0x00;
 pub(crate) const ABS_Y: u16 = 0x01;
+/// A pen's turn about its own length, in degrees.
+pub(crate) const ABS_Z: u16 = 0x02;
+pub(crate) const ABS_PRESSURE: u16 = 0x18;
+pub(crate) const ABS_TILT_X: u16 = 0x1a;
+pub(crate) const ABS_TILT_Y: u16 = 0x1b;
+
+/// A pen's two ends, in range; its touch; its barrel buttons.
+pub(crate) const BTN_TOOL_PEN: u16 = 0x140;
+pub(crate) const BTN_TOOL_RUBBER: u16 = 0x141;
+pub(crate) const BTN_TOUCH: u16 = 0x14a;
+pub(crate) const BTN_STYLUS: u16 = 0x14b;
+pub(crate) const BTN_STYLUS2: u16 = 0x14c;
 
 pub(crate) const BTN_LEFT: u16 = 0x110;
 pub(crate) const BTN_RIGHT: u16 = 0x111;
@@ -135,6 +148,10 @@ pub enum Device {
     /// value the peer chose and the sink keeps one device per distinct one it
     /// is given, up to a cap the expander enforces.
     Gamepad(u32),
+    /// A pen, as a tablet reports one: **every report is the whole state**,
+    /// which end is in range, its touch, its barrel buttons, where it is and
+    /// how it is held.
+    Pen,
 }
 
 /// Where expanded events go.
@@ -151,6 +168,12 @@ pub trait Sink {
     /// was unplugged, and it is also what releases everything the pad held, so
     /// there is nothing to emit first.
     fn unplug(&mut self, _pad: u32) {}
+
+    /// End what a device holds **as cancelled, not lifted** (docs/05-host.md
+    /// section 7): a lift where a contact is reads as a tap there, and a guest
+    /// that let go of nothing tapped nothing. Nothing by default, for a sink
+    /// with no such device.
+    fn cancel(&mut self, _device: Device) {}
 
     /// A pad's own report, for a pad sent as its reports (docs/05-host.md
     /// section 7.2): a feature report to keep for the device's creation, or
@@ -360,6 +383,13 @@ struct At {
     outside: bool,
 }
 
+/// What a guest's pen holds, as its last report said.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PenHeld {
+    in_range: bool,
+    touching: bool,
+}
+
 /// One guest's input state and the expansion that reads it.
 #[derive(Debug)]
 pub struct Injector {
@@ -425,6 +455,8 @@ pub struct Injector {
     switching: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
+    /// Whether this guest's pen is in range and touching.
+    pen: PenHeld,
     /// What has arrived, for the line a live run is read from.
     tally: Tally,
     scratch: [Event; SCRATCH],
@@ -469,6 +501,7 @@ impl Injector {
             front: true,
             switching: false,
             pads: [None; MAX_PADS],
+            pen: PenHeld::default(),
             tally: Tally::default(),
             scratch: [Event {
                 kind: 0,
@@ -494,6 +527,7 @@ impl Injector {
         }
         if was.pointer && !permissions.pointer {
             self.release_buttons(out);
+            self.cancel_pen(out);
         }
         if was.gamepad && !permissions.gamepad {
             self.release_pads(out);
@@ -525,6 +559,7 @@ impl Injector {
     pub fn set_floor(&mut self, held: bool, out: &mut impl Sink) {
         if self.floor && !held {
             self.release_buttons(out);
+            self.cancel_pen(out);
         }
         self.floor = held;
     }
@@ -588,6 +623,7 @@ impl Injector {
         if self.front && !front {
             self.release_keys(out);
             self.release_buttons(out);
+            self.cancel_pen(out);
             self.centre_pads(out);
             for pad in self.pads.iter().flatten() {
                 if pad.raw {
@@ -606,7 +642,7 @@ impl Injector {
     /// still down can.
     #[must_use]
     pub fn holds_pointer_button(&self) -> bool {
-        self.buttons.iter().any(|held| *held)
+        self.buttons.iter().any(|held| *held) || self.pen.touching
     }
 
     /// The first pad holding every button in `mask`, if any.
@@ -682,6 +718,15 @@ impl Injector {
                 let y = i32::from(high16_signed(message.a1));
                 self.motion(relative, x, y, out);
             }
+            // **A pen is a pointer** (docs/05-host.md section 7): it needs what
+            // the pointer needs, and for a guest held to an application it
+            // moves only while that application is in front. Nothing it holds
+            // is left behind by a gate that closes: closing one cancels it.
+            op::PEN_TOUCH if self.pointer_allowed() && self.admits(Gate::Front, out) => {
+                if let Some(pen) = pen::parse(message) {
+                    self.pen(&pen, out);
+                }
+            }
             // **A pad sent as its own report is that report** (docs/05-host.md
             // section 7.2): the first message that can create a pad fixes
             // its family, a report pad takes only reports, and a
@@ -748,6 +793,7 @@ impl Injector {
     pub fn release_all(&mut self, out: &mut impl Sink) {
         self.release_keys(out);
         self.release_buttons(out);
+        self.cancel_pen(out);
         self.centre_pads(out);
     }
 
@@ -1406,6 +1452,89 @@ impl Injector {
         ))
     }
 
+    /// A pen message as a tablet's report (docs/05-host.md section 7): the
+    /// position on the absolute axis as a pointer's is -- **held to the window
+    /// the picture shows, for a guest held to an application**, where a touch
+    /// begins only as a click would, on that window, and hovers otherwise.
+    /// **A barrel button's double click is one more lift and touch**, which
+    /// leaves the pen touching until a message says otherwise.
+    fn pen(&mut self, pen: &pen::Pen, out: &mut impl Sink) {
+        use pen::flag::{BARREL, BARREL_2, DOUBLE_CLICK, ERASER, INVERTED, LEAVE, TOUCHING};
+        let (x, y) = (i32::from(pen.x), i32::from(pen.y));
+        let held = self.held(out);
+        let axes = if held {
+            self.held_axes(x, y, out)
+        } else {
+            self.commanded = Some((x, y));
+            let place = self.extents.place;
+            Some((
+                scale(
+                    x,
+                    self.extents.width,
+                    place.x,
+                    place.width,
+                    place.desktop_width,
+                ),
+                scale(
+                    y,
+                    self.extents.height,
+                    place.y,
+                    place.height,
+                    place.desktop_height,
+                ),
+            ))
+        };
+        let Some((across, down)) = axes else {
+            return;
+        };
+        let in_range = pen.flags & LEAVE == 0;
+        // **Judged where the pen is**, not where the system's pointer is.
+        let lands = self.pen.touching
+            || !held
+            || self
+                .at
+                .is_some_and(|at| !at.outside && out.gate(Gate::At { x: at.x, y: at.y }));
+        let mut touching = in_range && lands && pen.flags & TOUCHING != 0;
+        let rubber = pen.flags & (INVERTED | ERASER) != 0;
+        let on = |yes: bool| i32::from(in_range && yes);
+        self.used = 0;
+        self.push(EV_ABS, ABS_X, across);
+        self.push(EV_ABS, ABS_Y, down);
+        self.push(
+            EV_ABS,
+            ABS_PRESSURE,
+            i32::from(pen.pressure.min(pen::PRESSURE_MAX)),
+        );
+        self.push(EV_ABS, ABS_Z, i32::from(pen.rotation % pen::ROTATION_SPAN));
+        let tilt = |value: i8| i32::from(value.clamp(-pen::TILT_MAX, pen::TILT_MAX));
+        self.push(EV_ABS, ABS_TILT_X, tilt(pen.tilt_x));
+        self.push(EV_ABS, ABS_TILT_Y, tilt(pen.tilt_y));
+        self.push(EV_KEY, BTN_TOOL_PEN, on(!rubber));
+        self.push(EV_KEY, BTN_TOOL_RUBBER, on(rubber));
+        self.push(EV_KEY, BTN_STYLUS, on(pen.flags & BARREL != 0));
+        self.push(EV_KEY, BTN_STYLUS2, on(pen.flags & BARREL_2 != 0));
+        self.push(EV_KEY, BTN_TOUCH, i32::from(touching));
+        self.report();
+        if in_range && lands && pen.flags & DOUBLE_CLICK != 0 {
+            self.push(EV_KEY, BTN_TOUCH, 0);
+            self.report();
+            self.push(EV_KEY, BTN_TOUCH, 1);
+            self.report();
+            touching = true;
+        }
+        self.flush(Device::Pen, out);
+        self.pen = PenHeld { in_range, touching };
+    }
+
+    /// Let go of the pen **as cancelled**, wherever it is in range at all
+    /// (docs/05-host.md section 7): lifted, it would tap where it is.
+    fn cancel_pen(&mut self, out: &mut impl Sink) {
+        if self.pen.in_range {
+            self.pen = PenHeld::default();
+            out.cancel(Device::Pen);
+        }
+    }
+
     /// Release every key this guest holds, as a withdrawn keyboard permission
     /// does: for keys about to go another way, so none is left down on the way
     /// they came (docs/05-host.md section 7).
@@ -1755,6 +1884,8 @@ mod tests {
         judged: Vec<(i32, i32)>,
         /// The application's next window asked for: backwards, and again.
         switched: Vec<(bool, bool)>,
+        /// The devices told to cancel what they held.
+        cancelled: Vec<Device>,
     }
 
     impl Sink for Recorder {
@@ -1764,6 +1895,10 @@ mod tests {
 
         fn unplug(&mut self, pad: u32) {
             self.unplugged.push(pad);
+        }
+
+        fn cancel(&mut self, device: Device) {
+            self.cancelled.push(device);
         }
 
         fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
@@ -3710,6 +3845,216 @@ mod tests {
             "a click after deltas was judged at a position"
         );
         assert_eq!(out.keys_at(1), vec![BTN_LEFT]);
+    }
+
+    fn pen_message(x: u16, y: u16, flags: u8) -> Control<'static> {
+        let (a0, a1, a2) = pen::Pen {
+            x,
+            y,
+            pressure: 2000,
+            rotation: 370,
+            stream: 0,
+            tilt_x: -100,
+            tilt_y: 30,
+            flags,
+        }
+        .arguments();
+        control(op::PEN_TOUCH, a0, a1, a2)
+    }
+
+    /// The value the absolute axis aims at a pixel's centre with.
+    fn centre(pixel: i32, extent: i32) -> i32 {
+        (2 * pixel + 1) * 65536 / (2 * extent)
+    }
+
+    /// **A pen is a tablet's whole report**: its position as a pointer's, its
+    /// pressure, turn and tilts held to their ranges, the end in range, its
+    /// buttons and its touch, then the report's end -- and touching, it holds
+    /// the pointer as a button does.
+    #[test]
+    fn a_pen_is_a_tablets_whole_report() {
+        use pen::flag::{BARREL, TOUCHING};
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&pen_message(960, 540, TOUCHING | BARREL), &mut out);
+        let event = |kind, code, value| Event { kind, code, value };
+        assert_eq!(
+            out.batches,
+            vec![(
+                Device::Pen,
+                vec![
+                    event(EV_ABS, ABS_X, centre(960, 1920)),
+                    event(EV_ABS, ABS_Y, centre(540, 1080)),
+                    event(EV_ABS, ABS_PRESSURE, 1024),
+                    event(EV_ABS, ABS_Z, 10),
+                    event(EV_ABS, ABS_TILT_X, -90),
+                    event(EV_ABS, ABS_TILT_Y, 30),
+                    event(EV_KEY, BTN_TOOL_PEN, 1),
+                    event(EV_KEY, BTN_TOOL_RUBBER, 0),
+                    event(EV_KEY, BTN_STYLUS, 1),
+                    event(EV_KEY, BTN_STYLUS2, 0),
+                    event(EV_KEY, BTN_TOUCH, 1),
+                    event(EV_SYN, SYN_REPORT, 0),
+                ]
+            )]
+        );
+        assert!(inject.holds_pointer_button());
+    }
+
+    /// **Turned over, the pen is its eraser**, in range or touching; and
+    /// leaving range lets go of everything at once.
+    #[test]
+    fn an_eraser_is_the_other_end_and_leaving_lets_go_of_everything() {
+        use pen::flag::{BARREL, ERASER, INVERTED, LEAVE, TOUCHING};
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&pen_message(10, 10, INVERTED), &mut out);
+        inject.on_control(&pen_message(10, 10, INVERTED | ERASER | TOUCHING), &mut out);
+        assert_eq!(
+            out.keys_at(1),
+            vec![BTN_TOOL_RUBBER, BTN_TOOL_RUBBER, BTN_TOUCH]
+        );
+        out.batches.clear();
+        inject.on_control(&pen_message(10, 10, LEAVE | TOUCHING | BARREL), &mut out);
+        assert!(
+            out.keys_at(1).is_empty(),
+            "something stayed down out of range"
+        );
+        assert!(!inject.holds_pointer_button());
+    }
+
+    /// **A barrel button's double click is one more lift and touch**, after the
+    /// report it came in, and leaves the pen touching.
+    #[test]
+    fn a_double_click_lifts_and_touches_again() {
+        use pen::flag::DOUBLE_CLICK;
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&pen_message(10, 10, DOUBLE_CLICK), &mut out);
+        let tail: Vec<(u16, u16, i32)> = out
+            .all()
+            .into_iter()
+            .skip(12)
+            .map(|e| (e.kind, e.code, e.value))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                (EV_KEY, BTN_TOUCH, 0),
+                (EV_SYN, SYN_REPORT, 0),
+                (EV_KEY, BTN_TOUCH, 1),
+                (EV_SYN, SYN_REPORT, 0),
+            ]
+        );
+        assert!(inject.holds_pointer_button());
+    }
+
+    /// **A stream byte from three is not a pen**, and a guest without the
+    /// pointer moves no pen.
+    #[test]
+    fn a_pen_needs_its_stream_and_the_pointer() {
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        for stream in [3u32, 0x7F, 0x80, 0x90] {
+            inject.on_control(&control(op::PEN_TOUCH, 0, 0, stream << 24), &mut out);
+        }
+        inject.set_permissions(
+            Permissions {
+                pointer: false,
+                ..Permissions::default()
+            },
+            &mut out,
+        );
+        inject.on_control(&pen_message(10, 10, pen::flag::TOUCHING), &mut out);
+        assert!(out.batches.is_empty(), "something went in");
+    }
+
+    /// **What a pen holds is cancelled, never lifted**, wherever a guest's
+    /// input is let go of -- a release of everything, the pointer withdrawn,
+    /// the pointer lost to another guest, the application leaving the front --
+    /// and only where the pen is in range at all.
+    #[test]
+    fn a_pens_touch_is_cancelled_where_it_would_be_left_held() {
+        use pen::flag::{LEAVE, TOUCHING};
+        let let_go: [fn(&mut Injector, &mut Recorder); 4] = [
+            |inject, out| inject.release_all(out),
+            |inject, out| {
+                inject.set_permissions(
+                    Permissions {
+                        pointer: false,
+                        ..Permissions::default()
+                    },
+                    out,
+                );
+            },
+            |inject, out| inject.set_floor(false, out),
+            |inject, out| {
+                out.scope = Some((false, false));
+                inject.follow_gate(out);
+            },
+        ];
+        for (path, let_go) in let_go.iter().enumerate() {
+            let mut inject = injector();
+            let mut out = Recorder {
+                scope: (path == 3).then_some((true, true)),
+                bounds: Some(Bounds {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1080,
+                }),
+                ..Recorder::default()
+            };
+            inject.on_control(&pen_message(10, 10, TOUCHING), &mut out);
+            out.batches.clear();
+            let_go(&mut inject, &mut out);
+            assert_eq!(out.cancelled, vec![Device::Pen], "path {path}");
+            assert!(
+                !out.devices().contains(&Device::Pen),
+                "path {path} lifted the pen"
+            );
+            assert!(!inject.holds_pointer_button(), "path {path}");
+        }
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&pen_message(10, 10, LEAVE), &mut out);
+        inject.release_all(&mut out);
+        assert!(out.cancelled.is_empty(), "a pen out of range was cancelled");
+    }
+
+    /// **A held guest's pen touches only where a click would land**: on the
+    /// window, judged where the pen is; past it, or where the point is not the
+    /// application's, it hovers at the window's edge. A touch begun on the
+    /// window is dragged past it.
+    #[test]
+    fn a_held_guests_pen_touches_only_on_the_window() {
+        use pen::flag::TOUCHING;
+        let (mut inject, mut out) = held_guest();
+        out.bounds = Some(Bounds {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        });
+        let touch = |inject: &mut Injector, out: &mut Recorder, x, y| {
+            out.batches.clear();
+            inject.on_control(&pen_message(x, y, TOUCHING), out);
+            out.all()
+                .into_iter()
+                .find(|e| e.code == BTN_TOUCH)
+                .map(|e| e.value)
+        };
+        assert_eq!(touch(&mut inject, &mut out, 50, 900), Some(0), "past");
+        assert!(out.judged.is_empty(), "a point past the window was judged");
+        out.scope = Some((true, false));
+        assert_eq!(touch(&mut inject, &mut out, 300, 400), Some(0), "not ours");
+        out.scope = Some((true, true));
+        assert_eq!(touch(&mut inject, &mut out, 300, 400), Some(1), "on it");
+        assert_eq!(out.judged.last(), Some(&(300, 400)));
+        assert_eq!(touch(&mut inject, &mut out, 50, 900), Some(1), "dragged");
+        out.scope = Some((false, true));
+        assert_eq!(touch(&mut inject, &mut out, 300, 400), None, "behind");
+        assert_eq!(out.cancelled, vec![Device::Pen]);
     }
 
     /// **No window of the application on the captured output, and the

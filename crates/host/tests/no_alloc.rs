@@ -42,6 +42,48 @@ impl Sink for Forwarding {
     }
 }
 
+/// **A pen's messages expand without allocating**: a hover, a touch, a
+/// double click, leaving range, and the release that cancels it, over and
+/// over.
+#[test]
+fn a_pens_messages_expand_without_allocating() {
+    use lowlat_core::pen::{Pen, flag};
+    let (tx, _rx) = padsink::queue();
+    let mut injector = Injector::new(Extents::alone(1920, 1080));
+    let mut sink = Forwarding(tx);
+    let message = |flags| {
+        let (a0, a1, a2) = Pen {
+            x: 100,
+            y: 100,
+            flags,
+            ..Pen::default()
+        }
+        .arguments();
+        Control {
+            a0,
+            a1,
+            a2,
+            opcode: op::PEN_TOUCH,
+            body: &[],
+        }
+    };
+    let messages = [
+        message(0),
+        message(flag::TOUCHING),
+        message(flag::TOUCHING | flag::DOUBLE_CLICK),
+        message(flag::LEAVE),
+        message(flag::TOUCHING),
+    ];
+    alloc_counter::assert_no_alloc(|| {
+        for _ in 0..64 {
+            for message in &messages {
+                injector.on_control(message, &mut sink);
+            }
+            injector.release_all(&mut sink);
+        }
+    });
+}
+
 #[test]
 fn a_pads_report_reaches_the_application_without_allocating() {
     let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
