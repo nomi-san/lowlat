@@ -55,6 +55,9 @@ const MOD_GUI: u32 = 0x0400 | 0x0800;
 /// The peer's codes for the eight modifiers, Control to right Command.
 const MODIFIERS: core::ops::RangeInclusive<u16> = 224..=231;
 
+/// The modifier bits for left and right Control.
+const MOD_CTRL: u32 = 0x0040 | 0x0080;
+
 /// The peer's codes for the attention chord, in the order it is pressed.
 ///
 /// **The peer's codes rather than the kernel's**, so the chord travels the
@@ -267,6 +270,12 @@ pub struct Injector {
     /// peer's code instead would let a guest press one name and release the
     /// other, and leave the key held with nothing tracking it.
     keys: [bool; KEY_SLOTS],
+    /// Whether this peer has shown it trades Control's code and Command's,
+    /// as a macOS client does. Learned once and kept for the connection.
+    mac_modifiers: bool,
+    /// For each of the eight modifier codes held, what its press became, so
+    /// the release lets go of the key the press went to.
+    routed: [Option<Route>; 8],
     buttons: [bool; BUTTONS],
     /// Which device each held button went down on.
     ///
@@ -341,6 +350,8 @@ impl Injector {
             extents,
             permissions: Permissions::default(),
             keys: [false; KEY_SLOTS],
+            mac_modifiers: false,
+            routed: [None; 8],
             buttons: [false; BUTTONS],
             pressed_on: [Device::PointerAbsolute; BUTTONS],
             absolute: false,
@@ -830,6 +841,25 @@ impl Injector {
             traced(code, modifiers, pressed, 0, "no-key");
             return;
         };
+        let peer_code = match self.as_pressed(peer_code, modifiers, pressed) {
+            Taken::As(routed) => routed,
+            Taken::Nothing(why) => {
+                traced(code, modifiers, pressed, 0, why);
+                return;
+            }
+            Taken::Tap(routed) => {
+                let Some(key) = usage::key_code(routed) else {
+                    traced(code, modifiers, pressed, 0, "no-key");
+                    return;
+                };
+                self.used = 0;
+                self.key_events(routed, key, true);
+                self.key_events(routed, key, false);
+                self.flush(Device::Keyboard, out);
+                traced(code, modifiers, pressed, key, "command-alone");
+                return;
+            }
+        };
         let Some(key) = usage::key_code(peer_code) else {
             traced(code, modifiers, pressed, 0, "no-key");
             return;
@@ -878,6 +908,11 @@ impl Injector {
 
         self.used = 0;
         self.lock_sync(modifiers, key, host);
+        // A key pressed under a macOS peer's Command makes it Control, in the
+        // same batch as the key, so the shortcut reads as one.
+        if pressed && !is_modifier(key) {
+            self.command_as_control();
+        }
         self.key_events(peer_code, key, pressed);
         if tapped {
             self.key_events(peer_code, key, false);
@@ -890,6 +925,151 @@ impl Injector {
             key,
             if tapped { "tapped" } else { "sent" },
         );
+    }
+
+    /// The modifier a person pressed, for a peer that trades two of them.
+    ///
+    /// **A macOS client sends Command as Control's code and Control as
+    /// Command's, and sets the Command bit for both** (measured, Parsec on
+    /// macOS against this host: Command came as 224 with mask 0x0400, Control
+    /// as 227 with mask 0x0400, Option as 226 with 0x0100). Nothing in one
+    /// message tells that Control from another peer's Windows key, so the peer
+    /// is recognised by the one message no other peer sends -- a Control code
+    /// with the Command bit on and no Control bit -- and from then on its
+    /// Control is Control, left with left and right with right. A peer that
+    /// sends the codes the right way round never sends that message and is
+    /// read at its codes.
+    ///
+    /// **Its Command is then read as Parsec's own Windows host reads it**:
+    /// pressed and let go alone it is the desktop's Command (Super here, the
+    /// launcher on most desktops), and pressed with a key, a click or a scroll
+    /// it is Control, so the shortcuts a Mac's hands know -- Command-C,
+    /// Command-Shift-N, Command-click -- do here what they do there. Nothing
+    /// is sent for it until one or the other is known: a key under it sends
+    /// Control down ahead of itself, and its release alone sends Super down
+    /// and up. Other modifiers pressed under it decide nothing, so
+    /// Command-Shift waits for the key that follows.
+    ///
+    /// **Until then a macOS peer's Control is Super**, the price of learning
+    /// from what arrives: its first Command press, alone or in a shortcut,
+    /// settles it for the connection.
+    ///
+    /// **The release goes where the press went**, so a key is never left held
+    /// by a change of reading between the two, and a repeat of a held
+    /// modifier is routed as its press was. Two held keys routed to one key
+    /// here -- a Mac's Control and its Command taken as Control -- let it go
+    /// with the second release, not the first.
+    fn as_pressed(&mut self, code: u16, modifiers: u32, pressed: bool) -> Taken {
+        let Some(slot) = code
+            .checked_sub(*MODIFIERS.start())
+            .and_then(|at| self.routed.get(usize::from(at)))
+            .copied()
+        else {
+            return Taken::As(code);
+        };
+        if !pressed {
+            self.set_routed(code, None);
+            return match slot {
+                Some(Route::Waiting) => Taken::Tap(counterpart(code).unwrap_or(code)),
+                Some(Route::To(to)) if self.routed.contains(&Some(Route::To(to))) => {
+                    Taken::Nothing("still-held")
+                }
+                Some(Route::To(to)) => Taken::As(to),
+                None => Taken::As(code),
+            };
+        }
+        match slot {
+            Some(Route::To(to)) => return Taken::As(to),
+            Some(Route::Waiting) => return Taken::Nothing("command-waits"),
+            None => {}
+        }
+        // A Control code under the Command bit alone, with that Command not
+        // already held here: a peer reporting the state before each key sends
+        // Control pressed under a held Windows key that way, and is not one.
+        let control = matches!(code, 224 | 228);
+        if !self.mac_modifiers
+            && control
+            && modifiers & MOD_GUI != 0
+            && modifiers & MOD_CTRL == 0
+            && counterpart(code).is_some_and(|other| !self.holds(other))
+        {
+            self.mac_modifiers = true;
+            lowlat_common::log_info!(
+                "inject: this guest sends Command as Control and Control as Command, as a Mac \
+                 does; taking Command alone as Super and with a key as Control"
+            );
+        }
+        let route = match (self.mac_modifiers, control) {
+            (false, _) => Route::To(code),
+            (true, true) => Route::Waiting,
+            (true, false) => Route::To(counterpart(code).unwrap_or(code)),
+        };
+        self.set_routed(code, Some(route));
+        match route {
+            Route::To(to) => Taken::As(to),
+            Route::Waiting => Taken::Nothing("command-waits"),
+        }
+    }
+
+    /// A macOS peer's Command, still waiting to be read, taken as Control:
+    /// something was pressed under it. Its Control goes down into the batch
+    /// being built, unless that key is already held here through the peer's
+    /// own Control, in which case the release that comes last lets it go.
+    fn command_as_control(&mut self) {
+        for code in MODIFIERS {
+            let Some(entry) = code
+                .checked_sub(*MODIFIERS.start())
+                .and_then(|at| self.routed.get_mut(usize::from(at)))
+            else {
+                continue;
+            };
+            if *entry != Some(Route::Waiting) {
+                continue;
+            }
+            *entry = Some(Route::To(code));
+            let Some(key) = usage::key_code(code) else {
+                continue;
+            };
+            let Some(held) = self.keys.get_mut(usize::from(key)) else {
+                continue;
+            };
+            if *held {
+                continue;
+            }
+            *held = true;
+            self.key_events(code, key, true);
+        }
+    }
+
+    /// A click or a scroll under a macOS peer's waiting Command makes it
+    /// Control, as a key does: Command-click is Control-click here. The
+    /// keyboard's batch goes out ahead of the pointer's.
+    fn command_under_pointer(&mut self, out: &mut impl Sink) {
+        if !self.permissions.keyboard || !self.routed.contains(&Some(Route::Waiting)) {
+            return;
+        }
+        self.used = 0;
+        self.command_as_control();
+        if self.used > 0 {
+            self.flush(Device::Keyboard, out);
+        }
+    }
+
+    /// Remember, or forget, what a held modifier code was pressed as.
+    fn set_routed(&mut self, code: u16, routed: Option<Route>) {
+        if let Some(entry) = code
+            .checked_sub(*MODIFIERS.start())
+            .and_then(|at| self.routed.get_mut(usize::from(at)))
+        {
+            *entry = routed;
+        }
+    }
+
+    /// Whether the kernel key behind one of the peer's codes is held here.
+    fn holds(&self, code: u16) -> bool {
+        usage::key_code(code)
+            .and_then(|key| self.keys.get(usize::from(key)))
+            .is_some_and(|held| *held)
     }
 
     /// Bring the local locks into step with what the peer reports.
@@ -963,6 +1143,9 @@ impl Injector {
             return;
         }
         *held = pressed;
+        if pressed {
+            self.command_under_pointer(out);
+        }
 
         // Chosen once, on the way down, and remembered for the way up. The
         // side buttons are the relative pointer's whichever pointer moved
@@ -995,6 +1178,7 @@ impl Injector {
         if x == 0 && y == 0 {
             return;
         }
+        self.command_under_pointer(out);
         self.used = 0;
         // **Both the stepped and the fine axis go out.** A peer counting in
         // detent units divides to nothing when it sends less than one, and a
@@ -1084,6 +1268,9 @@ impl Injector {
     /// they came (docs/05-host.md section 7).
     pub fn release_keys(&mut self, out: &mut impl Sink) {
         self.release_keys_but(out, |_| false);
+        // A Command still waiting to be read sent nothing, so it is forgotten
+        // rather than released, and comes back unrouted with the next press.
+        self.routed = [None; 8];
         // The peer's locks are no longer known, rather than known to be off.
         // Its next message sets the baseline again without toggling anything.
         self.num_lock = None;
@@ -1257,6 +1444,39 @@ fn lock_owed(was: Option<bool>, now: bool, host: Option<bool>, named: bool) -> b
         Some(host) if named => host != now,
         Some(host) => was.map_or(now, |was| was != now) && host != now,
         None => !named && was == Some(!now),
+    }
+}
+
+/// What a held modifier's press became.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// Sent as this code, and released as it.
+    To(u16),
+    /// A macOS peer's Command with nothing sent yet: Control once anything is
+    /// pressed under it, the desktop's Command tapped if it is let go alone.
+    Waiting,
+}
+
+/// What a key message comes to once the peer's modifiers are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Taken {
+    /// This code, pressed or released as the message says.
+    As(u16),
+    /// This code pressed and released at once.
+    Tap(u16),
+    /// Nothing now; the reason, for the trace.
+    Nothing(&'static str),
+}
+
+/// The code a macOS peer trades this one for: Control for Command and back,
+/// left with left and right with right.
+fn counterpart(code: u16) -> Option<u16> {
+    match code {
+        224 => Some(227),
+        227 => Some(224),
+        228 => Some(231),
+        231 => Some(228),
+        _ => None,
     }
 }
 
@@ -1749,10 +1969,10 @@ mod tests {
 
     /// **A mask that reports the modifier on some messages and not others
     /// releases no modifier.** A peer's mask is its platform reporting itself
-    /// at that keystroke, and one sighting of a left control press carrying
-    /// only the meta bit is on the record -- a macOS peer's Command, its code
-    /// swapped for Control -- so a modifier missing from the mask must not
-    /// release anything.
+    /// at that keystroke, and a left control press carrying only the meta bit
+    /// is on the record -- a macOS peer's Command, its code swapped for
+    /// Control, which a key under it makes Control here -- so a modifier
+    /// missing from the mask must not release anything.
     #[test]
     fn a_modifier_absent_from_the_mask_is_not_released() {
         let (mut inject, mut out) = (injector(), Recorder::default());
@@ -1760,7 +1980,184 @@ mod tests {
         out.batches.clear();
         inject.on_control(&control(op::KEYBOARD, 23, 0, 1), &mut out);
         assert_eq!(out.keys_at(0), Vec::<u16>::new());
-        assert_eq!(out.keys_at(1), vec![20]);
+        assert_eq!(out.keys_at(1), vec![29, 20]);
+    }
+
+    /// **A macOS peer's Command pressed alone is the desktop's Command, and
+    /// its Control is Control**, though it sends each as the other's code
+    /// with the Command bit on both (the codes and masks below are what one
+    /// sent). Its first Command press says what it is; Command alone is
+    /// tapped as it comes up, each other key comes up as the key it went
+    /// down as, left and right alike, and Option stays Alt.
+    #[test]
+    fn a_macos_peers_command_and_control_are_exchanged() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        let (ctrl, alt, meta, rctrl, rmeta) = (29, 56, 125, 97, 126);
+        // Command, then Option, then Control, each pressed and let go.
+        for (code, mask) in [(224, 0x400), (226, 0x100), (227, 0x400)] {
+            inject.on_control(&control(op::KEYBOARD, code, mask, 1), &mut out);
+            inject.on_control(&control(op::KEYBOARD, code, 0, 0), &mut out);
+        }
+        assert_eq!(out.keys_at(1), vec![meta, alt, ctrl]);
+        assert_eq!(out.keys_at(0), vec![meta, alt, ctrl]);
+
+        // The right-hand pair, and Command pressed under Control.
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 231, 0x800, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 228, 0x800, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 228, 0x800, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 231, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![rctrl, rmeta]);
+        assert_eq!(out.keys_at(0), vec![rmeta, rctrl]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty(), "something was still held");
+    }
+
+    /// **A key down before the peer is recognised comes up as it went down.**
+    /// A macOS peer's Control pressed first is Super until its Command says
+    /// what it is, and that Super is let go, not a Control never pressed.
+    #[test]
+    fn a_modifier_held_across_the_recognition_comes_up_as_it_went_down() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 227, 0x400, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 227, 0, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0x400, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![125, 125]);
+        assert_eq!(out.keys_at(0), vec![125, 125]);
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 227, 0x400, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![29], "Control not exchanged once known");
+    }
+
+    /// **A peer that sends the codes the right way round is read at them**,
+    /// including one whose mask reports the state before the key: Control
+    /// pressed while the Windows key is already held carries the Windows bit
+    /// and not its own, and is still Control, and the peer is not taken for
+    /// a Mac afterwards.
+    #[test]
+    fn a_peer_that_sends_the_right_codes_is_not_taken_for_a_mac() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 224, 0x40, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 227, 0x40 | 0x400, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![29, 125]);
+
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 227, 0, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0x400, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 227, 0, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0x40, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![125, 29, 29]);
+    }
+
+    /// **A macOS peer's Command with a key is Control, alone it is Super**,
+    /// as Parsec's own Windows host takes it: Command-N and Command-Shift-N
+    /// are Control-N and Control-Shift-N, Shift deciding nothing while it
+    /// waits, and Command pressed and let go with nothing under it taps
+    /// Super. Nothing of the Command goes out until one or the other is known.
+    #[test]
+    fn a_macos_peers_command_is_control_with_a_key_and_super_alone() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        let (ctrl, shift, meta, n) = (29, 42, 125, 49);
+        const LGUI: u32 = 0x400;
+        const LSHIFT: u32 = 0x1;
+        // Command-N.
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        assert!(out.batches.is_empty(), "Command sent before it was known");
+        inject.on_control(&control(op::KEYBOARD, 17, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![ctrl, n]);
+        assert_eq!(out.keys_at(0), vec![n, ctrl]);
+
+        // Command-Shift-N: Shift goes through at once, Control with N.
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 225, LGUI | LSHIFT, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![shift]);
+        inject.on_control(&control(op::KEYBOARD, 17, LGUI | LSHIFT, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 225, LGUI, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![shift, ctrl, n]);
+        assert_eq!(out.keys_at(0), vec![n, shift, ctrl]);
+
+        // Command alone, held through a repeat: one tap of Super on release.
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        assert!(out.batches.is_empty(), "Command sent before it was known");
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.batches.len(), 1, "the tap split across batches");
+        assert_eq!(out.keys_at(1), vec![meta]);
+        assert_eq!(out.keys_at(0), vec![meta]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty(), "something was still held");
+    }
+
+    /// **A click or a scroll under a macOS peer's Command makes it Control**,
+    /// as a key does, so Command-click is Control-click; the Control goes out
+    /// ahead of the button, on the keyboard. Motion decides nothing.
+    #[test]
+    fn a_click_under_a_macos_peers_command_is_a_control_click() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        const LGUI: u32 = 0x400;
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
+        assert_eq!(out.keys_at(1), Vec::<u16>::new());
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 0, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![29, BTN_LEFT]);
+        assert_eq!(out.keys_at(0), vec![BTN_LEFT, 29]);
+
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::MOUSE_WHEEL, 0, 120, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![29], "a scroll under Command");
+        assert_eq!(out.keys_at(0), vec![29]);
+    }
+
+    /// **A Mac's Control and its Command taken as Control are one key here**,
+    /// and it stays down until the second of them comes up: Control-Command-F
+    /// let go Control first still holds Control while Command does.
+    #[test]
+    fn control_held_twice_comes_up_with_the_second_release() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        const LGUI: u32 = 0x400;
+        // Recognised by a Command press first.
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        out.batches.clear();
+        // Control, then Command, then F; Control let go first.
+        inject.on_control(&control(op::KEYBOARD, 227, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, LGUI, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 9, LGUI, 1), &mut out);
+        assert_eq!(out.keys_at(1), vec![29, 33]);
+        inject.on_control(&control(op::KEYBOARD, 227, LGUI, 0), &mut out);
+        assert_eq!(out.keys_at(0), vec![33], "Control came up under Command");
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(0), vec![33, 29]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty(), "something was still held");
+    }
+
+    /// **A Command still waiting when the guest lets go of everything sends
+    /// nothing**, neither then nor at its late release: there is no Super to
+    /// tap and no Control to lift.
+    #[test]
+    fn a_waiting_command_is_forgotten_by_a_release_of_everything() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 224, 0x400, 1), &mut out);
+        inject.release_all(&mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert!(out.batches.is_empty(), "a waiting Command sent something");
     }
 
     /// **A key pressed under Command goes down and up at once**, its release
@@ -1768,7 +2165,8 @@ mod tests {
     /// is held, and a key left held is typed again by the host's own repeat.
     /// Each press or repeat is one keystroke; the release that never came is
     /// not missed, and one that does come finds nothing held. Command is the
-    /// mask's to say, its code here swapped for Control as such a peer sends it.
+    /// mask's to say, its code here swapped for Control as such a peer sends it,
+    /// and the key under it makes it Control, in the key's own batch.
     #[test]
     fn a_key_pressed_under_command_is_a_keystroke_and_nothing_stays_held() {
         let (mut inject, mut out) = (injector(), Recorder::default());
@@ -1778,12 +2176,13 @@ mod tests {
         // e, then e again as the peer's repeat; no release of it.
         inject.on_control(&control(op::KEYBOARD, 8, LGUI, 1), &mut out);
         assert_eq!(out.batches.len(), 1, "a keystroke split across batches");
-        assert_eq!(out.keys_at(1), vec![18]);
+        assert_eq!(out.keys_at(1), vec![29, 18]);
         assert_eq!(out.keys_at(0), vec![18]);
         inject.on_control(&control(op::KEYBOARD, 8, LGUI, 1), &mut out);
-        assert_eq!(out.keys_at(1), vec![18, 18]);
+        assert_eq!(out.keys_at(1), vec![29, 18, 18]);
         assert_eq!(out.keys_at(0), vec![18, 18]);
-        // Command up, and a release of e that did arrive.
+        // Command up, and a release of e that did arrive. Command comes up
+        // as the key it went down as, Control.
         inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
         inject.on_control(&control(op::KEYBOARD, 8, 0, 0), &mut out);
         assert_eq!(out.keys_at(0), vec![18, 18, 29]);
