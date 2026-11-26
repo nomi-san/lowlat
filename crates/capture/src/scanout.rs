@@ -117,7 +117,7 @@ pub struct Framebuffer {
     pub id: u32,
     pub width: u32,
     pub height: u32,
-    pub format: DrmFourcc,
+    pub format: Fourcc,
     /// **Read from the kernel on every scan, never cached.** The compositor
     /// picks both this and the format, and they change whenever a fullscreen
     /// surface takes the display over -- several times a minute in ordinary
@@ -134,6 +134,61 @@ impl Framebuffer {
     /// Buffers actually present, in order.
     pub fn planes(&self) -> impl Iterator<Item = &Buffer> {
         self.buffers.iter().flatten()
+    }
+}
+
+/// A framebuffer's pixel format: the kernel's four-character code, as it is.
+///
+/// **Ours rather than the binding's enum.** That enum names only the formats
+/// its crate knew of when it was published, and it has none of the sixteen-bit
+/// integer ones, which KWin scans out whenever "Prefer color accuracy" is set.
+/// Reading such a framebuffer through the enum failed outright, the walk saw
+/// no lit display, and a guest was told the host sent no video. Carrying the
+/// raw code leaves what can be imported to the importer, which says so by name.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Fourcc(pub u32);
+
+impl Fourcc {
+    pub const ABGR8888: Self = Self::of(*b"AB24");
+    pub const XBGR8888: Self = Self::of(*b"XB24");
+    pub const ARGB8888: Self = Self::of(*b"AR24");
+    pub const XRGB8888: Self = Self::of(*b"XR24");
+    pub const ABGR2101010: Self = Self::of(*b"AB30");
+    pub const XBGR2101010: Self = Self::of(*b"XB30");
+    pub const ARGB2101010: Self = Self::of(*b"AR30");
+    pub const XRGB2101010: Self = Self::of(*b"XR30");
+    pub const ABGR16161616: Self = Self::of(*b"AB48");
+    pub const XBGR16161616: Self = Self::of(*b"XB48");
+    pub const R8: Self = Self::of(*b"R8  ");
+
+    /// The code for four characters, first character in the lowest byte, which
+    /// is how the kernel's own header builds them.
+    pub const fn of(code: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(code))
+    }
+}
+
+impl From<DrmFourcc> for Fourcc {
+    fn from(format: DrmFourcc) -> Self {
+        Self(format as u32)
+    }
+}
+
+impl core::fmt::Display for Fourcc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bytes = self.0.to_le_bytes();
+        if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+            let text: String = bytes.iter().map(|b| char::from(*b)).collect();
+            write!(f, "{}", text.trim_end())
+        } else {
+            write!(f, "{:#010x}", self.0)
+        }
+    }
+}
+
+impl core::fmt::Debug for Fourcc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Fourcc({self})")
     }
 }
 
@@ -617,33 +672,28 @@ impl Card {
 
     /// Describe one framebuffer.
     fn framebuffer(&self, handle: drm::control::framebuffer::Handle) -> Result<Framebuffer, Error> {
-        let info = self
-            .get_planar_framebuffer(handle)
-            .map_err(|error| match error {
-                drm::control::GetPlanarFramebufferError::Io(error) => device_error(&error),
-                drm::control::GetPlanarFramebufferError::UnrecognizedFourcc(fourcc) => {
-                    Error::UnknownFormat(fourcc.0)
-                }
-            })?;
+        // **Asked of the kernel directly rather than through the binding's
+        // wrapper**, which refuses any format its enum has no name for (see
+        // `Fourcc`). The fields are the same ones the wrapper would have read.
+        let info = drm_ffi::mode::get_framebuffer2(self.as_fd(), u32::from(handle))
+            .map_err(|error| device_error(&error))?;
 
-        let handles = info.buffers();
-        let pitches = info.pitches();
-        let offsets = info.offsets();
         let buffers = core::array::from_fn(|at| {
-            handles.get(at).copied().flatten().map(|handle| Buffer {
-                handle,
-                pitch: pitches.get(at).copied().unwrap_or(0),
-                offset: offsets.get(at).copied().unwrap_or(0),
+            core::num::NonZeroU32::new(info.handles[at]).map(|raw| Buffer {
+                handle: drm::buffer::Handle::from(raw),
+                pitch: info.pitches[at],
+                offset: info.offsets[at],
             })
         });
+        let modifier = (info.flags & drm_ffi::DRM_MODE_FB_MODIFIERS != 0)
+            .then(|| DrmModifier::from(info.modifier[0]));
 
-        let (width, height) = info.size();
         Ok(Framebuffer {
             id: u32::from(handle),
-            width,
-            height,
-            format: info.pixel_format(),
-            modifier: info.modifier(),
+            width: info.width,
+            height: info.height,
+            format: Fourcc(info.pixel_format),
+            modifier,
             buffers,
         })
     }
@@ -927,10 +977,25 @@ mod tests {
             id: 1,
             width: 2560,
             height: 1440,
-            format: DrmFourcc::Abgr2101010,
+            format: Fourcc::ABGR2101010,
             modifier: Some(DrmModifier::Linear),
             buffers: [None, None, None, None],
         };
         assert_eq!(fb.planes().count(), 0);
+    }
+
+    /// The code is the kernel's, built the way its header builds it, and it
+    /// prints as the four characters a person would look up.
+    #[test]
+    fn fourcc_is_the_kernels_code() {
+        assert_eq!(Fourcc::ABGR2101010, Fourcc::from(DrmFourcc::Abgr2101010));
+        assert_eq!(Fourcc::XRGB8888, Fourcc::from(DrmFourcc::Xrgb8888));
+        assert_eq!(Fourcc::R8, Fourcc::from(DrmFourcc::R8));
+        // The format KWin scans out for colour accuracy, which the binding's
+        // enum has no name for.
+        assert_eq!(Fourcc::ABGR16161616.0, 0x3834_4241);
+        assert_eq!(Fourcc::ABGR16161616.to_string(), "AB48");
+        assert_eq!(Fourcc::R8.to_string(), "R8");
+        assert_eq!(Fourcc(0x0102_0304).to_string(), "0x01020304");
     }
 }

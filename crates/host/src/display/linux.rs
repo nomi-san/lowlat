@@ -567,7 +567,7 @@ impl Pipeline {
 struct Shape {
     width: u32,
     height: u32,
-    format: drm::buffer::DrmFourcc,
+    format: scanout::Fourcc,
     modifier: u64,
 }
 

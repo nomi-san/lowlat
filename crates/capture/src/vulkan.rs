@@ -15,7 +15,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ash::vk;
-use drm::buffer::DrmFourcc;
+
+use crate::scanout::Fourcc;
 
 /// What went wrong.
 ///
@@ -38,7 +39,7 @@ pub enum Error {
     /// The device exposes no queue that can run the conversion.
     NoQueue,
     /// The captured framebuffer is in a layout this interface has no name for.
-    UnknownFormat(DrmFourcc),
+    UnknownFormat(Fourcc),
     /// No memory type satisfies both the image and the imported descriptor.
     NoMemoryType,
     /// The device will export a picture in neither of the two ways a frame is
@@ -709,23 +710,35 @@ fn conversion_family(families: &[vk::QueueFamilyProperties], raised: bool) -> Op
 /// name reads one way round is often stored the other way, and getting it wrong
 /// produces a picture with red and blue exchanged that looks close enough to be
 /// missed on a desktop and obvious on a face.
-fn pixel_format(fourcc: DrmFourcc) -> Option<vk::Format> {
+fn pixel_format(fourcc: Fourcc) -> Option<vk::Format> {
     Some(match fourcc {
         // Bytes in memory are R, G, B, A.
-        DrmFourcc::Abgr8888 => vk::Format::R8G8B8A8_UNORM,
-        DrmFourcc::Xbgr8888 => vk::Format::R8G8B8A8_UNORM,
+        Fourcc::ABGR8888 | Fourcc::XBGR8888 => vk::Format::R8G8B8A8_UNORM,
         // Bytes in memory are B, G, R, A. This is the pointer's format.
-        DrmFourcc::Argb8888 => vk::Format::B8G8R8A8_UNORM,
-        DrmFourcc::Xrgb8888 => vk::Format::B8G8R8A8_UNORM,
+        Fourcc::ARGB8888 | Fourcc::XRGB8888 => vk::Format::B8G8R8A8_UNORM,
         // One packed word, alpha in the top two bits then blue, green, red.
-        DrmFourcc::Abgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
-        DrmFourcc::Xbgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
+        Fourcc::ABGR2101010 | Fourcc::XBGR2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
         // The same word with red and blue exchanged: blue lowest. This is what
         // GNOME scans out on a ten-bit-capable panel.
-        DrmFourcc::Argb2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
-        DrmFourcc::Xrgb2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
+        Fourcc::ARGB2101010 | Fourcc::XRGB2101010 => vk::Format::A2R10G10B10_UNORM_PACK32,
+        // Sixteen-bit words in memory as R, G, B, A. This is what KWin scans out
+        // with "Prefer color accuracy" set (measured on Plasma 6.8.3, RADV). The
+        // shader samples it as normalised values like every other layout here,
+        // so nothing past the import knows the difference. The order with red
+        // and blue exchanged has no layout of its own in this interface and is
+        // left unnamed until a desktop is seen scanning it out.
+        Fourcc::ABGR16161616 | Fourcc::XBGR16161616 => vk::Format::R16G16B16A16_UNORM,
         _ => return None,
     })
+}
+
+/// How many bytes one pixel of an imported layout takes.
+pub fn bytes_per_pixel(format: vk::Format) -> u32 {
+    if format == vk::Format::R16G16B16A16_UNORM {
+        8
+    } else {
+        4
+    }
 }
 
 /// A captured framebuffer, imported without a copy.
@@ -904,10 +917,12 @@ impl Device {
     /// reversed -- still succeeds at every call, and the only thing that says
     /// so is the picture.
     ///
-    /// Returns tightly packed rows, four bytes per pixel, in the imported
-    /// format's own channel order.
+    /// Returns tightly packed rows in the imported format's own channel
+    /// order: eight bytes per pixel for a sixteen-bit layout, four otherwise.
     pub fn read_back(&self, imported: &Imported) -> Result<Vec<u8>, Error> {
-        let bytes = u64::from(imported.width) * u64::from(imported.height) * 4;
+        let bytes = u64::from(imported.width)
+            * u64::from(imported.height)
+            * u64::from(bytes_per_pixel(imported.format));
 
         let buffer_info = vk::BufferCreateInfo::default()
             .size(bytes)
@@ -1106,7 +1121,7 @@ impl Device {
 pub struct Imports<'a> {
     pub width: u32,
     pub height: u32,
-    pub format: DrmFourcc,
+    pub format: Fourcc,
     pub modifier: u64,
     pub fd: RawFd,
     pub planes: &'a [PlaneLayout],
@@ -1362,26 +1377,31 @@ mod tests {
     /// rather than four bytes, so both names describe the same bit positions.
     #[test]
     fn channel_order_is_by_byte_not_by_name() {
-        use drm::buffer::DrmFourcc;
+        use crate::scanout::Fourcc;
 
         assert_eq!(
-            super::pixel_format(DrmFourcc::Abgr8888),
+            super::pixel_format(Fourcc::ABGR8888),
             Some(vk::Format::R8G8B8A8_UNORM)
         );
         assert_eq!(
-            super::pixel_format(DrmFourcc::Argb8888),
+            super::pixel_format(Fourcc::ARGB8888),
             Some(vk::Format::B8G8R8A8_UNORM)
         );
         assert_eq!(
-            super::pixel_format(DrmFourcc::Abgr2101010),
+            super::pixel_format(Fourcc::ABGR2101010),
             Some(vk::Format::A2B10G10R10_UNORM_PACK32)
         );
         assert_eq!(
-            super::pixel_format(DrmFourcc::Xrgb2101010),
+            super::pixel_format(Fourcc::XRGB2101010),
             Some(vk::Format::A2R10G10B10_UNORM_PACK32)
         );
+        assert_eq!(
+            super::pixel_format(Fourcc::ABGR16161616),
+            Some(vk::Format::R16G16B16A16_UNORM)
+        );
         // Something nothing here scans out has no import rather than a guess.
-        assert_eq!(super::pixel_format(DrmFourcc::Yuyv), None);
+        assert_eq!(super::pixel_format(Fourcc::of(*b"YUYV")), None);
+        assert_eq!(super::pixel_format(Fourcc::of(*b"AR48")), None);
     }
 
     /// Raised, the conversion takes the family that computes without drawing,

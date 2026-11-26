@@ -138,10 +138,13 @@ fn write_ppm(
     path: &Path,
     width: u32,
     height: u32,
-    format: drm::buffer::DrmFourcc,
+    format: lowlat_capture::scanout::Fourcc,
     pixels: &[u8],
 ) -> std::io::Result<()> {
-    use drm::buffer::DrmFourcc;
+    use lowlat_capture::scanout::Fourcc;
+
+    let wide = matches!(format, Fourcc::ABGR16161616 | Fourcc::XBGR16161616);
+    let stride = if wide { 8 } else { 4 };
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
     write!(out, "P6\n{width} {height}\n255\n")?;
@@ -150,15 +153,17 @@ fn write_ppm(
     for y in 0..height as usize {
         row.clear();
         for x in 0..width as usize {
-            let at = (y * width as usize + x) * 4;
-            let Some(quad) = pixels.get(at..at + 4) else {
+            let at = (y * width as usize + x) * stride;
+            let Some(quad) = pixels.get(at..at + stride) else {
                 continue;
             };
             let (r, g, b) = match format {
+                // Sixteen bits a channel, red first; the high byte of each.
+                Fourcc::ABGR16161616 | Fourcc::XBGR16161616 => (quad[1], quad[3], quad[5]),
                 // Ten bits a channel in one little-endian word, red lowest.
                 // Shifted down rather than scaled: this is a diagnostic and the
                 // two low bits do not decide whether the import worked.
-                DrmFourcc::Abgr2101010 | DrmFourcc::Xbgr2101010 => {
+                Fourcc::ABGR2101010 | Fourcc::XBGR2101010 => {
                     let word = u32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]);
                     (
                         u8::try_from((word & 0x3ff) >> 2).unwrap_or(0),
@@ -167,7 +172,7 @@ fn write_ppm(
                     )
                 }
                 // The same word, blue lowest.
-                DrmFourcc::Argb2101010 | DrmFourcc::Xrgb2101010 => {
+                Fourcc::ARGB2101010 | Fourcc::XRGB2101010 => {
                     let word = u32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]);
                     (
                         u8::try_from((word >> 20 & 0x3ff) >> 2).unwrap_or(0),
@@ -176,7 +181,7 @@ fn write_ppm(
                     )
                 }
                 // Bytes in memory are blue, green, red, alpha.
-                DrmFourcc::Argb8888 | DrmFourcc::Xrgb8888 => (quad[2], quad[1], quad[0]),
+                Fourcc::ARGB8888 | Fourcc::XRGB8888 => (quad[2], quad[1], quad[0]),
                 // Bytes in memory are red, green, blue, alpha.
                 _ => (quad[0], quad[1], quad[2]),
             };
