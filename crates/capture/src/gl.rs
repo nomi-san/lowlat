@@ -822,7 +822,7 @@ impl Device {
             HEIGHT,
             attrib(source.height),
             LINUX_DRM_FOURCC,
-            attrib(source.format as u32),
+            attrib(source.format.0),
         ];
         for (plane, names) in planes.iter().zip(PLANE_ATTRIBUTES) {
             // **The modifier goes in as two halves, and both are given even

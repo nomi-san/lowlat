@@ -245,7 +245,9 @@ fn main() {
     // luma the conversion produced is checked against the luma computed from
     // those bytes, so a channel order that is wrong anywhere in the capture
     // path shows up as a large difference rather than as a plausible picture.
-    if fb.modifier.map_or(0, u64::from) == 0 && fb.format == drm::buffer::DrmFourcc::Argb8888 {
+    if fb.modifier.map_or(0, u64::from) == 0
+        && fb.format == lowlat_capture::scanout::Fourcc::ARGB8888
+    {
         match card.export(first) {
             Err(error) => println!("cannot re-export for the direct read: {error}"),
             Ok(fd) => {
