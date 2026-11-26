@@ -45,6 +45,8 @@ mod windows_install;
 mod windows_service;
 #[cfg(windows)]
 mod windows_tray;
+#[cfg(target_os = "linux")]
+mod x11_clip;
 
 #[cfg(any(target_os = "linux", windows))]
 fn main() {

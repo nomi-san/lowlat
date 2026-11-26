@@ -35,6 +35,12 @@ serde_json.workspace = true
 # unstable feature. Already in the graph; this is a direct edge, not a new
 # dependency.
 libc.workspace = true
+# The clipboard on a desktop with no Klipper, GNOME's among them, through the
+# session's Xwayland: an X client may own and read the clipboard without
+# focus, and the compositor carries it to and from its Wayland clients. Pure
+# Rust over the socket, so nothing is linked; XFixes says when the owner
+# changes, which is how a copy is noticed without polling.
+x11rb = { version = "0.14", default-features = false, features = ["xfixes"] }
 
 [target.'cfg(windows)'.dependencies]
 # `lowlatd display`: the virtual displays through the driver's controller.

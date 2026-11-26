@@ -452,7 +452,7 @@ type Latest = std::sync::Arc<std::sync::Mutex<Option<Vec<lowlat_host::capture::O
 /// remembers, so the change it causes is not read back and handed to the guest
 /// that caused it.
 fn own_clipboard(
-    mut clip: dbus::Clip,
+    mut clip: Clipboard,
     to_copy: &std::sync::mpsc::Receiver<String>,
     writer: &Writer,
 ) {
@@ -489,27 +489,62 @@ const CLIP_TICK_MS: u64 = 200;
 const CLIP_WAIT_MS: u64 = 30_000;
 const CLIP_RETRY_MS: u64 = 500;
 
+/// The desktop's clipboard, by whichever mechanism its session offers.
+#[derive(Debug)]
+enum Clipboard {
+    /// KDE's own clipboard component on the session bus.
+    Klipper(dbus::Clip),
+    /// The session's X server, which the compositor keeps in step with its
+    /// Wayland clipboard: GNOME's way, and any desktop's with Xwayland.
+    X11(Box<crate::x11_clip::Clip>),
+}
+
+impl Clipboard {
+    fn write(&mut self, text: &str) -> Result<(), String> {
+        match self {
+            Self::Klipper(clip) => clip.write(text),
+            Self::X11(clip) => clip.write(text),
+        }
+    }
+
+    fn changed(&mut self, within: std::time::Duration) -> Option<String> {
+        match self {
+            Self::Klipper(clip) => clip.changed(within),
+            Self::X11(clip) => clip.changed(within),
+        }
+    }
+}
+
 /// The desktop's clipboard, waited for where it is on its way.
 ///
 /// **Asked again for a while on KDE, because at login it is not there yet.**
 /// Klipper lives inside the shell, which is up before it has loaded the
 /// clipboard, and this unit starts as soon as the session is. A helper that
 /// asked once was refused and went without a clipboard until the next login,
-/// while one restarted later had it (measured on Plasma 6.8.3: the shell up about
-/// two seconds before the helper was refused). The capabilities are announced
-/// once, so the wait comes before them. Elsewhere there is no Klipper to wait
-/// for, and the first answer is the answer.
-fn wait_for_clipboard() -> Option<dbus::Clip> {
+/// while one restarted later had it (measured on Plasma 6.8.3: the shell up
+/// about two seconds before the helper was refused). The capabilities are
+/// announced once, so the wait comes before them.
+///
+/// **Where there is no Klipper, the session's X server.** GNOME offers no
+/// clipboard on the bus and no privileged selection protocol, and its
+/// compositor carries the X clipboard to its Wayland clients and back, so an
+/// X client that owns it is what a clipboard manager is elsewhere. On KDE it
+/// is tried only once Klipper has not come within the wait, since KWin's
+/// Xwayland would answer at once and Klipper is the desktop's own. A session
+/// that names an X server waits for it too: one started on demand may still
+/// be on its way.
+fn wait_for_clipboard() -> Option<Clipboard> {
     let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|names| {
         names
             .split(':')
             .any(|name| name.eq_ignore_ascii_case("KDE"))
     });
+    let x_named = std::env::var_os("DISPLAY").is_some();
     let began = std::time::Instant::now();
     let wait = std::time::Duration::from_millis(CLIP_WAIT_MS);
     let mut refused = false;
     loop {
-        match dbus::Clip::connect() {
+        let klipper = match dbus::Clip::connect() {
             Ok(clip) => {
                 if refused {
                     lowlat_common::log_info!(
@@ -517,17 +552,32 @@ fn wait_for_clipboard() -> Option<dbus::Clip> {
                         began.elapsed().as_secs_f64()
                     );
                 }
-                return Some(clip);
+                return Some(Clipboard::Klipper(clip));
             }
-            Err(error) if !kde || began.elapsed() >= wait => {
-                lowlat_common::log_warn!("session: no clipboard to own, error={error}");
-                return None;
-            }
-            Err(_) => {
-                refused = true;
-                std::thread::sleep(std::time::Duration::from_millis(CLIP_RETRY_MS));
+            Err(error) => error,
+        };
+        let late = began.elapsed() >= wait;
+        if !kde || late {
+            match crate::x11_clip::Clip::connect() {
+                Ok(clip) => {
+                    lowlat_common::log_info!(
+                        "session: the clipboard through the X server, display={} after {:.1}s",
+                        clip.display(),
+                        began.elapsed().as_secs_f64()
+                    );
+                    return Some(Clipboard::X11(Box::new(clip)));
+                }
+                Err(x11) if late || !x_named => {
+                    lowlat_common::log_warn!(
+                        "session: no clipboard to own, klipper={klipper}, x11={x11}"
+                    );
+                    return None;
+                }
+                Err(_) => {}
             }
         }
+        refused = true;
+        std::thread::sleep(std::time::Duration::from_millis(CLIP_RETRY_MS));
     }
 }
 
