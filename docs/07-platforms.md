@@ -566,6 +566,18 @@ clipboard, and went without one for the whole session; a helper restarted later 
 capabilities are announced once a connection, so the wait comes before them. Elsewhere there is
 no Klipper to wait for and the first answer stands.
 
+*Added 2026-11-26:* **where there is no Klipper, the clipboard is an X selection owned through the
+session's X server** ([09 §6](09-compatibility.md)). An X client may own the clipboard and read
+it without focus, which no Wayland client may, and a compositor that keeps its Xwayland's
+clipboard in step with its own does the rest. The helper holds one unmapped window: it owns the
+selection for a guest's text and answers whoever pastes (`UTF8_STRING`, the MIME name, `TEXT`,
+`STRING`), hears through XFixes when somebody else copies, and reads that as UTF-8, in pieces if
+it is large, up to the channel's 1 MiB. On KDE it is taken only once Klipper has not come within
+its wait. Elsewhere, where the session names an X server, a refused connection is asked again
+within the same 30 s, since GNOME starts Xwayland on demand: on GNOME 46 the first was refused at
+login and the next, half a second later, answered. An X server that goes away is asked for again
+every five seconds.
+
 *Added 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **on Windows copied text
 is a value, not an ownership.** Text put with its bytes stays on the clipboard after the program
 that put it has gone, so the host, which runs in the session, puts a guest's text there itself

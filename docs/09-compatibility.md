@@ -234,7 +234,7 @@ rather than broken, which is the rule the session channel is built to
 | the output's transform | `wl_output` on the same socket, which every compositor offers | **measured** on KDE Plasma Wayland, a head turned and turned back |
 | a display mode or turn on request | `kde_output_management_v2` on the session's own socket, the outputs from `kde_output_device_v2` globals or, where the compositor announces none (KWin 6.7), from `kde_output_device_registry_v2` | **measured** on KDE Plasma Wayland, a mode in 75 ms and a turn in 9 ms, and from a stock client end to end; on Plasma 6.7.5 through the list, a mode from a stock client end to end, a turn not run |
 | idle inhibitor | `org.freedesktop.ScreenSaver` on the session bus | **measured** on KDE Plasma Wayland |
-| clipboard | `org.kde.klipper` on the session bus | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface** |
+| clipboard | `org.kde.klipper` on the session bus; where there is none, an X selection owned through the session's X server (*added 2026-11-26*) | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface**; the X selection **measured** on GNOME 46 Wayland both ways, and on KWin 6.8.3 one way only |
 | attention chord | none: the keys are typed on the guest's own keyboard | **measured** on KDE Plasma Wayland, which answers with its leave dialog |
 
 **The clipboard is the one with no portable mechanism**, and it is named here rather than in a
@@ -243,6 +243,13 @@ selection protocol -- `wlr-data-control-unstable-v1` and its successor -- which 
 offer and at least one major one does not; the alternative on those is a client holding a
 selection, which needs focus that a background program does not have. A session that offers
 nothing announces that it offers nothing and the host answers honestly.
+*Amended 2026-11-26:* **an X client holding the selection needs no focus**, and a compositor
+that keeps its Xwayland's clipboard in step with its own carries what it holds to Wayland
+clients and theirs back to it. On GNOME 46 (Ubuntu 24.04.5) both directions crossed, a stock
+client's copy pasted in a GNOME application and the other way; on KWin 6.8.3 only a copy held by
+X reached Wayland, so KDE stays on Klipper and takes the X server only when Klipper never comes.
+The cost on GNOME is Xwayland kept running for the session, which it otherwise starts only for an
+X application.
 
 **An X11 session answers none of the first two.** The layout is read over a Wayland socket and a
 session without one is a session that does not answer, so absolute input spans the picture
@@ -261,12 +268,13 @@ contributor: marked where they are.
 | capture | scanout, as on any Wayland compositor; *measured*: a ten-bit panel scanned out `XRGB2101010`, blue lowest, imported ([07 §3](07-platforms.md)) | scanout where the X server presents through the display device: the open drivers do, one vendor's does not (§3 to §5 and [07 §2](07-platforms.md)) |
 | layout and orientation | `zxdg_output_manager_v1` and `wl_output`, offered; *measured*: an HDMI connector named without its type letter (`HDMI-1` for `HDMI-A-1`), read as the device's name | **no Wayland socket**: a RandR query, not built; absent, the axis spans the picture |
 | idle inhibitor | the shell serves `org.freedesktop.ScreenSaver` | the desktop's screensaver or power manager serves it |
-| clipboard | **none**: no privileged selection protocol to speak of | an X selection client, not built |
+| clipboard | no privileged selection protocol to speak of; *measured*: an X selection client through Xwayland, both ways on GNOME 46 | an X selection client, the same code; not run on a bare X11 session |
 | mode and turn | `org.gnome.Mutter.DisplayConfig` on the session bus, a second mechanism behind the same capability | RandR, not built |
 | login screen | GDM is a Wayland compositor session: captured like any session, with a socket for the layout | X: the vendor-driver case |
 
 So GNOME needs one mechanism (the mode request over its bus) to reach parity minus the
-clipboard, and its login screen is the good case. X11 needs three session-side mechanisms
+clipboard, and its login screen is the good case. *Amended 2026-11-26:* the clipboard is built,
+through Xwayland (above). X11 needs three session-side mechanisms
 and, on one vendor's driver, a capture route that does not exist below the session.
 
 **Two arrangements to avoid on X11**, both measured 2026-09-10. An X server on one vendor's
@@ -291,6 +299,7 @@ it is marked otherwise. What to run, per desktop, is four things:
 | does the session take a mode request | `cargo run -p lowlat-capture --example mode-probe -- <connector> <WxH> [transform]`, as the person logged in |
 | does the screen stay awake | `cargo test -p lowlatd -- --ignored the_screen` |
 | does the clipboard cross | `cargo test -p lowlatd -- --ignored the_desktop_clipboard` |
+| does it cross through the X server | `cargo test -p lowlatd --bin lowlatd x11_clip -- --ignored --test-threads=1`, with `wl-clipboard` installed |
 
 The first is the only one that gates hosting. The other three each answer for one feature, and a
 "no" from any of them is a session that says so rather than a host that misbehaves.
@@ -424,4 +433,4 @@ closes half the gap and not the half that was open.
 | Whether the low-power path costs latency against the shader one | **answered 2026-08-27**: it does not. Intel discrete encodes 1080p desktop content in about 3.7 ms, roughly 1 to 1.5 ms behind the vendor backend, and the reference encoder on the same device reads 3.2 ms |
 | A conversion tier below OpenGL 4.3 | not planned (§4) |
 | Whether any desktop but one answers the layout, the inhibitor and the clipboard | **not run** (§6). The first decides whether absolute input lands correctly on more than one output; the others are features that are absent rather than broken |
-| A clipboard mechanism that is not one desktop's own | **open** (§6). The portable-looking route is offered by some compositors and not by at least one major one |
+| A clipboard mechanism that is not one desktop's own | **answered 2026-11-26** for GNOME: an X selection through Xwayland (§6). The portable-looking route is offered by some compositors and not by at least one major one, and KWin does not carry a Wayland copy to an unfocused X client |

@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-26 - The clipboard on GNOME, through the session's X server
+
+### Added
+- **Where there is no Klipper, the session helper owns the clipboard through the session's X
+  server** ([07 §5.1](07-platforms.md), [09 §6](09-compatibility.md)). An X client may own and
+  read the clipboard without focus, and GNOME's compositor carries its Xwayland's clipboard to
+  Wayland clients and back, so a guest's copy is pasted in GNOME applications and theirs reaches
+  the guest. One new dependency, `x11rb`: pure Rust over the socket, nothing linked.
+
+### Checked
+- **Ubuntu 24.04.5, GNOME Shell 46.0 on Wayland, Xwayland 23.2.6**, a stock client: copied text
+  crossed both ways; the helper took the X server half a second into the login, its first
+  connection refused while Xwayland started. The three live tests pass there.
+- **KDE Plasma 6.8.3 on Wayland, KWin 6.8.3, Xwayland 24.1.15**: a copy held by X is pasted by
+  Wayland clients, and a Wayland client's copy does not reach X; KDE stays on Klipper.
+
+### Known
+- **On GNOME, Xwayland stays running for the session**, held by the helper's connection.
+
 ## 2026-11-26 - The clipboard waited for at login on KDE
 
 ### Fixed
