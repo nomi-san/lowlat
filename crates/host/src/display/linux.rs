@@ -72,6 +72,15 @@ fn identity(node: &std::path::Path, connector: &str) -> String {
     format!("{device}:{connector}")
 }
 
+/// The last reason a lit display could not be read, so `walk` says it once
+/// rather than at the rate it is asked.
+fn reported() -> std::sync::MutexGuard<'static, Option<scanout::Error>> {
+    static REPORTED: std::sync::Mutex<Option<scanout::Error>> = std::sync::Mutex::new(None);
+    REPORTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Split an identity back into the device and the connector.
 ///
 /// **The device half is optional.** A bare connector name selects it on
@@ -1147,6 +1156,7 @@ impl Display {
     /// Open the first device that is lighting the output asked for.
     fn walk(wanted: Option<&str>) -> Result<(std::path::PathBuf, Card, scanout::Layout), Error> {
         let mut last = scanout::Error::NoScanout;
+        let mut failed_on = None;
         for index in 0..NODES {
             let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
             if !node.exists() {
@@ -1173,9 +1183,32 @@ impl Display {
                         layout.connector.as_deref().unwrap_or("an unnamed output"),
                         node.display()
                     );
+                    *reported() = None;
                     return Ok((node, card, layout));
                 }
-                Err(error) => last = error,
+                // **A reason beats "nothing is lit".** A later card driving
+                // nothing used to overwrite the error of the one that is lit,
+                // and the caller was told only that there was no display.
+                Err(scanout::Error::NoScanout) => {}
+                Err(error) => {
+                    last = error;
+                    failed_on = Some(node);
+                }
+            }
+        }
+        // **Said, and said once.** A display that is lit and cannot be read
+        // looked exactly like no display at all: the walk swallowed the reason
+        // and the host waited for one forever (measured: KWin scanning out a
+        // format nothing here had a name for). This runs at the wait's rate,
+        // so the reason is logged when it changes rather than every time.
+        if let Some(node) = failed_on {
+            let mut reported = reported();
+            if *reported != Some(last) {
+                *reported = Some(last);
+                lowlat_common::log_warn!(
+                    "display: {} is lit and cannot be read, {last}",
+                    node.display()
+                );
             }
         }
         // **Refused rather than fallen back on.** Capturing a different screen
