@@ -82,6 +82,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **KDE Plasma 6.8.3 on Wayland, CachyOS, at a login**: the helper was refused about two seconds
   after the shell started before; with the wait, the clipboard crosses from the first guest of
   the session.
+
+## 2026-11-26 - Sixteen-bit scanout, and a lit display that cannot be read says why
+
+### Fixed
+- **A display KWin scans out at sixteen bits a channel is captured** ([07 §3.1](07-platforms.md)).
+  With Plasma's "Prefer color accuracy" KWin scans out `ABGR16161616`, a format the kernel
+  binding crate has no name for, so reading the framebuffer failed and capture never started.
+  The framebuffer is read by its raw code, and `ABGR16161616` and `XBGR16161616` import as
+  sixteen-bit unsigned normalised channels through the same conversion.
+- **A lit display that cannot be read says why, once for each reason** ([05 §2](05-host.md)).
+  The walk across the devices kept only the last answer, so a device driving nothing after the
+  lit one turned its reason into "no output is lit", and a guest saw "Host sent no video data"
+  with nothing logged to say why.
+
+### Checked
+- **An AMD Radeon RX 580 on amdgpu, Mesa 26.3.1 (RADV for the import and conversion, radeonsi
+  through VA-API for the encode), KDE Plasma 6.8.3 on Wayland, CachyOS, Prefer color accuracy
+  on**: the scanout was `AB48` with modifier `0x2000001d1180400`; before, the host looped on `display: no output named <output> is lit`, and after,
+  it logged `display: capturing <output> on /dev/dri/cardN` and streamed to stock Parsec
+  clients.
+
 ## 2026-11-26 - Touch on the host, on Windows
 
 ### Added

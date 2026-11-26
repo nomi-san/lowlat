@@ -152,6 +152,16 @@ design as written:
   `XRGB2101010` on an AMD APU, the same packing with blue lowest, and before it was mapped the
   first capture failed at import and a guest was sent no picture; both orders import, and a
   layout with no equivalent is refused naming its format.
+  *Amended 2026-11-26:* nor is the depth. **KWin preferring colour accuracy scans out sixteen
+  bits a channel**: with Plasma's display setting at "Prefer color accuracy"
+  (`colorPowerTradeoff: PreferAccuracy`), Plasma 6.8.3 on an AMD Radeon RX 580 (amdgpu, Mesa
+  26.3.1) scanned out `ABGR16161616` (`AB48`), eight bytes a pixel, with modifier
+  `0x2000001d1180400`. The kernel binding crate names only the floating-point sixteen-bit
+  formats, so its framebuffer read refused the code before anything here saw it; the
+  framebuffer is now read with its raw code, and `ABGR16161616` and `XBGR16161616` import as
+  sixteen-bit unsigned normalised channels through the same conversion. The orders with red
+  lowest have no Vulkan format and are refused naming theirs; no desktop has been seen using
+  them.
 
   **Do not infer the scanout format from anything above it.** Asking the X server reports
   depth 24, because that is the visual X clients draw into; under a Wayland session the X

@@ -70,6 +70,12 @@ Rules:
   device is gone.** Ending it then copies on the device, and AMD's driver faults the process
   rather than refusing; what the encoder holds stays held for the process's life, once per
   loss. The rebuild after a restart of the GPU's driver measured 2.1 s, the guest kept.
+  *Added 2026-11-26:* **a display that is lit and cannot be read says why**, naming its device,
+  once for each reason while the host waits for it: `display: /dev/dri/cardN is lit and cannot
+  be read, ...`. The walk across the devices kept only the last answer, so a device driving
+  nothing after the lit one turned its reason into "nothing is lit", and a guest was sent no
+  picture with nothing logged but the output's name. A device driving nothing no longer
+  overwrites another's reason ([07 §3.1](07-platforms.md)).
 - The acquire timeout is one frame interval. A timeout is not an error; it means the screen
   did not change, and the correct response is to skip the iteration rather than to encode a
   duplicate.
