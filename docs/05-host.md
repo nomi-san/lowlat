@@ -1036,6 +1036,23 @@ releases the keys and the buttons held on the old way.
   down as Command arrives comes up then, and one pressed under it goes down and up at once -- a
   keystroke per press or repeat the peer sends, which is all a shortcut is. The modifiers are
   held as ever, and a release that does come finds nothing held and is dropped.
+- **A macOS peer's Command is Control with another key and Super alone, and its Control is
+  Control** (*2026-11-26*), as Parsec's own Windows host takes them. Measured with Parsec on
+  macOS against this host, the peer sends Command as left Control's code (224) and Control as
+  left Command's (227), **both with the Command bit (0x0400)**; Option is 226 with 0x0100, as
+  it should be. Taken at the codes, Command was Control and Control was Super. Nothing in one
+  message tells that Control from another peer's Windows key, and the protocol carries no
+  client platform, so the peer is recognised by the one message no other sends: a Control code
+  under the Command bit with no Control bit, its counterpart not held here. From then on, for
+  that connection, the peer's Control and Command codes are exchanged, left with left and
+  right with right, and **its Command sends nothing until it is known which it is**: a key, a
+  click or a scroll under it sends Control down first, so Command-C, Command-Shift-N and
+  Command-click are Control's; let go with nothing under it, it taps Super. Other modifiers
+  pressed under it decide nothing. Each release goes where its press went, and a Mac's
+  Control and its Command taken as Control, one key here, let it go with the second release.
+  **Until its first Command press a macOS peer's Control is Super**; that press, alone or in
+  a shortcut, settles it. Peers on other platforms, and a peer that reports the state before each key,
+  send the right codes and are read at them.
 - **Absolute coordinates arrive in stream space** and are mapped to the output's geometry at
   injection, accounting for rotation. Relative deltas pass through.
 - **The mapping is a normalisation at both ends, and that is why a stream smaller than the

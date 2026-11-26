@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-26 - A macOS peer's Command as Parsec's own host takes it
+
+### Fixed
+- **A macOS peer's Command is Control with another key and Super alone, and its Control is
+  Control** ([05 §7](05-host.md)). The peer sends Command as Control's code and Control as
+  Command's, both under the Command bit, so Command typed as Control and Control as Super, and
+  Super was out of reach from a Mac. The peer is recognised for the connection by its first
+  Command press; Command then waits, and becomes Control when a key, a click or a scroll comes
+  under it, or taps Super when let go alone.
+
+### Checked
+- **Measured with Parsec on macOS against this host**, `--verbose`'s `inject: key seen`:
+  Command 224 with mask 0x0400, Control 227 with 0x0400, Option 226 with 0x0100. Parsec on
+  other platforms sends the codes the right way round and is not taken for a Mac.
+
+### Known
+- **Until a macOS peer's first Command press, its Control is Super**: nothing earlier tells it
+  from another peer's Windows key.
+
 ## 2026-11-18 - The Windows host's GPU work at realtime priority
 
 ### Changed
