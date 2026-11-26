@@ -103,7 +103,7 @@ prefix = ""
 # variant would be reading whatever it wrote -- and an enumeration naming only
 # such fields, parameters or bits is referenced by nothing, so it has to be
 # asked for here.
-include = ["lowlat_feature", "lowlat_codec", "lowlat_chroma", "lowlat_encoder", "lowlat_rotation", "lowlat_cg_level", "lowlat_log_level", "lowlat_quality", "lowlat_transport", "lowlat_decoder", "lowlat_frame_kind", "lowlat_format", "lowlat_handle_kind", "lowlat_fence_kind", "lowlat_pad_type", "lowlat_pad_report", "lowlat_pad_sink", "lowlat_mapping", "lowlat_nat_mapping", "lowlat_nat_type", "lowlat_nat_state", "lowlat_nat_source", "lowlat_relay_carrier", "lowlat_audio_codec", "lowlat_client_state", "lowlat_decoder_state", "lowlat_keymod", "lowlat_mouse_button", "lowlat_pad_button", "lowlat_pad_axis", "lowlat_pad_state_button", "lowlat_vdd_lifetime"]
+include = ["lowlat_feature", "lowlat_codec", "lowlat_chroma", "lowlat_encoder", "lowlat_rotation", "lowlat_cg_level", "lowlat_log_level", "lowlat_quality", "lowlat_transport", "lowlat_decoder", "lowlat_frame_kind", "lowlat_format", "lowlat_handle_kind", "lowlat_fence_kind", "lowlat_pad_type", "lowlat_pad_report", "lowlat_pad_sink", "lowlat_mapping", "lowlat_nat_mapping", "lowlat_nat_type", "lowlat_nat_state", "lowlat_nat_source", "lowlat_relay_carrier", "lowlat_audio_codec", "lowlat_client_state", "lowlat_decoder_state", "lowlat_keymod", "lowlat_mouse_button", "lowlat_pad_button", "lowlat_pad_axis", "lowlat_pad_state_button", "lowlat_pen_flag", "lowlat_vdd_lifetime"]
 
 [enum]
 prefix_with_name = false

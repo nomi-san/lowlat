@@ -984,6 +984,48 @@ pub struct lowlat_pad_state {
     pub rt: u8,
 }
 
+/// Flag bits for [`lowlat_pen`], OR-ed into its `flags` (minor 40).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pen_flag {
+    /// The pen has left the range the surface senses it at.
+    LOWLAT_PEN_LEAVE = 0x01,
+    /// The pen is touching the surface.
+    LOWLAT_PEN_TOUCHING = 0x02,
+    /// The pen is turned over, its eraser towards the surface.
+    LOWLAT_PEN_INVERTED = 0x04,
+    /// The eraser is touching the surface.
+    LOWLAT_PEN_ERASER = 0x08,
+    /// The first barrel button is held.
+    LOWLAT_PEN_BARREL = 0x10,
+    /// The second barrel button is held.
+    LOWLAT_PEN_BARREL_2 = 0x20,
+    /// One of the pen's tips is touching the surface.
+    LOWLAT_PEN_TIP = 0x40,
+    /// A barrel button was double clicked.
+    LOWLAT_PEN_DOUBLE_CLICK = 0x80,
+}
+
+/// A pen at one moment, for [`lowlat_client_send_pen`] (minor 40).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pen {
+    /// Set by the caller to `sizeof(lowlat_pen)`.
+    pub size: u32,
+    /// [`lowlat_pen_flag`] bits.
+    pub flags: u32,
+    /// Where the pen is, in the window's units.
+    pub x: i32,
+    pub y: i32,
+    /// How hard it presses, 0 to 1024.
+    pub pressure: u16,
+    /// Its turn about its own length, 0 to 359 degrees.
+    pub rotation: u16,
+    /// How far it leans to the right and towards the user, -90 to 90 degrees.
+    pub tilt_x: i8,
+    pub tilt_y: i8,
+}
+
 /// Where a client's decoder stands, as `lowlat_client_status.decoder`
 /// reports it.
 #[repr(u32)]
@@ -2164,6 +2206,62 @@ pub unsafe extern "C" fn lowlat_client_send_pad_unplug(
     pad: u32,
 ) -> lowlat_status {
     report(cl, ::lowlat_client::input::Input::PadUnplug { pad })
+}
+
+/// A pen (docs/10-client.md section 8; minor 40), its position in the
+/// window's units mapped into the picture through the viewport as a position
+/// of [`lowlat_client_send_mouse_motion`] is. None is sent before a viewport
+/// is set. **A pen touching down outside the picture is sent hovering**, as a
+/// press there is not sent; once down inside it is dragged anywhere, held to
+/// the picture's edge, and its lift always goes.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pen The pen, its `size` set.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_NOT_STARTED`] with no session up, or
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`] for a field past its range or a flag no
+/// [`lowlat_pen_flag`] names.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `pen` points to one
+/// [`lowlat_pen`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pen(
+    cl: *mut lowlat_client,
+    pen: *const lowlat_pen,
+) -> lowlat_status {
+    use ::lowlat_core::pen::{PRESSURE_MAX, ROTATION_SPAN, TILT_MAX};
+    let Some(pen) = (unsafe { pen.as_ref() }) else {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    };
+    if (pen.size as usize) < core::mem::size_of::<lowlat_pen>() {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    }
+    let Ok(flags) = u8::try_from(pen.flags) else {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    };
+    let tilted = |tilt: i8| (-TILT_MAX..=TILT_MAX).contains(&tilt);
+    if pen.pressure > PRESSURE_MAX
+        || pen.rotation >= ROTATION_SPAN
+        || !tilted(pen.tilt_x)
+        || !tilted(pen.tilt_y)
+    {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    }
+    report(
+        cl,
+        ::lowlat_client::input::Input::Pen {
+            state: ::lowlat_client::input::PenState {
+                x: pen.x,
+                y: pen.y,
+                flags,
+                pressure: pen.pressure,
+                rotation: pen.rotation,
+                tilt_x: pen.tilt_x,
+                tilt_y: pen.tilt_y,
+            },
+        },
+    )
 }
 
 /// Everything held comes up on the host; sent on losing focus. Pads are
@@ -4239,6 +4337,76 @@ mod tests {
         );
 
         unsafe { lowlat_client_end_connection(handle) };
+        unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// **A pen past its ranges is refused before anything else**, session or
+    /// not: a null pen, a short `size`, a flag no `lowlat_pen_flag` names,
+    /// pressure past 1024, a full turn, a tilt past 90 either way. One at the
+    /// ends of every range goes as far as the session.
+    #[test]
+    fn a_pen_past_its_ranges_is_refused() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        let edge = lowlat_pen {
+            size: core::mem::size_of::<lowlat_pen>() as u32,
+            flags: lowlat_pen_flag::LOWLAT_PEN_TOUCHING as u32
+                | lowlat_pen_flag::LOWLAT_PEN_DOUBLE_CLICK as u32,
+            x: 10,
+            y: 10,
+            pressure: 1024,
+            rotation: 359,
+            tilt_x: -90,
+            tilt_y: 90,
+        };
+        let send = |pen: lowlat_pen| unsafe { lowlat_client_send_pen(handle, &raw const pen) };
+        assert_eq!(send(edge), LOWLAT_ERR_NOT_STARTED);
+        for (past, what) in [
+            (lowlat_pen { size: 4, ..edge }, "a short size"),
+            (
+                lowlat_pen {
+                    flags: 0x100,
+                    ..edge
+                },
+                "a flag past the byte",
+            ),
+            (
+                lowlat_pen {
+                    pressure: 1025,
+                    ..edge
+                },
+                "pressure past 1024",
+            ),
+            (
+                lowlat_pen {
+                    rotation: 360,
+                    ..edge
+                },
+                "a full turn",
+            ),
+            (
+                lowlat_pen {
+                    tilt_x: -91,
+                    ..edge
+                },
+                "a tilt past -90",
+            ),
+            (lowlat_pen { tilt_y: 91, ..edge }, "a tilt past 90"),
+        ] {
+            assert_eq!(
+                send(past),
+                LOWLAT_ERR_INVALID_ARGUMENT,
+                "{what} was not refused"
+            );
+        }
+        assert_eq!(
+            unsafe { lowlat_client_send_pen(handle, core::ptr::null()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
         unsafe { lowlat_client_destroy(handle) };
     }
 

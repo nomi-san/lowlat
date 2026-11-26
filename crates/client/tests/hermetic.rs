@@ -1830,6 +1830,86 @@ fn an_application_message_reaches_the_host_in_order_and_as_given() {
     );
 }
 
+/// **A pen reaches the host as its own message**, in its place among the
+/// keys, its position in the picture's pixels on the first stream: a window
+/// at half the picture's size doubles it.
+#[test]
+fn a_pen_reaches_the_host_in_the_pictures_pixels() {
+    use lowlat_client::input::{Input, PenState, Viewport};
+    use lowlat_core::pen::{self, Pen};
+
+    let mut pair = Pair::new(47, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(200.0);
+    assert!(pair.guest.driver.pictures() > 0);
+    pair.guest.driver.set_viewport(Viewport {
+        x: 0,
+        y: 0,
+        w: 960,
+        h: 540,
+    });
+    let state = |flags| PenState {
+        x: 480,
+        y: 270,
+        flags,
+        pressure: 512,
+        rotation: 90,
+        tilt_x: 10,
+        tilt_y: -10,
+    };
+    let key = |pressed| Input::Key {
+        code: 4,
+        mods: 0,
+        pressed,
+    };
+    let touching = pen::flag::TOUCHING;
+    for input in [
+        key(true),
+        Input::Pen {
+            state: state(touching),
+        },
+        Input::Pen { state: state(0) },
+        key(false),
+    ] {
+        pair.guest
+            .driver
+            .send_input(pair.guest.endpoint.session(), &input);
+    }
+    pair.run_for(300.0);
+
+    let sent = |flags| {
+        let (a0, a1, a2) = Pen {
+            x: 960,
+            y: 540,
+            pressure: 512,
+            rotation: 90,
+            stream: 0,
+            tilt_x: 10,
+            tilt_y: -10,
+            flags,
+        }
+        .arguments();
+        (op::PEN_TOUCH, a0, a1, a2)
+    };
+    let input: Vec<_> = pair
+        .host
+        .log
+        .iter()
+        .copied()
+        .filter(|&(opcode, ..)| opcode == op::KEYBOARD || opcode == op::PEN_TOUCH)
+        .collect();
+    assert_eq!(
+        input,
+        [
+            (op::KEYBOARD, 4, 0, 1),
+            sent(touching),
+            sent(0),
+            (op::KEYBOARD, 4, 0, 0),
+        ]
+    );
+}
+
 /// The microphone of a client that declared uncompressed sound reaches the
 /// host sample for sample, a message every ten milliseconds.
 #[test]

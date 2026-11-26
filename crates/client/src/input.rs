@@ -10,6 +10,7 @@
 use lowlat_core::control::{Control, op};
 use lowlat_core::microphone;
 use lowlat_core::pad::{self, Product};
+use lowlat_core::pen;
 use lowlat_core::video::Rotation;
 
 /// Where the application drew the picture, in the units its positions use.
@@ -27,6 +28,23 @@ pub struct Viewport {
 /// A whole pad at one moment, as the whole-pad message carries it. The
 /// core's, which also reads a controller's own report into it.
 pub type PadState = pad::State;
+
+/// A pen at one moment, as the application reports it: the position in the
+/// window's units, the rest as the wire carries it ([`pen`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PenState {
+    pub x: i32,
+    pub y: i32,
+    /// [`pen::flag`] bits.
+    pub flags: u8,
+    /// To [`pen::PRESSURE_MAX`].
+    pub pressure: u16,
+    /// Degrees below [`pen::ROTATION_SPAN`].
+    pub rotation: u16,
+    /// Degrees within [`pen::TILT_MAX`].
+    pub tilt_x: i8,
+    pub tilt_y: i8,
+}
 
 /// Which of a pad's reports the application handed over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +110,10 @@ pub enum Input {
         transport: pad::Transport,
         len: u8,
         report: [u8; pad::INPUT_LEN],
+    },
+    /// A pen (docs/10-client.md section 8).
+    Pen {
+        state: PenState,
     },
     /// Everything held comes up; the application reports it on losing focus.
     ReleaseAll,
@@ -294,7 +316,15 @@ pub(crate) struct Mapper {
     /// orientation its output is in. Zero until a picture has arrived.
     picture: (i64, i64),
     pads: [Option<Slot>; PADS],
+    /// Whether the pen's touch went out: one that touched down outside the
+    /// picture is sent hovering until it touches inside.
+    pen_down: bool,
 }
+
+/// The pen's flags that say it is on the surface: what a pen touching outside
+/// the picture is sent without.
+const PEN_CONTACT: u8 =
+    pen::flag::TOUCHING | pen::flag::ERASER | pen::flag::TIP | pen::flag::DOUBLE_CLICK;
 
 /// `value * num / den`, rounded to nearest, for non-negative operands.
 const fn scale(value: i64, num: i64, den: i64) -> i64 {
@@ -454,9 +484,49 @@ impl Mapper {
             }
             // A report is several messages; the driver asks for them apart.
             Input::PadReport { .. } => None,
-            Input::ReleaseAll => Some(Wire::bare(op::RELEASE, 0, 0, 0)),
+            Input::Pen { .. } if !self.mapped() => None,
+            Input::Pen { state } => Some(self.pen(state)),
+            // The host lets go of the pen with everything else, so its next
+            // touch is a new one here too.
+            Input::ReleaseAll => {
+                self.pen_down = false;
+                Some(Wire::bare(op::RELEASE, 0, 0, 0))
+            }
             Input::Control { opcode, a0, a1, a2 } => Some(Wire::bare(opcode, a0, a1, a2)),
         }
+    }
+
+    /// The pen message, its position in the picture's pixels and held to it.
+    ///
+    /// **A pen touching down outside the picture is sent hovering**, as a
+    /// press there is not sent: it touches once it is down inside, and from
+    /// then on its touch goes wherever it is dragged -- held to the edge -- until
+    /// it lifts, which always goes.
+    fn pen(&mut self, state: PenState) -> Wire {
+        let touching = state.flags & pen::flag::TOUCHING != 0;
+        if !touching {
+            self.pen_down = false;
+        } else if !self.pen_down && self.in_picture(state.x, state.y) {
+            self.pen_down = true;
+        }
+        let flags = if touching && !self.pen_down {
+            state.flags & !PEN_CONTACT
+        } else {
+            state.flags
+        };
+        let (x, y) = self.to_picture(state.x, state.y);
+        let (a0, a1, a2) = pen::Pen {
+            x: u16::try_from(x).unwrap_or(u16::MAX),
+            y: u16::try_from(y).unwrap_or(u16::MAX),
+            pressure: state.pressure,
+            rotation: state.rotation,
+            stream: 0,
+            tilt_x: state.tilt_x,
+            tilt_y: state.tilt_y,
+            flags,
+        }
+        .arguments();
+        Wire::bare(op::PEN_TOUCH, a0, a1, a2)
     }
 
     /// The whole-pad state message for one pad, or `None` when nothing
@@ -713,6 +783,86 @@ mod tests {
         // and the bump is one pixel only: the host clamps the rest.
         assert_eq!(motion(&mut m, 969, 559), Some((0, 1918, 1078)));
         assert_eq!(motion(&mut m, 5000, -7), Some((0, 1920, 0)));
+    }
+
+    fn pen_at(m: &mut Mapper, x: i32, y: i32, flags: u8) -> Option<pen::Pen> {
+        let state = PenState {
+            x,
+            y,
+            flags,
+            pressure: 700,
+            rotation: 45,
+            tilt_x: -20,
+            tilt_y: 30,
+        };
+        m.encode(&Input::Pen { state })
+            .and_then(|wire| pen::parse(&wire.control()))
+    }
+
+    /// **A pen crosses in the picture's pixels**, through the viewport as a
+    /// position does, on the first stream with the rest as given; and none
+    /// goes before a viewport is set.
+    #[test]
+    fn a_pen_crosses_in_the_pictures_pixels() {
+        let mut unset = Mapper::default();
+        let state = PenState::default();
+        assert!(unset.encode(&Input::Pen { state }).is_none());
+        let mut m = mapper(
+            Viewport {
+                x: 10,
+                y: 20,
+                w: 960,
+                h: 540,
+            },
+            1920,
+            1080,
+            Rotation::None,
+        );
+        let flags = pen::flag::TOUCHING | pen::flag::BARREL;
+        assert_eq!(
+            pen_at(&mut m, 490, 290, flags),
+            Some(pen::Pen {
+                x: 960,
+                y: 540,
+                pressure: 700,
+                rotation: 45,
+                stream: 0,
+                tilt_x: -20,
+                tilt_y: 30,
+                flags,
+            })
+        );
+    }
+
+    /// **A pen touching down outside the picture hovers until it is down
+    /// inside**, its buttons kept; once down it is dragged anywhere, held to
+    /// the edge, and its lift always goes. A release of everything makes its
+    /// next touch a new one.
+    #[test]
+    fn a_pen_touches_only_once_it_is_down_inside() {
+        let touch = pen::flag::TOUCHING | pen::flag::TIP;
+        let barrel = pen::flag::BARREL;
+        let mut m = mapper(
+            Viewport {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            1920,
+            1080,
+            Rotation::None,
+        );
+        let outside = pen_at(&mut m, 5000, 5, touch | barrel).unwrap();
+        assert_eq!((outside.flags, outside.x), (barrel, 1920));
+        assert_eq!(pen_at(&mut m, 5, 5, touch).unwrap().flags, touch);
+        let dragged = pen_at(&mut m, 5000, 5, touch).unwrap();
+        assert_eq!((dragged.flags, dragged.x), (touch, 1920));
+        assert_eq!(pen_at(&mut m, 5000, 5, 0).unwrap().flags, 0);
+        assert_eq!(pen_at(&mut m, 5000, 5, touch).unwrap().flags, 0);
+        assert_eq!(pen_at(&mut m, 5, 5, touch).unwrap().flags, touch);
+        assert!(m.encode(&Input::ReleaseAll).is_some());
+        assert_eq!(pen_at(&mut m, 5000, 5, touch).unwrap().flags, 0);
     }
 
     /// A stream shown a quarter turn has its extents swapped: coordinates

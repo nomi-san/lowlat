@@ -55,6 +55,7 @@ pub mod microphone;
 pub mod nat;
 pub mod packet;
 pub mod pad;
+pub mod pen;
 pub mod pmtu;
 pub mod png;
 pub mod relay;

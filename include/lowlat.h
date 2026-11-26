@@ -65,7 +65,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 39
+#define LOWLAT_ABI_MINOR 40
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// How many reflexive servers a seam may be given, and how long each may be.
@@ -983,6 +983,26 @@ typedef enum lowlat_pad_state_button LOWLAT_ENUM_BASE(uint32_t) {
     LOWLAT_PAD_STATE_X = 16384,
     LOWLAT_PAD_STATE_Y = 32768,
 } lowlat_pad_state_button;
+
+/// Flag bits for `lowlat_pen`, OR-ed into its `flags` (minor 40).
+typedef enum lowlat_pen_flag LOWLAT_ENUM_BASE(uint32_t) {
+    /// The pen has left the range the surface senses it at.
+    LOWLAT_PEN_LEAVE = 1,
+    /// The pen is touching the surface.
+    LOWLAT_PEN_TOUCHING = 2,
+    /// The pen is turned over, its eraser towards the surface.
+    LOWLAT_PEN_INVERTED = 4,
+    /// The eraser is touching the surface.
+    LOWLAT_PEN_ERASER = 8,
+    /// The first barrel button is held.
+    LOWLAT_PEN_BARREL = 16,
+    /// The second barrel button is held.
+    LOWLAT_PEN_BARREL_2 = 32,
+    /// One of the pen's tips is touching the surface.
+    LOWLAT_PEN_TIP = 64,
+    /// A barrel button was double clicked.
+    LOWLAT_PEN_DOUBLE_CLICK = 128,
+} lowlat_pen_flag;
 #endif
 
 #if (defined(LOWLAT_VDD) && defined(_WIN32))
@@ -2053,6 +2073,24 @@ typedef struct lowlat_pad_state {
     uint8_t lt;
     uint8_t rt;
 } lowlat_pad_state;
+
+/// A pen at one moment, for `lowlat_client_send_pen` (minor 40).
+typedef struct lowlat_pen {
+    /// Set by the caller to `sizeof(lowlat_pen)`.
+    uint32_t size;
+    /// `lowlat_pen_flag` bits.
+    uint32_t flags;
+    /// Where the pen is, in the window's units.
+    int32_t x;
+    int32_t y;
+    /// How hard it presses, 0 to 1024.
+    uint16_t pressure;
+    /// Its turn about its own length, 0 to 359 degrees.
+    uint16_t rotation;
+    /// How far it leans to the right and towards the user, -90 to 90 degrees.
+    int8_t tilt_x;
+    int8_t tilt_y;
+} lowlat_pen;
 
 /// The session as it stands.
 typedef struct lowlat_client_status {
@@ -3671,6 +3709,24 @@ lowlat_status lowlat_client_send_pad_report(lowlat_client *cl,
 /// @attention `cl` came from `lowlat_client_create`.
 lowlat_status lowlat_client_send_pad_unplug(lowlat_client *cl,
                                             uint32_t pad) LOWLAT_NOEXCEPT;
+
+/// A pen (docs/10-client.md section 8; minor 40), its position in the
+/// window's units mapped into the picture through the viewport as a position
+/// of `lowlat_client_send_mouse_motion` is. None is sent before a viewport
+/// is set. **A pen touching down outside the picture is sent hovering**, as a
+/// press there is not sent; once down inside it is dragged anywhere, held to
+/// the picture's edge, and its lift always goes.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] pen The pen, its `size` set.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_NOT_STARTED` with no session up, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT` for a field past its range or a flag no
+/// `lowlat_pen_flag` names.
+///
+/// @attention `cl` came from `lowlat_client_create`; `pen` points to one
+/// `lowlat_pen` whose `size` is set.
+lowlat_status lowlat_client_send_pen(lowlat_client *cl,
+                                     const lowlat_pen *pen) LOWLAT_NOEXCEPT;
 
 /// Everything held comes up on the host; sent on losing focus. Pads are
 /// centred by it, not unplugged.
