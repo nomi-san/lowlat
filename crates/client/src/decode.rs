@@ -6,6 +6,7 @@
 //! it; a full picture queue is never full, because the queue steals. The
 //! device is opened here, on this thread, and lives as long as it does.
 
+use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -90,6 +91,10 @@ pub(crate) struct Attached {
     /// The decoder chosen at creation, or none: then units are taken and
     /// dropped.
     pub opened: Option<Opened>,
+    /// The switch generation `opened` belongs to, read where the choice is
+    /// made: **any switch counted after it is a choice still to take**, made
+    /// before the thread ran or while its decoder was opening.
+    pub switched: u32,
     /// Where the next choice arrives.
     pub pending: Pending,
     pub units: Units,
@@ -124,17 +129,22 @@ struct Shared<'a> {
     shell: &'a WakeHandle,
     stopping: &'a std::sync::atomic::AtomicBool,
     pending: &'a Pending,
+    /// The switch generation already taken, **kept across every pass of the
+    /// thread**: a pass that read it as it began would count a switch made
+    /// while its decoder was opening as seen, and the choice would wait for
+    /// the next switch.
+    switched: Cell<u32>,
 }
 
 impl Shared<'_> {
     /// The choice the application left, if the session thread has said so
-    /// since `seen`; `seen` follows the generation.
-    fn switch(&self, seen: &mut u32) -> Option<Opened> {
+    /// since the last one was taken.
+    fn switch(&self) -> Option<Opened> {
         let generation = self.telemetry.switch.load(Ordering::Acquire);
-        if generation == *seen {
+        if generation == self.switched.get() {
             return None;
         }
-        *seen = generation;
+        self.switched.set(generation);
         self.pending.lock().ok().and_then(|mut slot| slot.take())
     }
 }
@@ -142,6 +152,7 @@ impl Shared<'_> {
 pub(crate) fn run(args: Attached) {
     let Attached {
         opened,
+        switched,
         pending,
         units,
         frames,
@@ -156,6 +167,7 @@ pub(crate) fn run(args: Attached) {
         shell: &shell,
         stopping: &stopping,
         pending: &pending,
+        switched: Cell::new(switched),
     };
 
     // The runtimes are opened here, on this thread, and live as long as the
@@ -199,9 +211,8 @@ impl Next {
 /// No decoder: units are taken and dropped, until the session ends or the
 /// application chooses a decoder after all.
 fn idle(shared: &Shared<'_>) -> Next {
-    let mut switched = shared.telemetry.switch.load(Ordering::Acquire);
     while !shared.stopping.load(Ordering::Acquire) {
-        if let Some(choice) = shared.switch(&mut switched) {
+        if let Some(choice) = shared.switch() {
             return Next::Switch(choice);
         }
         if shared.units.take().is_none() {
@@ -225,7 +236,6 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
     let mut reported = Smoothed::default();
     let mut range = None;
     let mut reconfigured = telemetry.reconfigure.load(Ordering::Acquire);
-    let mut switched = telemetry.switch.load(Ordering::Acquire);
 
     // A replacement decoder exists now, so the keyframe it needs is asked
     // for now and not before: nothing the host sends is wasted on a decoder
@@ -240,7 +250,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
         // The application chose another decoder: this one is torn down
         // here, and the thread goes round to open the other. The request
         // belongs to the other, once it exists.
-        if let Some(choice) = shared.switch(&mut switched) {
+        if let Some(choice) = shared.switch() {
             feed.replaced();
             return Next::Switch(choice);
         }
@@ -573,11 +583,26 @@ mod tests {
             }
         }
 
-        /// Run one decoder's loop on its own thread until it returns.
+        /// Run one decoder's loop on its own thread until it returns, from
+        /// the switch generation as it is now.
         fn drive<D: Backend + Send + 'static>(
             &self,
             fake: D,
             replacing: bool,
+        ) -> std::thread::JoinHandle<Next> {
+            let switched = self.telemetry.switch.load(Ordering::Acquire);
+            self.pass(switched, move |shared| {
+                super::drive(fake, shared, replacing)
+            })
+        }
+
+        /// Run one pass of the thread -- a decoder's loop, or the idle one --
+        /// on a thread of its own until it returns, from the generation
+        /// `switched`, as the thread carries it from pass to pass.
+        fn pass(
+            &self,
+            switched: u32,
+            body: impl FnOnce(&Shared<'_>) -> Next + Send + 'static,
         ) -> std::thread::JoinHandle<Next> {
             let units = self.units.clone();
             let frames = Arc::clone(&self.frames);
@@ -593,8 +618,9 @@ mod tests {
                     shell: &shell,
                     stopping: &stopping,
                     pending: &pending,
+                    switched: Cell::new(switched),
                 };
-                super::drive(fake, &shared, replacing)
+                body(&shared)
             })
         }
 
@@ -693,27 +719,44 @@ mod tests {
     #[test]
     fn an_idle_thread_takes_a_choice_too() {
         let rig = Rig::new();
-        let units = rig.units.clone();
-        let frames = Arc::clone(&rig.frames);
-        let telemetry = Arc::clone(&rig.telemetry);
-        let shell = rig.wake.handle().expect("a handle");
-        let stopping = Arc::clone(&rig.stopping);
-        let pending = Arc::clone(&rig.pending);
-        let idle = std::thread::spawn(move || {
-            let shared = Shared {
-                units: &units,
-                frames: &frames,
-                telemetry: &telemetry,
-                shell: &shell,
-                stopping: &stopping,
-                pending: &pending,
-            };
-            super::idle(&shared)
-        });
+        let switched = rig.telemetry.switch.load(Ordering::Acquire);
+        let idle = rig.pass(switched, super::idle);
         std::thread::sleep(Duration::from_millis(20));
         let choice = Opened::Software(Some(std::path::PathBuf::from("pair")));
         rig.switch_to(choice.clone());
         assert_eq!(idle.join().expect("the idle loop"), Next::Switch(choice));
+    }
+
+    /// **A switch made before a pass begins is taken by it**, a decoder's
+    /// loop or the idle one: the decoder a pass runs can take a while to
+    /// open, and a choice made meanwhile counted as seen once a pass read the
+    /// generation as it began -- left waiting for the next switch, and a
+    /// test that switched before its thread ran waited for ever.
+    #[test]
+    fn a_switch_made_before_a_pass_begins_is_taken() {
+        let destroyed = Arc::new(AtomicU32::new(0));
+        let passes: [fn(&Shared<'_>, Arc<AtomicU32>) -> Next; 2] = [
+            |shared, destroyed| super::drive(Fake { destroyed }, shared, true),
+            |shared, _| super::idle(shared),
+        ];
+        for (index, body) in passes.into_iter().enumerate() {
+            let rig = Rig::new();
+            let switched = rig.telemetry.switch.load(Ordering::Acquire);
+            rig.switch_to(Opened::Software(None));
+            let destroyed = Arc::clone(&destroyed);
+            let pass = rig.pass(switched, move |shared| body(shared, destroyed));
+            let began = std::time::Instant::now();
+            while !pass.is_finished() && began.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            rig.stopping.store(true, Ordering::Release);
+            rig.units.wake();
+            assert_eq!(
+                pass.join().expect("the pass"),
+                Next::Switch(Opened::Software(None)),
+                "pass {index} took the switch as seen"
+            );
+        }
     }
 
     /// **A device lost at the take ends the loop as lost**, though the decode

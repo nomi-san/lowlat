@@ -431,13 +431,12 @@ fn find_again(
     shared: &Shared<'_>,
 ) -> Result<Luid, Next> {
     let began = lowlat_common::clock::Time::now();
-    let mut switched = shared.telemetry.switch.load(Ordering::Acquire);
     let mut walked: Option<lowlat_common::clock::Time> = None;
     loop {
         if shared.stopping.load(Ordering::Acquire) {
             return Err(Next::Stop);
         }
-        if let Some(choice) = shared.switch(&mut switched) {
+        if let Some(choice) = shared.switch() {
             return Err(Next::Switch(choice));
         }
         // Nothing decodes meanwhile: what arrives is dropped, and the

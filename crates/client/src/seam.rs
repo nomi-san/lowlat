@@ -840,6 +840,7 @@ impl Client {
         let stopping = Arc::new(AtomicBool::new(false));
         let decode_args = crate::decode::Attached {
             opened: self.opened.clone(),
+            switched: self.telemetry.switch.load(Ordering::Acquire),
             pending: Arc::clone(&self.pending),
             units: self.units.clone(),
             frames: Arc::clone(&self.frames),
