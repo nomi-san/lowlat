@@ -576,7 +576,7 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 23 | gamepad state | pad, 0, 0, plus 15-byte body | v1 |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
-| 30 | pen | position, pressure and rotation, stream, tilts and flags | v1, on Windows (*2026-11-26*) |
+| 30 | pen; on this host, touch too | position, pressure and rotation, stream, tilts and flags | v1, on Windows (*2026-11-26*) |
 | 31 | pad report | length, pad, product and flags, plus the report | v1 (*Phase 14*) |
 | 35 | diagnostics | bit flags | v1 |
 
@@ -681,6 +681,17 @@ it at, 0x02 it is touching, 0x04 it is turned over to its eraser, 0x08 the erase
 was double clicked. **The stream byte also says whether the message is a pen**: a pen names the
 stream it is over, 0 to 2, and an established host drops a message whose byte is 3 or more
 without reading the rest of it.
+
+**This host also reads a touch contact on opcode 30** (*2026-11-26*): a stream byte of `0x80`
+with the contact's number, 0 to 15, in its low four bits, which an established host drops
+unread. The first argument is the position, as a pen's. The second is `pressure << 16 |
+orientation`: pressure to 1024, or 0 where none was reported; orientation in degrees below 360,
+or `0xFFFF` where none was. The third is `(0x80 | id) << 24 | width << 16 | height << 8 |
+flags`: the contact's size across and down, in units of two of the picture's pixels, 0 where
+not reported. **The flags are the contact's state, not its changes**: 0x02 touching -- down at
+its first message, moving after -- 0x01 gone, lifted; 0x01 with 0x04, cancelled, which ends
+every contact the peer holds; neither, hovering. A release of everything (opcode 24) ends every
+contact too.
 
 ### §11.2 Sent by the host
 

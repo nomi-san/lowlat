@@ -1209,8 +1209,23 @@ pixel asked, relative moves and buttons -- so such a game is played with `virtua
     arrives as a lift, and a lift is a tap where the pen is. The next message makes another.
   - Where the system has no synthetic pointer, Windows 10 before 1809, or refuses one, the pen
     drives the pointer: a position over the whole desktop, and the left button for its touch.
-  - *On Linux* a guest's pen goes nowhere yet; there is no tablet device here. **Touch is
-    deferred**, on both platforms.
+  - *On Linux* a guest's pen goes nowhere yet; there is no tablet device here.
+- **A guest's touch is a touch surface of the host's own** (*2026-11-26*; the message is
+  [01 §11.1](01-protocol.md)'s). *On Windows* each guest has a synthetic touch surface of the
+  system's own, made at its first contact, holding up to ten contacts at once -- an eleventh is
+  dropped, said once -- each placed as the pen is and touching only where the pen would.
+  **Every frame carries every contact the surface holds**, since the system takes one missing
+  from a frame as lifted. A contact lifted ends alone; **a contact the peer cancels cancels every
+  contact of that guest**, the only way the system cancels any -- the device's end -- and what a
+  peer's cancel of a gesture means. The contacts are told again every 100 ms while held, are
+  cancelled wherever the guest's input is let go of, as its pen is, and keep the floor as a held
+  button does.
+  - **A still contact is the system's own press and hold, as on a touchscreen** (measured): its
+    messages are held back until it moves or lifts, and one held still for most of a second
+    becomes the system's gesture and never reaches the application, its touching down included.
+    A drag paused for longer than the system keeps a silent contact is held across the pause by
+    the refresh.
+  - *On Linux* a guest's touch goes nowhere yet; there is no touch surface here.
 - **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
   injector.** The SDK invents no permission model beyond them; they arrive from signaling
   ([04 §3](04-signaling.md)). The gate belongs next to the pressed state rather than in the

@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-26 - Touch on the host, on Windows
+
+### Added
+- **A guest's touch is a touch surface of the host's own on Windows** ([05 §7](05-host.md)),
+  read from this host's own message on the pen's opcode ([01 §11.1](01-protocol.md)): ten
+  contacts per guest, every frame carrying every contact, a lift ending one and a cancel ending
+  all as the device goes, told again every 100 ms while held, cancelled wherever the guest's
+  input is let go of, and held to the window for a guest held to an application. On Linux it
+  goes nowhere yet.
+
+### Found
+- **The system holds a still touch's messages back until it moves or lifts**, and one still for
+  most of a second is its own press and hold, never the application's, as on a touchscreen; no
+  setting of a window's or a device's changed that. A pen is not held back.
+
+### Checked
+- The contact's layout at its positions, read back, and only its mark taken; the expansion -- a
+  slot's report and its defaults, slots kept and freed, ten at once, hovering, the cancel, the
+  four release paths, a held guest's contact; the sink's frames carrying every contact, from the
+  expander's own reports, and a contact's frame; two fingers into a window of the test's own
+  (labelled), dragged with pauses only the refresh bridges, lifted in turn, then cancelled
+  together; a contact sent as an application's own message reaching a host. Each check broken
+  once and caught, one of them live and one on Linux. The expansion allocates nothing (Linux).
+  The Windows bar, whose one failure is again the check of a port's reclaim, passing alone five
+  times in five; the Linux bar on the four crates touched, whose one failure is again a test
+  that needs a `localhost` answering on both families.
+
 ## 2026-11-26 - The pen on the host, on Windows
 
 ### Added
