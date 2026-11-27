@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-27 - The pen, touch and characters through a running host
+
+### Checked
+- **A live run** ([05 §7](05-host.md)): this host elevated, its guest the demo over the
+  network with a script of its own, into a window of the test's own (labelled) -- a pen stroke
+  through the pen call, two contacts dragged and lifted in turn, two cancelled together by one's
+  cancel, characters past U+FFFF among them, and forty pairs of a key and a character either way
+  round, with keys on the batch input call and then on the input driver's keyboard. Every one
+  arrived as sent, the cancelled contacts as cancelled, the pairs in order on both ways in. Not
+  run: the service's own host.
+
 ## 2026-11-27 - A decoder chosen while another opens
 
 ### Fixed

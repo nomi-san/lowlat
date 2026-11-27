@@ -1233,7 +1233,11 @@ pixel asked, relative moves and buttons -- so such a game is played with `virtua
   application is in front, as a key's press does; one sent while it is not is dropped.
   - *On Windows* each goes in through the batch input call, every UTF-16 unit pressed and then
     every one released in one call, **even where keys go through the input driver**, whose
-    keyboard has keys and no characters: the two ways in keep no order between them.
+    keyboard has keys and no characters: the two ways in keep no order between them. Measured
+    live (*2026-11-27*), forty pairs of a key and a character sent back to back, each way round,
+    arrived in order on either way in, a key's character first by a millisecond or two; but
+    keys held until the driver's keyboard delivers ([11 §2.4](11-drivers.md)) are passed by a
+    character sent meanwhile.
   - *On Linux* a guest's characters go nowhere yet.
 - **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
   injector.** The SDK invents no permission model beyond them; they arrive from signaling
