@@ -228,6 +228,7 @@ struct Injected {
     events: Vec<(Device, lowlat_inject::event::Event)>,
     unplugged: Vec<u32>,
     reports: Vec<(u32, String)>,
+    typed: Vec<char>,
 }
 
 impl Sink for Injected {
@@ -238,6 +239,10 @@ impl Sink for Injected {
 
     fn unplug(&mut self, pad: u32) {
         self.unplugged.push(pad);
+    }
+
+    fn text(&mut self, character: char) {
+        self.typed.push(character);
     }
 
     fn report(&mut self, pad: u32, inbound: &lowlat_core::pad::Inbound<'_>) {
@@ -1977,6 +1982,38 @@ fn a_contact_sent_as_the_applications_message_reaches_the_host() {
         .collect();
     let centre = (2 * 960 + 1) * 65536 / (2 * 1920);
     assert_eq!(touch, vec![(0x39, 1), (0x35, centre), (0x39, -1)]);
+}
+
+/// **Characters sent as the application's own messages are typed as
+/// themselves**, in order, one past U+FFFF as well, and press no key.
+#[test]
+fn characters_sent_as_the_applications_messages_reach_the_host() {
+    use lowlat_client::input::Input;
+
+    let mut pair = Pair::new(54, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    let sent = ['a', '\u{E9}', '\u{1F600}', 'z'];
+    for character in sent {
+        let (a0, a1, a2) = lowlat_core::text::arguments(character);
+        let input = Input::Control {
+            opcode: op::PEN_TOUCH,
+            a0,
+            a1,
+            a2,
+        };
+        pair.guest
+            .driver
+            .send_input(pair.guest.endpoint.session(), &input);
+    }
+    pair.run_for(300.0);
+
+    assert_eq!(pair.host.injected.typed, sent);
+    assert!(
+        pair.host.injected.events.is_empty(),
+        "{:?}",
+        pair.host.injected.events
+    );
 }
 
 /// The microphone of a client that declared uncompressed sound reaches the

@@ -128,6 +128,31 @@ fn touch_contacts_expand_without_allocating() {
     });
 }
 
+/// **Characters are typed without allocating**: below U+0080, below U+10000
+/// and past it, one that is no character, and the release after them.
+#[test]
+fn characters_are_typed_without_allocating() {
+    let (tx, _rx) = padsink::queue();
+    let mut injector = Injector::new(Extents::alone(1920, 1080));
+    let mut sink = Forwarding(tx);
+    let message = |code| Control {
+        a0: code,
+        a1: 0,
+        a2: u32::from(lowlat_core::text::MARK) << 24,
+        opcode: op::PEN_TOUCH,
+        body: &[],
+    };
+    let messages = [message(0x61), message(0xE9), message(0x1_F600), message(0)];
+    alloc_counter::assert_no_alloc(|| {
+        for _ in 0..64 {
+            for message in &messages {
+                injector.on_control(message, &mut sink);
+            }
+            injector.release_all(&mut sink);
+        }
+    });
+}
+
 #[test]
 fn a_pads_report_reaches_the_application_without_allocating() {
     let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");

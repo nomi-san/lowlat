@@ -63,11 +63,11 @@ use windows_sys::Win32::UI::HiDpi::{
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSEEVENTF_ABSOLUTE,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
-    SendInput, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE,
 };
 use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP,
@@ -1563,6 +1563,13 @@ impl Sink for Devices {
         }
     }
 
+    /// **Through the batch input call wherever the keys go**: the input
+    /// driver's keyboard is a keyboard's keys, and no key is a character.
+    fn text(&mut self, character: char) {
+        let (inputs, used) = text_inputs(character);
+        self.send(inputs.get(..used).unwrap_or_default());
+    }
+
     fn unplug(&mut self, pad: u32) {
         if let Some(slot) = self
             .pads
@@ -2530,6 +2537,40 @@ fn key_input(stroke: Stroke, down: bool) -> INPUT {
             },
         },
     }
+}
+
+/// One of a character's UTF-16 units, pressed or released as no key at all.
+fn unicode_input(unit: u16, down: bool) -> INPUT {
+    let up = if down { 0 } else { KEYEVENTF_KEYUP };
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: 0,
+                wScan: unit,
+                dwFlags: KEYEVENTF_UNICODE | up,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// A character's inputs and how many there are: **each of its units
+/// pressed, then each released**, for one call, so nothing comes between a
+/// pair's halves. One unit below U+10000, the surrogate pair past it.
+fn text_inputs(character: char) -> ([INPUT; 4], usize) {
+    let mut buffer = [0u16; 2];
+    let units = character.encode_utf16(&mut buffer);
+    let mut inputs = [unicode_input(0, false); 4];
+    let (downs, ups) = inputs.split_at_mut(units.len());
+    for (input, unit) in downs.iter_mut().zip(units.iter()) {
+        *input = unicode_input(*unit, true);
+    }
+    for (input, unit) in ups.iter_mut().zip(units.iter()) {
+        *input = unicode_input(*unit, false);
+    }
+    (inputs, 2 * units.len())
 }
 
 /// Whether a pointer's events move it by deltas, as an application holding
@@ -3919,6 +3960,173 @@ mod tests {
             seen[2].at >= lifted,
             "the first finger came up before it was lifted: {seen:?}"
         );
+    }
+
+    /// **A character is its units pressed, then released**, as no key at all:
+    /// one unit below U+10000, and past it the surrogate pair.
+    #[test]
+    fn a_character_is_its_units_pressed_then_released() {
+        const DOWN: u32 = KEYEVENTF_UNICODE;
+        const UP: u32 = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        let strokes = |character| {
+            let (inputs, used) = text_inputs(character);
+            inputs[..used]
+                .iter()
+                .map(|input| {
+                    assert_eq!(input.r#type, INPUT_KEYBOARD);
+                    // SAFETY: a keyboard's input, as just asserted.
+                    let key = unsafe { input.Anonymous.ki };
+                    assert_eq!(key.wVk, 0);
+                    (key.wScan, key.dwFlags)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(strokes('a'), [(0x61, DOWN), (0x61, UP)]);
+        assert_eq!(strokes('\u{FFFD}'), [(0xFFFD, DOWN), (0xFFFD, UP)]);
+        assert_eq!(
+            strokes('\u{1F600}'),
+            [(0xD83D, DOWN), (0xDE00, DOWN), (0xD83D, UP), (0xDE00, UP)]
+        );
+    }
+
+    /// **Characters reach the window in front as themselves**, in order: one
+    /// below U+0080, two below U+10000, and one past it as its pair. The
+    /// window is the test's own, over the primary display's centre, clicked
+    /// to the front first.
+    #[test]
+    #[ignore = "clicks a window of the test's own to the front and types into it"]
+    fn characters_reach_a_window() {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+            MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SetCursorPos, TranslateMessage,
+            UnregisterClassW, WM_CHAR, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            WS_VISIBLE, WindowFromPoint,
+        };
+
+        /// The units the window was sent as characters.
+        static TYPED: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+
+        unsafe extern "system" fn window(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if msg == WM_CHAR {
+                TYPED
+                    .lock()
+                    .unwrap()
+                    .push(u16::try_from(wparam).unwrap_or(0));
+                return 0;
+            }
+            // SAFETY: the system's own handling of everything else.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+
+        let mut devices = Devices::create("text test").unwrap();
+        let class: Vec<u16> = "lowlat-text-test\0".encode_utf16().collect();
+        // SAFETY: this module's own instance, a class of the test's own, and
+        // a window of it that the test destroys.
+        let (instance, hwnd) = unsafe {
+            let instance = GetModuleHandleW(core::ptr::null());
+            let class_info = WNDCLASSEXW {
+                cbSize: size::<WNDCLASSEXW>(),
+                style: 0,
+                lpfnWndProc: Some(window),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: core::ptr::null_mut(),
+                hCursor: core::ptr::null_mut(),
+                hbrBackground: core::ptr::null_mut(),
+                lpszMenuName: core::ptr::null(),
+                lpszClassName: class.as_ptr(),
+                hIconSm: core::ptr::null_mut(),
+            };
+            assert_ne!(RegisterClassExW(&class_info), 0);
+            let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_POPUP | WS_VISIBLE,
+                cx / 2 - 160,
+                cy / 2 - 160,
+                320,
+                320,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                instance,
+                core::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            (instance, hwnd)
+        };
+        let pump = |ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            // SAFETY: a message structure the call fills, dispatched on the
+            // thread that owns the window.
+            let mut msg: MSG = unsafe { core::mem::zeroed() };
+            while Instant::now() < until {
+                while unsafe { PeekMessageW(&mut msg, core::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+                {
+                    unsafe {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        pump(300);
+
+        // SAFETY: reads of the system's metrics, and which window is at a
+        // point.
+        let (centre, under) = unsafe {
+            let centre = (
+                GetSystemMetrics(SM_CXSCREEN) / 2,
+                GetSystemMetrics(SM_CYSCREEN) / 2,
+            );
+            let under = WindowFromPoint(POINT {
+                x: centre.0,
+                y: centre.1,
+            });
+            (centre, under)
+        };
+        assert_eq!(under, hwnd, "the test's window is not at the centre");
+        // SAFETY: the system's pointer put on the test's window.
+        unsafe { SetCursorPos(centre.0, centre.1) };
+        devices.send(&[
+            mouse_input(0, 0, 0, MOUSEEVENTF_LEFTDOWN),
+            mouse_input(0, 0, 0, MOUSEEVENTF_LEFTUP),
+        ]);
+        pump(300);
+        // SAFETY: which window is in front.
+        let front = unsafe { GetForegroundWindow() };
+
+        let sent = ['a', '\u{E9}', '\u{20AC}', '\u{1F600}'];
+        for character in sent {
+            devices.text(character);
+        }
+        pump(300);
+        // SAFETY: the test's own window and class, as made above.
+        unsafe {
+            DestroyWindow(hwnd);
+            UnregisterClassW(class.as_ptr(), instance);
+        }
+        assert_eq!(
+            front, hwnd,
+            "the click did not bring the window to the front"
+        );
+        let expected: Vec<u16> = sent
+            .iter()
+            .flat_map(|character| character.encode_utf16(&mut [0; 2]).to_vec())
+            .collect();
+        assert_eq!(*TYPED.lock().unwrap(), expected);
     }
 
     fn keys(keyboard: &mut Keyboard, codes: &[(u8, bool)]) -> Vec<Option<Stroke>> {

@@ -63,6 +63,7 @@ pub mod send;
 pub mod seq;
 pub mod session;
 pub mod stun;
+pub mod text;
 pub mod touch;
 pub mod turn;
 pub mod video;

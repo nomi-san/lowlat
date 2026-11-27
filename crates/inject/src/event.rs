@@ -11,6 +11,7 @@ use crate::usage;
 use lowlat_core::control::{Control, op};
 use lowlat_core::pad::{self, Inbound};
 use lowlat_core::pen;
+use lowlat_core::text;
 use lowlat_core::touch;
 
 /// Event types, as the kernel numbers them.
@@ -195,6 +196,12 @@ pub trait Sink {
     /// that let go of nothing tapped nothing. Nothing by default, for a sink
     /// with no such device.
     fn cancel(&mut self, _device: Device) {}
+
+    /// Type one character as no key at all (docs/05-host.md section 7): its
+    /// press and its release at once, whatever the host's keyboard layout, so
+    /// nothing is held and nothing is left for a release to find. Nothing by
+    /// default, for a sink with no way to type a character.
+    fn text(&mut self, _character: char) {}
 
     /// A pad's own report, for a pad sent as its reports (docs/05-host.md
     /// section 7.2): a feature report to keep for the device's creation, or
@@ -769,11 +776,19 @@ impl Injector {
             // the pointer needs, and for a guest held to an application it
             // moves only while that application is in front. Nothing it holds
             // is left behind by a gate that closes: closing one cancels it.
-            op::PEN_TOUCH if self.pointer_allowed() && self.admits(Gate::Front, out) => {
-                if let Some(pen) = pen::parse(message) {
-                    self.pen(&pen, out);
-                } else if let Some(contact) = touch::parse(message) {
-                    self.touch(&contact, out);
+            // **A character on the same opcode is typing**: it needs the
+            // keyboard instead, and the application in front as a key does.
+            op::PEN_TOUCH => {
+                if let Some(character) = text::parse(message) {
+                    if self.permissions.keyboard && self.admits(Gate::Front, out) {
+                        out.text(character);
+                    }
+                } else if self.pointer_allowed() && self.admits(Gate::Front, out) {
+                    if let Some(pen) = pen::parse(message) {
+                        self.pen(&pen, out);
+                    } else if let Some(contact) = touch::parse(message) {
+                        self.touch(&contact, out);
+                    }
                 }
             }
             // **A pad sent as its own report is that report** (docs/05-host.md
@@ -2080,6 +2095,8 @@ mod tests {
         switched: Vec<(bool, bool)>,
         /// The devices told to cancel what they held.
         cancelled: Vec<Device>,
+        /// The characters typed.
+        typed: Vec<char>,
     }
 
     impl Sink for Recorder {
@@ -2093,6 +2110,10 @@ mod tests {
 
         fn cancel(&mut self, device: Device) {
             self.cancelled.push(device);
+        }
+
+        fn text(&mut self, character: char) {
+            self.typed.push(character);
         }
 
         fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
@@ -4464,6 +4485,90 @@ mod tests {
         assert_eq!(distance(&mut inject, &mut out, 300, 400), Some(0), "on it");
         assert_eq!(out.judged, vec![(300, 400)]);
         assert_eq!(distance(&mut inject, &mut out, 50, 900), Some(0), "dragged");
+    }
+
+    fn character(typed: char) -> Control<'static> {
+        let (a0, a1, a2) = text::arguments(typed);
+        control(op::PEN_TOUCH, a0, a1, a2)
+    }
+
+    /// **A character is typed as itself and nothing is held**: no device's
+    /// events, one past U+FFFF still one character, and a release of
+    /// everything after them finds nothing to let go of.
+    #[test]
+    fn a_character_is_typed_and_nothing_is_held() {
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        for typed in ['a', '\u{E9}', '\u{1F600}'] {
+            inject.on_control(&character(typed), &mut out);
+        }
+        assert_eq!(out.typed, vec!['a', '\u{E9}', '\u{1F600}']);
+        assert!(out.batches.is_empty(), "a device's events");
+        inject.release_all(&mut out);
+        assert!(
+            out.batches.is_empty() && out.cancelled.is_empty(),
+            "something was held"
+        );
+    }
+
+    /// **A character needs the keyboard, not the pointer**, on the pen's
+    /// opcode as it is: typed with the pointer withdrawn or lost to another
+    /// guest, and not without the keyboard.
+    #[test]
+    fn a_character_needs_the_keyboard_not_the_pointer() {
+        for (keyboard, pointer) in [(true, false), (false, true)] {
+            let mut inject = injector();
+            let mut out = Recorder::default();
+            inject.set_permissions(
+                Permissions {
+                    keyboard,
+                    pointer,
+                    ..Permissions::default()
+                },
+                &mut out,
+            );
+            inject.set_floor(false, &mut out);
+            inject.on_control(&character('a'), &mut out);
+            let expected = if keyboard { vec!['a'] } else { Vec::new() };
+            assert_eq!(out.typed, expected, "keyboard={keyboard} pointer={pointer}");
+        }
+    }
+
+    /// **A held guest types only into the application in front**, as its key
+    /// presses go in, wherever its pointer is; one typed while another is in
+    /// front is dropped, not kept for later.
+    #[test]
+    fn a_held_guests_character_goes_in_only_in_front() {
+        let (mut inject, mut out) = held_guest();
+        inject.on_control(&character('a'), &mut out);
+        out.scope = Some((false, true));
+        inject.on_control(&character('b'), &mut out);
+        out.scope = Some((true, false));
+        inject.on_control(&character('c'), &mut out);
+        assert_eq!(out.typed, vec!['a', 'c']);
+    }
+
+    /// **What is not a character types nothing**, and moves no pen and no
+    /// contact: no character's code point, anything where the message
+    /// carries nothing, the mark's neighbours.
+    #[test]
+    fn what_is_not_a_character_types_nothing() {
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        let mark = u32::from(text::MARK) << 24;
+        for (a0, a1, a2) in [
+            (0, 0, mark),
+            (0xD800, 0, mark),
+            (0x11_0000, 0, mark),
+            (0x41, 1, mark),
+            (0x41, 0, mark | 1),
+            (0x41, 0, 0x91 << 24),
+            (0x41, 0, 0x9F << 24),
+        ] {
+            inject.on_control(&control(op::PEN_TOUCH, a0, a1, a2), &mut out);
+        }
+        assert!(out.typed.is_empty(), "typed {:?}", out.typed);
+        assert!(out.batches.is_empty(), "a device's events");
     }
 
     /// **No window of the application on the captured output, and the
