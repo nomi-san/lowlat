@@ -793,7 +793,10 @@ exists**: the old decoder is torn down without asking, the new runtime opened, a
 decoder asks as its first act, so a keyframe never arrives for a decoder that is still
 opening and a runtime that fails to open costs the host nothing; the units that arrive
 meanwhile are dropped by the rule that ignores everything but a parameter-set-led unit
-while no decoder exists. The frame kind is the queue's shape and stays the creation's: a
+while no decoder exists. **A choice made while the decoder before it is still opening is
+taken once that one exists** (*2026-11-27*): the thread counts switches from the moment the
+choice it began with was made, not from when a decoder's loop starts, so the last choice made
+is the decoder that runs. The frame kind is the queue's shape and stays the creation's: a
 session of the handle kind refuses the call, because its device slots are bound to the
 device (*planned for W1*: each slot carries its own backing, and the call is accepted,
 §4.2). A decoder that cannot serve the frame kind is refused where it is asked for, never

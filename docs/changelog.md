@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-27 - A decoder chosen while another opens
+
+### Fixed
+- **A decoder chosen while the one before it was still opening was never taken**
+  ([10 §5](10-client.md)): each pass of the decode thread -- a decoder's loop, the idle one,
+  the search for a lost GPU -- counted the switches made before it began as already seen, so a
+  choice made while a decoder opened, or before the thread first ran, waited for the next
+  switch and the application's call did nothing. The thread now counts from the moment the
+  choice it began with was made, across every pass. Two of its tests, which switched 20 ms
+  after starting their thread, waited for ever under the whole Windows run when the thread
+  started later than that.
+
+### Checked
+- A switch made before a pass begins is taken, by a decoder's loop and by the idle one; each
+  broken once -- the count read as the pass begins -- and caught. The decode tests under the
+  whole Windows run, the two that waited among them. The Windows bar, whose one failure is a
+  host's timing test that passes alone five times in five; the Linux bar on the client.
+
 ## 2026-11-27 - Characters on the host, on Windows
 
 ### Added
