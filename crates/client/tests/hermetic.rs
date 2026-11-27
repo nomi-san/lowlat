@@ -1929,6 +1929,56 @@ fn a_pen_reaches_the_host_in_the_pictures_pixels() {
     );
 }
 
+/// **A touch contact sent as the application's own message is injected as
+/// one**: the host's injector puts the contact in its slot at the picture's
+/// place, touching, then lifts it.
+#[test]
+fn a_contact_sent_as_the_applications_message_reaches_the_host() {
+    use lowlat_client::input::Input;
+    use lowlat_core::touch::{Touch, flag};
+
+    let mut pair = Pair::new(53, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    let message = |flags| {
+        let (a0, a1, a2) = Touch {
+            id: 5,
+            x: 960,
+            y: 540,
+            orientation: lowlat_core::touch::ORIENTATION_UNKNOWN,
+            flags,
+            ..Touch::default()
+        }
+        .arguments();
+        Input::Control {
+            opcode: op::PEN_TOUCH,
+            a0,
+            a1,
+            a2,
+        }
+    };
+    for input in [message(flag::TOUCHING), message(flag::LEAVE)] {
+        pair.guest
+            .driver
+            .send_input(pair.guest.endpoint.session(), &input);
+    }
+    pair.run_for(300.0);
+
+    // (EV_ABS, ABS_MT_POSITION_X) and (EV_ABS, ABS_MT_TRACKING_ID).
+    let touch: Vec<(u16, i32)> = pair
+        .host
+        .injected
+        .events
+        .iter()
+        .filter(|(device, event)| {
+            *device == Device::Touch && event.kind == 0x03 && matches!(event.code, 0x35 | 0x39)
+        })
+        .map(|(_, event)| (event.code, event.value))
+        .collect();
+    let centre = (2 * 960 + 1) * 65536 / (2 * 1920);
+    assert_eq!(touch, vec![(0x39, 1), (0x35, centre), (0x39, -1)]);
+}
+
 /// The microphone of a client that declared uncompressed sound reaches the
 /// host sample for sample, a message every ten milliseconds.
 #[test]

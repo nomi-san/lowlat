@@ -11,6 +11,7 @@ use crate::usage;
 use lowlat_core::control::{Control, op};
 use lowlat_core::pad::{self, Inbound};
 use lowlat_core::pen;
+use lowlat_core::touch;
 
 /// Event types, as the kernel numbers them.
 pub(crate) const EV_SYN: u16 = 0x00;
@@ -43,6 +44,20 @@ pub(crate) const BTN_TOOL_RUBBER: u16 = 0x141;
 pub(crate) const BTN_TOUCH: u16 = 0x14a;
 pub(crate) const BTN_STYLUS: u16 = 0x14b;
 pub(crate) const BTN_STYLUS2: u16 = 0x14c;
+
+/// A touch surface's contacts, each in a slot of its own.
+pub(crate) const ABS_MT_SLOT: u16 = 0x2f;
+pub(crate) const ABS_MT_TOUCH_MAJOR: u16 = 0x30;
+pub(crate) const ABS_MT_TOUCH_MINOR: u16 = 0x31;
+pub(crate) const ABS_MT_ORIENTATION: u16 = 0x34;
+pub(crate) const ABS_MT_POSITION_X: u16 = 0x35;
+pub(crate) const ABS_MT_POSITION_Y: u16 = 0x36;
+pub(crate) const ABS_MT_TRACKING_ID: u16 = 0x39;
+pub(crate) const ABS_MT_PRESSURE: u16 = 0x3a;
+pub(crate) const ABS_MT_DISTANCE: u16 = 0x3b;
+
+/// The contacts one guest's touch may hold at once.
+pub(crate) const TOUCH_SLOTS: usize = 10;
 
 pub(crate) const BTN_LEFT: u16 = 0x110;
 pub(crate) const BTN_RIGHT: u16 = 0x111;
@@ -152,6 +167,12 @@ pub enum Device {
     /// which end is in range, its touch, its barrel buttons, where it is and
     /// how it is held.
     Pen,
+    /// A touch surface, its contacts in slots: **a report is one contact's
+    /// change**, its slot named first, and a contact ends with its tracking
+    /// number at -1. Its size is in the desktop's pixels, across and down; an
+    /// orientation of -1 is one nobody reported; a distance above 0 is a
+    /// contact hovering.
+    Touch,
 }
 
 /// Where expanded events go.
@@ -383,6 +404,14 @@ struct At {
     outside: bool,
 }
 
+/// A guest's touch contact in its slot: the peer's number for it, and
+/// whether it touches or hovers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Contact {
+    id: u8,
+    touching: bool,
+}
+
 /// What a guest's pen holds, as its last report said.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PenHeld {
@@ -457,6 +486,12 @@ pub struct Injector {
     pads: [Option<Pad>; MAX_PADS],
     /// Whether this guest's pen is in range and touching.
     pen: PenHeld,
+    /// This guest's touch contacts, by slot.
+    contacts: [Option<Contact>; TOUCH_SLOTS],
+    /// The tracking number the last new contact was given.
+    tracking: i32,
+    /// A contact past the slots was dropped, which is said once.
+    contact_refused: bool,
     /// What has arrived, for the line a live run is read from.
     tally: Tally,
     scratch: [Event; SCRATCH],
@@ -502,6 +537,9 @@ impl Injector {
             switching: false,
             pads: [None; MAX_PADS],
             pen: PenHeld::default(),
+            contacts: [None; TOUCH_SLOTS],
+            tracking: 0,
+            contact_refused: false,
             tally: Tally::default(),
             scratch: [Event {
                 kind: 0,
@@ -528,6 +566,7 @@ impl Injector {
         if was.pointer && !permissions.pointer {
             self.release_buttons(out);
             self.cancel_pen(out);
+            self.cancel_touch(out);
         }
         if was.gamepad && !permissions.gamepad {
             self.release_pads(out);
@@ -560,6 +599,7 @@ impl Injector {
         if self.floor && !held {
             self.release_buttons(out);
             self.cancel_pen(out);
+            self.cancel_touch(out);
         }
         self.floor = held;
     }
@@ -624,6 +664,7 @@ impl Injector {
             self.release_keys(out);
             self.release_buttons(out);
             self.cancel_pen(out);
+            self.cancel_touch(out);
             self.centre_pads(out);
             for pad in self.pads.iter().flatten() {
                 if pad.raw {
@@ -642,7 +683,13 @@ impl Injector {
     /// still down can.
     #[must_use]
     pub fn holds_pointer_button(&self) -> bool {
-        self.buttons.iter().any(|held| *held) || self.pen.touching
+        self.buttons.iter().any(|held| *held)
+            || self.pen.touching
+            || self
+                .contacts
+                .iter()
+                .flatten()
+                .any(|contact| contact.touching)
     }
 
     /// The first pad holding every button in `mask`, if any.
@@ -725,6 +772,8 @@ impl Injector {
             op::PEN_TOUCH if self.pointer_allowed() && self.admits(Gate::Front, out) => {
                 if let Some(pen) = pen::parse(message) {
                     self.pen(&pen, out);
+                } else if let Some(contact) = touch::parse(message) {
+                    self.touch(&contact, out);
                 }
             }
             // **A pad sent as its own report is that report** (docs/05-host.md
@@ -794,6 +843,7 @@ impl Injector {
         self.release_keys(out);
         self.release_buttons(out);
         self.cancel_pen(out);
+        self.cancel_touch(out);
         self.centre_pads(out);
     }
 
@@ -1535,6 +1585,145 @@ impl Injector {
         }
     }
 
+    /// A touch contact's message as its slot's report (docs/05-host.md
+    /// section 7): placed as the pen is, and held to the window the picture
+    /// shows for a guest held to an application, where a contact touches only
+    /// where a click would land. A new contact takes the first free slot and a
+    /// tracking number of its own; one past the slots is dropped. **Lifted, a
+    /// contact ends alone; cancelled, the whole of the guest's touch is**, as
+    /// a client's cancel means and as the system can cancel it.
+    fn touch(&mut self, contact: &touch::Touch, out: &mut impl Sink) {
+        use touch::flag::{CANCELED, LEAVE, TOUCHING};
+        let slot = self
+            .contacts
+            .iter()
+            .position(|held| held.is_some_and(|held| held.id == contact.id));
+        if contact.flags & LEAVE != 0 {
+            if contact.flags & CANCELED != 0 {
+                self.cancel_touch(out);
+                return;
+            }
+            let Some(slot) = slot else {
+                return;
+            };
+            if let Some(held) = self.contacts.get_mut(slot) {
+                *held = None;
+            }
+            self.used = 0;
+            self.push(EV_ABS, ABS_MT_SLOT, slot_number(slot));
+            self.push(EV_ABS, ABS_MT_TRACKING_ID, -1);
+            self.push(EV_KEY, BTN_TOUCH, i32::from(self.touching()));
+            self.report();
+            self.flush(Device::Touch, out);
+            return;
+        }
+        let Some(slot) = slot.or_else(|| self.contacts.iter().position(Option::is_none)) else {
+            if !core::mem::replace(&mut self.contact_refused, true) {
+                lowlat_common::log_info!(
+                    "inject: a touch contact past the slots dropped, id={} slots={TOUCH_SLOTS}",
+                    contact.id
+                );
+            }
+            return;
+        };
+        let held = self.held(out);
+        let (x, y) = (i32::from(contact.x), i32::from(contact.y));
+        let place = self.extents.place;
+        let axes = if held {
+            self.held_axes(x, y, out)
+        } else {
+            self.commanded = Some((x, y));
+            Some((
+                scale(
+                    x,
+                    self.extents.width,
+                    place.x,
+                    place.width,
+                    place.desktop_width,
+                ),
+                scale(
+                    y,
+                    self.extents.height,
+                    place.y,
+                    place.height,
+                    place.desktop_height,
+                ),
+            ))
+        };
+        let Some((across, down)) = axes else {
+            return;
+        };
+        let was = self.contacts.get(slot).copied().flatten();
+        let lands = was.is_some_and(|was| was.touching)
+            || !held
+            || self
+                .at
+                .is_some_and(|at| !at.outside && out.gate(Gate::At { x: at.x, y: at.y }));
+        let touching = lands && contact.flags & TOUCHING != 0;
+        if let Some(entry) = self.contacts.get_mut(slot) {
+            *entry = Some(Contact {
+                id: contact.id,
+                touching,
+            });
+        }
+        // **The size in the desktop's pixels**: units of two of the picture's,
+        // spread as a position is over the output's rectangle.
+        let size = |units: u8, extent: u32, within: u32| {
+            let extent = i64::from(extent.max(1));
+            i32::try_from(i64::from(units) * 2 * i64::from(within) / extent).unwrap_or(0)
+        };
+        let pressure = match contact.pressure {
+            _ if !touching => 0,
+            0 => 512,
+            reported => i32::from(reported.min(pen::PRESSURE_MAX)),
+        };
+        let orientation = match contact.orientation {
+            touch::ORIENTATION_UNKNOWN => -1,
+            degrees => i32::from(degrees % pen::ROTATION_SPAN),
+        };
+        self.used = 0;
+        self.push(EV_ABS, ABS_MT_SLOT, slot_number(slot));
+        if was.is_none() {
+            self.tracking = (self.tracking + 1) & 0xFFFF;
+            self.push(EV_ABS, ABS_MT_TRACKING_ID, self.tracking);
+        }
+        self.push(EV_ABS, ABS_MT_POSITION_X, across);
+        self.push(EV_ABS, ABS_MT_POSITION_Y, down);
+        self.push(EV_ABS, ABS_MT_PRESSURE, pressure);
+        self.push(
+            EV_ABS,
+            ABS_MT_TOUCH_MAJOR,
+            size(contact.width, self.extents.width, place.width),
+        );
+        self.push(
+            EV_ABS,
+            ABS_MT_TOUCH_MINOR,
+            size(contact.height, self.extents.height, place.height),
+        );
+        self.push(EV_ABS, ABS_MT_ORIENTATION, orientation);
+        self.push(EV_ABS, ABS_MT_DISTANCE, i32::from(!touching));
+        self.push(EV_KEY, BTN_TOUCH, i32::from(self.touching()));
+        self.report();
+        self.flush(Device::Touch, out);
+    }
+
+    /// Whether any of this guest's contacts touches.
+    fn touching(&self) -> bool {
+        self.contacts
+            .iter()
+            .flatten()
+            .any(|contact| contact.touching)
+    }
+
+    /// Let go of every contact **as cancelled** (docs/05-host.md section 7):
+    /// the whole of the guest's touch at once, where it holds any.
+    fn cancel_touch(&mut self, out: &mut impl Sink) {
+        if self.contacts.iter().any(Option::is_some) {
+            self.contacts = [None; TOUCH_SLOTS];
+            out.cancel(Device::Touch);
+        }
+    }
+
     /// Release every key this guest holds, as a withdrawn keyboard permission
     /// does: for keys about to go another way, so none is left down on the way
     /// they came (docs/05-host.md section 7).
@@ -1826,6 +2015,11 @@ fn on_output(
         span(bounds.left, bounds.right, place.x, place.width)?,
         span(bounds.top, bounds.bottom, place.y, place.height)?,
     ))
+}
+
+/// A touch slot's number as the kernel's slot axis carries it.
+fn slot_number(slot: usize) -> i32 {
+    i32::try_from(slot).unwrap_or(0)
 }
 
 #[allow(
@@ -3955,9 +4149,14 @@ mod tests {
     fn a_pen_needs_its_stream_and_the_pointer() {
         let mut inject = injector();
         let mut out = Recorder::default();
-        for stream in [3u32, 0x7F, 0x80, 0x90] {
+        for stream in [3u32, 0x7F, 0x80, 0x90, 0xFF] {
             inject.on_control(&control(op::PEN_TOUCH, 0, 0, stream << 24), &mut out);
         }
+        assert!(
+            !out.devices().contains(&Device::Pen),
+            "a stream byte from three moved the pen"
+        );
+        out.batches.clear();
         inject.set_permissions(
             Permissions {
                 pointer: false,
@@ -4055,6 +4254,216 @@ mod tests {
         out.scope = Some((false, true));
         assert_eq!(touch(&mut inject, &mut out, 300, 400), None, "behind");
         assert_eq!(out.cancelled, vec![Device::Pen]);
+    }
+
+    fn contact(id: u8, x: u16, y: u16, flags: u8) -> Control<'static> {
+        let (a0, a1, a2) = touch::Touch {
+            id,
+            x,
+            y,
+            pressure: 0,
+            orientation: touch::ORIENTATION_UNKNOWN,
+            width: 10,
+            height: 6,
+            flags,
+        }
+        .arguments();
+        control(op::PEN_TOUCH, a0, a1, a2)
+    }
+
+    /// A batch's events as (code, value) pairs.
+    fn pairs(events: &[Event]) -> Vec<(u16, i32)> {
+        events.iter().map(|e| (e.code, e.value)).collect()
+    }
+
+    /// **A contact is its slot's whole report**: the slot, a tracking number
+    /// of its own when new, its place as a pointer's, pressure 512 where none
+    /// was reported, its size in the desktop's pixels, no orientation where
+    /// none was, touching, then the report's end.
+    #[test]
+    fn a_contact_is_its_slots_report() {
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&contact(3, 960, 540, touch::flag::TOUCHING), &mut out);
+        assert_eq!(out.devices(), vec![Device::Touch]);
+        assert_eq!(
+            pairs(&out.batches[0].1),
+            vec![
+                (ABS_MT_SLOT, 0),
+                (ABS_MT_TRACKING_ID, 1),
+                (ABS_MT_POSITION_X, centre(960, 1920)),
+                (ABS_MT_POSITION_Y, centre(540, 1080)),
+                (ABS_MT_PRESSURE, 512),
+                (ABS_MT_TOUCH_MAJOR, 20),
+                (ABS_MT_TOUCH_MINOR, 12),
+                (ABS_MT_ORIENTATION, -1),
+                (ABS_MT_DISTANCE, 0),
+                (BTN_TOUCH, 1),
+                (SYN_REPORT, 0),
+            ]
+        );
+        assert!(inject.holds_pointer_button());
+    }
+
+    /// **Each contact keeps its slot until it lifts**: a second takes the
+    /// next, a move names its own with no new number, a lift ends that slot
+    /// alone -- the other still touching -- and a later contact takes the
+    /// freed slot with a number of its own. A lift of a contact never down
+    /// goes nowhere.
+    #[test]
+    fn each_contact_keeps_its_slot_until_it_lifts() {
+        use touch::flag::{LEAVE, TOUCHING};
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&contact(3, 10, 10, TOUCHING), &mut out);
+        inject.on_control(&contact(7, 20, 20, TOUCHING), &mut out);
+        inject.on_control(&contact(3, 11, 11, TOUCHING), &mut out);
+        inject.on_control(&contact(3, 11, 11, LEAVE), &mut out);
+        inject.on_control(&contact(9, 30, 30, TOUCHING), &mut out);
+        inject.on_control(&contact(12, 30, 30, LEAVE), &mut out);
+        let heads: Vec<Vec<(u16, i32)>> = out
+            .batches
+            .iter()
+            .map(|(_, events)| pairs(events).into_iter().take(2).collect())
+            .collect();
+        assert_eq!(
+            heads,
+            vec![
+                vec![(ABS_MT_SLOT, 0), (ABS_MT_TRACKING_ID, 1)],
+                vec![(ABS_MT_SLOT, 1), (ABS_MT_TRACKING_ID, 2)],
+                vec![(ABS_MT_SLOT, 0), (ABS_MT_POSITION_X, centre(11, 1920))],
+                vec![(ABS_MT_SLOT, 0), (ABS_MT_TRACKING_ID, -1)],
+                vec![(ABS_MT_SLOT, 0), (ABS_MT_TRACKING_ID, 3)],
+            ]
+        );
+        assert!(
+            pairs(&out.batches[3].1).contains(&(BTN_TOUCH, 1)),
+            "the other contact's touch was let go"
+        );
+    }
+
+    /// **Ten contacts at once, and an eleventh goes nowhere**; neither touching
+    /// nor gone is hovering.
+    #[test]
+    fn ten_contacts_at_once_and_hovering_is_a_distance() {
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        for id in 0..10 {
+            inject.on_control(&contact(id, 10, 10, touch::flag::TOUCHING), &mut out);
+        }
+        inject.on_control(&contact(10, 10, 10, touch::flag::TOUCHING), &mut out);
+        assert_eq!(out.batches.len(), 10, "an eleventh contact went in");
+        let mut inject = injector();
+        out.batches.clear();
+        inject.on_control(&contact(0, 10, 10, 0), &mut out);
+        let hover = pairs(&out.batches[0].1);
+        assert!(hover.contains(&(ABS_MT_DISTANCE, 1)) && hover.contains(&(ABS_MT_PRESSURE, 0)));
+        assert!(hover.contains(&(BTN_TOUCH, 0)));
+        assert!(!inject.holds_pointer_button());
+    }
+
+    /// **A contact cancelled cancels the whole of the guest's touch**, and
+    /// lifts none of it: the client's cancel means nothing it did counts, and
+    /// the system cancels a touch surface's contacts together. The next
+    /// contact starts afresh.
+    #[test]
+    fn a_cancelled_contact_cancels_the_whole_touch() {
+        use touch::flag::{CANCELED, LEAVE, TOUCHING};
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.on_control(&contact(3, 10, 10, TOUCHING), &mut out);
+        inject.on_control(&contact(7, 20, 20, TOUCHING), &mut out);
+        out.batches.clear();
+        inject.on_control(&contact(3, 10, 10, LEAVE | CANCELED), &mut out);
+        assert_eq!(out.cancelled, vec![Device::Touch]);
+        assert!(out.batches.is_empty(), "a cancel lifted something");
+        assert!(!inject.holds_pointer_button());
+        inject.on_control(&contact(7, 20, 20, TOUCHING), &mut out);
+        assert_eq!(
+            pairs(&out.batches[0].1)[..2],
+            [(ABS_MT_SLOT, 0), (ABS_MT_TRACKING_ID, 3)]
+        );
+    }
+
+    /// **The touch is cancelled, never lifted, wherever a guest's input is let
+    /// go of** -- a release of everything, the pointer withdrawn, the pointer
+    /// lost, the application leaving the front -- and only where it holds a
+    /// contact.
+    #[test]
+    fn touch_is_cancelled_where_it_would_be_left_held() {
+        let let_go: [fn(&mut Injector, &mut Recorder); 4] = [
+            |inject, out| inject.release_all(out),
+            |inject, out| {
+                inject.set_permissions(
+                    Permissions {
+                        pointer: false,
+                        ..Permissions::default()
+                    },
+                    out,
+                );
+            },
+            |inject, out| inject.set_floor(false, out),
+            |inject, out| {
+                out.scope = Some((false, false));
+                inject.follow_gate(out);
+            },
+        ];
+        for (path, let_go) in let_go.iter().enumerate() {
+            let mut inject = injector();
+            let mut out = Recorder {
+                scope: (path == 3).then_some((true, true)),
+                bounds: Some(Bounds {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1080,
+                }),
+                ..Recorder::default()
+            };
+            inject.on_control(&contact(3, 10, 10, touch::flag::TOUCHING), &mut out);
+            out.batches.clear();
+            let_go(&mut inject, &mut out);
+            assert_eq!(out.cancelled, vec![Device::Touch], "path {path}");
+            assert!(
+                !out.devices().contains(&Device::Touch),
+                "path {path} lifted a contact"
+            );
+        }
+        let mut inject = injector();
+        let mut out = Recorder::default();
+        inject.release_all(&mut out);
+        assert!(
+            out.cancelled.is_empty(),
+            "a touch holding nothing was cancelled"
+        );
+    }
+
+    /// **A held guest's contact touches only where a click would land**, judged
+    /// where the contact is, and hovers past the window; one touching keeps
+    /// touching as it is dragged past it.
+    #[test]
+    fn a_held_guests_contact_touches_only_on_the_window() {
+        use touch::flag::TOUCHING;
+        let (mut inject, mut out) = held_guest();
+        out.bounds = Some(Bounds {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        });
+        let distance = |inject: &mut Injector, out: &mut Recorder, x, y| {
+            out.batches.clear();
+            inject.on_control(&contact(1, x, y, TOUCHING), out);
+            out.all()
+                .into_iter()
+                .find(|e| e.code == ABS_MT_DISTANCE)
+                .map(|e| e.value)
+        };
+        assert_eq!(distance(&mut inject, &mut out, 50, 900), Some(1), "past");
+        assert!(out.judged.is_empty(), "a point past the window was judged");
+        assert_eq!(distance(&mut inject, &mut out, 300, 400), Some(0), "on it");
+        assert_eq!(out.judged, vec![(300, 400)]);
+        assert_eq!(distance(&mut inject, &mut out, 50, 900), Some(0), "dragged");
     }
 
     /// **No window of the application on the captured output, and the

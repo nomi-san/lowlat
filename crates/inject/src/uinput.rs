@@ -1016,9 +1016,9 @@ impl Sink for Devices {
                 let Some(node) = self.pad(id) else { return };
                 node
             }
-            // **No tablet here yet** (docs/05-host.md section 7): a guest's pen
-            // goes nowhere on this platform.
-            Device::Pen => return,
+            // **No tablet and no touch surface here yet** (docs/05-host.md
+            // section 7): a guest's pen and touch go nowhere on this platform.
+            Device::Pen | Device::Touch => return,
         };
         if let Err(error) = node.send(events) {
             // A write that fails is not recoverable here and must not stop the

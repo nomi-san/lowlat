@@ -84,6 +84,50 @@ fn a_pens_messages_expand_without_allocating() {
     });
 }
 
+/// **Touch contacts expand without allocating**: ten down, moved, an eleventh
+/// dropped -- said once, before the count -- lifted, cancelled, released.
+#[test]
+fn touch_contacts_expand_without_allocating() {
+    use lowlat_core::touch::{Touch, flag};
+    let (tx, _rx) = padsink::queue();
+    let mut injector = Injector::new(Extents::alone(1920, 1080));
+    let mut sink = Forwarding(tx);
+    let message = |id, flags| {
+        let (a0, a1, a2) = Touch {
+            id,
+            x: 100,
+            y: 100,
+            flags,
+            ..Touch::default()
+        }
+        .arguments();
+        Control {
+            a0,
+            a1,
+            a2,
+            opcode: op::PEN_TOUCH,
+            body: &[],
+        }
+    };
+    // The eleventh contact's drop is said once, here, where saying it may
+    // allocate.
+    for id in 0..11 {
+        injector.on_control(&message(id, flag::TOUCHING), &mut sink);
+    }
+    injector.release_all(&mut sink);
+    alloc_counter::assert_no_alloc(|| {
+        for _ in 0..32 {
+            for id in 0..11 {
+                injector.on_control(&message(id, flag::TOUCHING), &mut sink);
+            }
+            injector.on_control(&message(3, flag::LEAVE), &mut sink);
+            injector.on_control(&message(4, flag::LEAVE | flag::CANCELED), &mut sink);
+            injector.on_control(&message(5, 0), &mut sink);
+            injector.release_all(&mut sink);
+        }
+    });
+}
+
 #[test]
 fn a_pads_report_reaches_the_application_without_allocating() {
     let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");

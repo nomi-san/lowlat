@@ -42,7 +42,7 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_BUSY, ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE,
     ERROR_IO_PENDING, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    POINT,
+    POINT, RECT,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -71,17 +71,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP,
-    POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO,
+    POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE,
-    PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, POINTER_INPUT_TYPE, PT_PEN, SM_CXSCREEN,
-    SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    XBUTTON1, XBUTTON2,
+    PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, POINTER_INPUT_TYPE, PT_PEN, PT_TOUCH,
+    SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, TOUCH_FLAG_NONE, TOUCH_MASK_CONTACTAREA, TOUCH_MASK_NONE,
+    TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, XBUTTON1, XBUTTON2,
 };
 
 use crate::answers;
-use crate::event::{self, Device, Event, Locks, SCRATCH, Sink};
+use crate::event::{self, Device, Event, Locks, SCRATCH, Sink, TOUCH_SLOTS};
 use crate::gamepad::{self, MAX_PADS};
 use crate::handback::{Forward, Forwarding, PadWritten, Rumble, WRITTEN_MAX, Written};
 use crate::hid;
@@ -189,6 +190,8 @@ pub struct Devices {
     refusing: bool,
     /// The guest's pen, on a synthetic pen of the system's own.
     pen: Pen,
+    /// The guest's touch, on a synthetic touch surface of the system's own.
+    touch: Touches,
     desktop: Option<Desktop>,
     /// The application the owner holds the host's guests to, judged here as
     /// input arrives, where one is set.
@@ -213,6 +216,7 @@ impl core::fmt::Debug for Devices {
             .field("virtual_pads", &self.virtual_pads)
             .field("hid_pads", &self.hid_pads.iter().flatten().count())
             .field("pen", &self.pen.device.is_some())
+            .field("touch", &self.touch.device.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -248,6 +252,7 @@ impl Devices {
             guide: false,
             refusing: false,
             pen: Pen::default(),
+            touch: Touches::default(),
             desktop,
             scope: None,
             clip: crate::scope::Clip::default(),
@@ -735,6 +740,7 @@ impl Devices {
     /// input driver's keyboard, mouse and pads are followed here too.
     pub fn tick(&mut self) {
         self.refresh_pen();
+        self.refresh_touch();
         self.tick_keyboard();
         self.tick_mouse();
         self.tick_pads();
@@ -878,7 +884,7 @@ impl Devices {
             return;
         };
         if !self.pen.as_pointer && self.pen.device.is_none() {
-            self.pen.device = PenDevice::make();
+            self.pen.device = Synthetic::make(PT_PEN, 1);
             if self.pen.device.is_none() {
                 self.pen.as_pointer = true;
                 lowlat_common::log_warn!(
@@ -892,41 +898,15 @@ impl Devices {
         } else {
             let now = self.pen.now;
             let frame = pen_info(flags, &now, desktop_pixel(now.x, now.y, desktop_now()));
-            self.inject_pen(&frame);
+            put(
+                self.pen.device.as_ref(),
+                &[frame],
+                &mut self.pen.refusing,
+                &mut self.desktop,
+            );
         }
         self.pen.sent = self.pen.now;
         self.pen.at = Some(lowlat_common::clock::Time::now());
-    }
-
-    /// A frame into the guest's pen, attaching this thread to the input
-    /// desktop when the system refuses it, as the batch input call is.
-    fn inject_pen(&mut self, frame: &POINTER_TYPE_INFO) {
-        if self
-            .pen
-            .device
-            .as_ref()
-            .is_some_and(|pen| pen.inject(frame))
-        {
-            self.pen.refusing = false;
-            return;
-        }
-        let error = last_error();
-        if let Some(desktop) = Desktop::attach() {
-            self.desktop = Some(desktop);
-            if self
-                .pen
-                .device
-                .as_ref()
-                .is_some_and(|pen| pen.inject(frame))
-            {
-                self.pen.refusing = false;
-                return;
-            }
-        }
-        if !self.pen.refusing {
-            self.pen.refusing = true;
-            lowlat_common::log_warn!("inject: a pen frame refused, error={error}");
-        }
     }
 
     /// The guest's pen in range, told again where nothing new has been said
@@ -950,7 +930,12 @@ impl Devices {
             flags |= POINTER_FLAG_INCONTACT;
         }
         let frame = pen_info(flags, &sent, desktop_pixel(sent.x, sent.y, desktop_now()));
-        self.inject_pen(&frame);
+        put(
+            self.pen.device.as_ref(),
+            &[frame],
+            &mut self.pen.refusing,
+            &mut self.desktop,
+        );
         self.pen.at = Some(lowlat_common::clock::Time::now());
     }
 
@@ -987,17 +972,91 @@ impl Devices {
         }
         self.send(inputs.as_slice());
     }
+
+    /// A touch surface's events: each slot kept, and a frame at each report's
+    /// end.
+    fn touch_events(&mut self, events: &[Event]) {
+        for event in events {
+            if event.kind == event::EV_SYN {
+                self.touch_frame();
+            } else {
+                self.touch.take(event);
+            }
+        }
+    }
+
+    /// One report of the guest's touch, as a frame of its synthetic touch
+    /// surface, made at the first: [`touch_frame`]'s contacts, every one the
+    /// surface holds. Where the system has none, or refuses one, touch goes
+    /// nowhere, said once.
+    fn touch_frame(&mut self) {
+        let (frame, count) = touch_frame(&self.touch.sent, &self.touch.now, desktop_now());
+        self.touch.sent = self.touch.now;
+        if count == 0 {
+            return;
+        }
+        if !self.touch.unavailable && self.touch.device.is_none() {
+            self.touch.device = Synthetic::make(PT_TOUCH, u32::try_from(TOUCH_SLOTS).unwrap_or(1));
+            if self.touch.device.is_none() {
+                self.touch.unavailable = true;
+                lowlat_common::log_warn!(
+                    "inject: no synthetic touch surface, touch goes nowhere, error={}",
+                    last_error()
+                );
+            }
+        }
+        put(
+            self.touch.device.as_ref(),
+            frame.get(..count).unwrap_or_default(),
+            &mut self.touch.refusing,
+            &mut self.desktop,
+        );
+        self.touch.at = Some(lowlat_common::clock::Time::now());
+    }
+
+    /// The guest's contacts, told again where nothing new has been said for
+    /// [`PEN_REFRESH_MS`], as the pen is: the system lifts a contact it hears
+    /// nothing from.
+    fn refresh_touch(&mut self) {
+        if self.touch.device.is_none() || !self.touch.sent.iter().any(TouchSlot::live) {
+            return;
+        }
+        if self
+            .touch
+            .at
+            .is_some_and(|at| lowlat_common::clock::elapsed_ms(at) < PEN_REFRESH_MS)
+        {
+            return;
+        }
+        let (frame, count) = touch_frame(&self.touch.sent, &self.touch.sent, desktop_now());
+        put(
+            self.touch.device.as_ref(),
+            frame.get(..count).unwrap_or_default(),
+            &mut self.touch.refusing,
+            &mut self.desktop,
+        );
+        self.touch.at = Some(lowlat_common::clock::Time::now());
+    }
+
+    /// Cancel every contact the guest's touch holds: the device's end, as the
+    /// pen's is, which a window is told is a cancel of each.
+    fn cancel_touches(&mut self) {
+        self.touch.device = None;
+        self.touch.now = [TouchSlot::default(); TOUCH_SLOTS];
+        self.touch.sent = [TouchSlot::default(); TOUCH_SLOTS];
+        self.touch.at = None;
+    }
 }
 
-/// How often a pen in range is told again with nothing new to say. **The
-/// system lifts a held pen 521 to 524 ms after its last frame** (measured
-/// 2026-11-26, Windows 11 24H2): a fifth of that, so a loop running late by
-/// 400 ms is still in time, at 70 us a frame.
+/// How often a pen in range or a contact is told again with nothing new to
+/// say. **The system lifts a held pen or contact 521 to 524 ms after its last
+/// frame** (measured 2026-11-26, Windows 11 24H2): a fifth of that, so a loop
+/// running late by 400 ms is still in time, at 70 us a frame.
 const PEN_REFRESH_MS: f64 = 100.0;
 
 /// The system's synthetic pointer, which came with Windows 10 1809: **found
-/// at run time**, so a host on an older system still loads, and its guests'
-/// pens drive the pointer.
+/// at run time**, so a host on an older system still loads; its guests' pens
+/// drive the pointer and their touch goes nowhere.
 #[derive(Clone, Copy)]
 struct PointerCalls {
     create: unsafe extern "system" fn(
@@ -1032,32 +1091,68 @@ fn pointer_calls() -> Option<PointerCalls> {
         .map(|(_, calls)| *calls)
 }
 
-/// A synthetic pen of the system's own, destroyed with this.
-struct PenDevice {
+/// A synthetic pointer of the system's own -- a pen, or a touch surface of
+/// several contacts -- its feedback the system's own, destroyed with this.
+struct Synthetic {
     handle: HSYNTHETICPOINTERDEVICE,
     calls: PointerCalls,
 }
 
-impl PenDevice {
-    /// One pen, its feedback the system's own; none where the system has no
-    /// synthetic pointer or refuses one.
-    fn make() -> Option<Self> {
+impl Synthetic {
+    /// One device of `kind`, for up to `contacts` at once; none where the
+    /// system has no synthetic pointer or refuses one.
+    fn make(kind: POINTER_INPUT_TYPE, contacts: u32) -> Option<Self> {
         let calls = pointer_calls()?;
         // SAFETY: an export of the system's, with its own types.
-        let handle = unsafe { (calls.create)(PT_PEN, 1, POINTER_FEEDBACK_DEFAULT) };
+        let handle = unsafe { (calls.create)(kind, contacts, POINTER_FEEDBACK_DEFAULT) };
         (!handle.is_null()).then_some(Self { handle, calls })
     }
 
-    fn inject(&self, frame: &POINTER_TYPE_INFO) -> bool {
-        // SAFETY: one frame from a live reference, into the device this made.
-        unsafe { (self.calls.inject)(self.handle, frame, 1) != 0 }
+    fn inject(&self, frames: &[POINTER_TYPE_INFO]) -> bool {
+        let Ok(count) = u32::try_from(frames.len()) else {
+            return false;
+        };
+        // SAFETY: `count` frames from a live slice, into the device this made.
+        unsafe { (self.calls.inject)(self.handle, frames.as_ptr(), count) != 0 }
     }
 }
 
-impl Drop for PenDevice {
+impl Drop for Synthetic {
     fn drop(&mut self) {
         // SAFETY: the device this made, destroyed once.
         unsafe { (self.calls.destroy)(self.handle) };
+    }
+}
+
+/// Frames into a synthetic device, **attaching this thread to the input
+/// desktop when the system refuses them**, as the batch input call is; a
+/// refusal that stays is said once.
+fn put(
+    device: Option<&Synthetic>,
+    frames: &[POINTER_TYPE_INFO],
+    refusing: &mut bool,
+    desktop: &mut Option<Desktop>,
+) {
+    let Some(device) = device else {
+        return;
+    };
+    if frames.is_empty() || device.inject(frames) {
+        *refusing = false;
+        return;
+    }
+    let error = last_error();
+    if let Some(attached) = Desktop::attach() {
+        *desktop = Some(attached);
+        if device.inject(frames) {
+            *refusing = false;
+            return;
+        }
+    }
+    if !core::mem::replace(refusing, true) {
+        lowlat_common::log_warn!(
+            "inject: a pointer frame refused, error={error} contacts={}",
+            frames.len()
+        );
     }
 }
 
@@ -1065,7 +1160,7 @@ impl Drop for PenDevice {
 /// thread, and what it was last told.
 #[derive(Default)]
 struct Pen {
-    device: Option<PenDevice>,
+    device: Option<Synthetic>,
     /// What the expander's events say, to the last of them.
     now: PenState,
     /// What the last frame told the system.
@@ -1123,19 +1218,167 @@ impl PenState {
     }
 }
 
-/// The pointer flags a pen's frame says, from what the last frame told the
-/// system and what is so now; nothing for a pen out of range that stays so.
-fn pen_flags(sent: &PenState, now: &PenState) -> Option<POINTER_FLAGS> {
+/// A guest's touch surface: its device, made at the first contact on the
+/// guest's thread, and each slot as the events say and as the last frame
+/// told the system.
+#[derive(Default)]
+struct Touches {
+    device: Option<Synthetic>,
+    now: [TouchSlot; TOUCH_SLOTS],
+    sent: [TouchSlot; TOUCH_SLOTS],
+    /// The slot the events name.
+    slot: usize,
+    /// When the last frame went in.
+    at: Option<lowlat_common::clock::Time>,
+    /// The system has no synthetic touch surface for this guest: touch goes
+    /// nowhere.
+    unavailable: bool,
+    /// A frame was refused, so the next refusal is not said again.
+    refusing: bool,
+}
+
+impl Touches {
+    fn take(&mut self, event: &Event) {
+        if (event.kind, event.code) == (event::EV_ABS, event::ABS_MT_SLOT) {
+            self.slot = usize::try_from(event.value).unwrap_or(usize::MAX);
+            return;
+        }
+        let Some(slot) = self.now.get_mut(self.slot) else {
+            return;
+        };
+        match (event.kind, event.code) {
+            (event::EV_ABS, event::ABS_MT_TRACKING_ID) => slot.tracking = event.value,
+            (event::EV_ABS, event::ABS_MT_POSITION_X) => slot.x = event.value,
+            (event::EV_ABS, event::ABS_MT_POSITION_Y) => slot.y = event.value,
+            (event::EV_ABS, event::ABS_MT_PRESSURE) => slot.pressure = event.value,
+            (event::EV_ABS, event::ABS_MT_TOUCH_MAJOR) => slot.major = event.value,
+            (event::EV_ABS, event::ABS_MT_TOUCH_MINOR) => slot.minor = event.value,
+            (event::EV_ABS, event::ABS_MT_ORIENTATION) => slot.orientation = event.value,
+            (event::EV_ABS, event::ABS_MT_DISTANCE) => slot.hovering = event.value > 0,
+            _ => {}
+        }
+    }
+}
+
+/// A touch contact in its slot, as its events say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TouchSlot {
+    /// Its tracking number, or -1 where the slot holds no contact.
+    tracking: i32,
+    x: i32,
+    y: i32,
+    pressure: i32,
+    /// Its size across and down, in the desktop's pixels; 0 not reported.
+    major: i32,
+    minor: i32,
+    /// Degrees, or -1 not reported.
+    orientation: i32,
+    hovering: bool,
+}
+
+impl Default for TouchSlot {
+    fn default() -> Self {
+        Self {
+            tracking: -1,
+            x: 0,
+            y: 0,
+            pressure: 0,
+            major: 0,
+            minor: 0,
+            orientation: -1,
+            hovering: false,
+        }
+    }
+}
+
+impl TouchSlot {
+    fn live(&self) -> bool {
+        self.tracking >= 0
+    }
+
+    fn down(&self) -> bool {
+        self.live() && !self.hovering
+    }
+}
+
+/// The pointer flags a frame says of a pointer, from what the last frame told
+/// the system -- in range, and touching -- and what is so now; nothing for a
+/// pointer out of range that stays so.
+fn transition(was: (bool, bool), now: (bool, bool)) -> Option<POINTER_FLAGS> {
+    let (was_in, was_down) = (was.0, was.0 && was.1);
+    let (now_in, now_down) = (now.0, now.0 && now.1);
     let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-    Some(match (sent.down(), now.in_range(), now.down()) {
+    Some(match (was_down, now_in, now_down) {
         (true, _, true) => contact | POINTER_FLAG_UPDATE,
         (false, _, true) => contact | POINTER_FLAG_DOWN,
         (true, true, false) => POINTER_FLAG_INRANGE | POINTER_FLAG_UP,
         (true, false, false) => POINTER_FLAG_UP,
         (false, true, false) => POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE,
-        (false, false, false) if sent.in_range() => POINTER_FLAG_UPDATE,
+        (false, false, false) if was_in => POINTER_FLAG_UPDATE,
         (false, false, false) => return None,
     })
+}
+
+/// The pointer flags a pen's frame says: [`transition`] of its range and its
+/// touch.
+fn pen_flags(sent: &PenState, now: &PenState) -> Option<POINTER_FLAGS> {
+    transition((sent.in_range(), sent.down()), (now.in_range(), now.down()))
+}
+
+/// A frame of a guest's touch surface, from what the last frame told the
+/// system and what each slot holds now: **every contact the surface holds**
+/// -- the system takes one missing from a frame as lifted -- and each one
+/// ending, at its last place, with the lift; the frames and how many there are.
+fn touch_frame(
+    sent: &[TouchSlot; TOUCH_SLOTS],
+    now: &[TouchSlot; TOUCH_SLOTS],
+    desktop: (i32, i32, i32, i32),
+) -> ([POINTER_TYPE_INFO; TOUCH_SLOTS], usize) {
+    let blank = touch_info(0, 0, &TouchSlot::default(), desktop);
+    let mut frame = [blank; TOUCH_SLOTS];
+    let mut count = 0;
+    for (index, (sent, now)) in sent.iter().zip(now).enumerate() {
+        let Some(flags) = transition((sent.live(), sent.down()), (now.live(), now.down())) else {
+            continue;
+        };
+        let slot = if now.live() { now } else { sent };
+        if let Some(entry) = frame.get_mut(count) {
+            *entry = touch_info(index, flags, slot, desktop);
+            count += 1;
+        }
+    }
+    (frame, count)
+}
+
+/// One pointer's part of a frame: which, what changed, and where.
+fn pointer_info(
+    kind: POINTER_INPUT_TYPE,
+    id: u32,
+    flags: POINTER_FLAGS,
+    pixel: (i32, i32),
+) -> POINTER_INFO {
+    let origin = POINT { x: 0, y: 0 };
+    POINTER_INFO {
+        pointerType: kind,
+        pointerId: id,
+        frameId: 0,
+        pointerFlags: flags,
+        sourceDevice: core::ptr::null_mut(),
+        hwndTarget: core::ptr::null_mut(),
+        ptPixelLocation: POINT {
+            x: pixel.0,
+            y: pixel.1,
+        },
+        ptHimetricLocation: origin,
+        ptPixelLocationRaw: origin,
+        ptHimetricLocationRaw: origin,
+        dwTime: 0,
+        historyCount: 0,
+        InputData: 0,
+        dwKeyStates: 0,
+        PerformanceCount: 0,
+        ButtonChangeType: 0,
+    }
 }
 
 /// A pen's frame at a desktop pixel. **Pressure only while touching**; the
@@ -1161,32 +1404,11 @@ fn pen_info(flags: POINTER_FLAGS, now: &PenState, pixel: (i32, i32)) -> POINTER_
         0
     };
     let tilt = |value: i32| value.clamp(-i32::from(TILT_MAX), i32::from(TILT_MAX));
-    let origin = POINT { x: 0, y: 0 };
     POINTER_TYPE_INFO {
         r#type: PT_PEN,
         Anonymous: POINTER_TYPE_INFO_0 {
             penInfo: POINTER_PEN_INFO {
-                pointerInfo: POINTER_INFO {
-                    pointerType: PT_PEN,
-                    pointerId: 0,
-                    frameId: 0,
-                    pointerFlags: flags,
-                    sourceDevice: core::ptr::null_mut(),
-                    hwndTarget: core::ptr::null_mut(),
-                    ptPixelLocation: POINT {
-                        x: pixel.0,
-                        y: pixel.1,
-                    },
-                    ptHimetricLocation: origin,
-                    ptPixelLocationRaw: origin,
-                    ptHimetricLocationRaw: origin,
-                    dwTime: 0,
-                    historyCount: 0,
-                    InputData: 0,
-                    dwKeyStates: 0,
-                    PerformanceCount: 0,
-                    ButtonChangeType: 0,
-                },
+                pointerInfo: pointer_info(PT_PEN, 0, flags, pixel),
                 penFlags: held,
                 penMask: mask,
                 pressure: pressure.unsigned_abs(),
@@ -1196,6 +1418,66 @@ fn pen_info(flags: POINTER_FLAGS, now: &PenState, pixel: (i32, i32)) -> POINTER_
                     .unsigned_abs(),
                 tiltX: tilt(now.tilt_x),
                 tiltY: tilt(now.tilt_y),
+            },
+        },
+    }
+}
+
+/// A contact's part of a touch frame, its number the slot's. **Pressure and
+/// the contact's area only while touching**, the area centred on the contact
+/// where both of its sides were reported; the orientation where it was.
+fn touch_info(
+    index: usize,
+    flags: POINTER_FLAGS,
+    slot: &TouchSlot,
+    desktop: (i32, i32, i32, i32),
+) -> POINTER_TYPE_INFO {
+    use lowlat_core::pen::{PRESSURE_MAX, ROTATION_SPAN};
+    let (x, y) = desktop_pixel(slot.x, slot.y, desktop);
+    let nothing = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut mask = TOUCH_MASK_NONE;
+    let (mut area, mut pressure) = (nothing, 0);
+    if flags & POINTER_FLAG_INCONTACT != 0 {
+        mask |= TOUCH_MASK_PRESSURE;
+        pressure = slot.pressure.clamp(0, i32::from(PRESSURE_MAX));
+        if slot.major > 0 && slot.minor > 0 {
+            mask |= TOUCH_MASK_CONTACTAREA;
+            let (left, top) = (x - slot.major / 2, y - slot.minor / 2);
+            area = RECT {
+                left,
+                top,
+                right: left + slot.major,
+                bottom: top + slot.minor,
+            };
+        }
+    }
+    let orientation = if slot.orientation >= 0 {
+        mask |= TOUCH_MASK_ORIENTATION;
+        slot.orientation.min(i32::from(ROTATION_SPAN) - 1)
+    } else {
+        0
+    };
+    POINTER_TYPE_INFO {
+        r#type: PT_TOUCH,
+        Anonymous: POINTER_TYPE_INFO_0 {
+            touchInfo: POINTER_TOUCH_INFO {
+                pointerInfo: pointer_info(
+                    PT_TOUCH,
+                    u32::try_from(index).unwrap_or(0),
+                    flags,
+                    (x, y),
+                ),
+                touchFlags: TOUCH_FLAG_NONE,
+                touchMask: mask,
+                rcContact: area,
+                rcContactRaw: nothing,
+                orientation: orientation.unsigned_abs(),
+                pressure: pressure.unsigned_abs(),
             },
         },
     }
@@ -1236,7 +1518,7 @@ impl Sink for Devices {
         if self.scope.is_some() {
             match device {
                 Device::Pointer if moves_by_deltas(events) => self.confine(),
-                Device::PointerAbsolute | Device::Pen => self.clip.release(),
+                Device::PointerAbsolute | Device::Pen | Device::Touch => self.clip.release(),
                 _ => {}
             }
         }
@@ -1269,12 +1551,15 @@ impl Sink for Devices {
                 }
             }
             Device::Pen => self.pen_events(events),
+            Device::Touch => self.touch_events(events),
         }
     }
 
     fn cancel(&mut self, device: Device) {
-        if device == Device::Pen {
-            self.cancel_pen();
+        match device {
+            Device::Pen => self.cancel_pen(),
+            Device::Touch => self.cancel_touches(),
+            _ => {}
         }
     }
 
@@ -3087,8 +3372,8 @@ mod tests {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE,
             PeekMessageW, RegisterClassExW, TranslateMessage, UnregisterClassW, WM_POINTERACTIVATE,
-            WM_POINTERDOWN, WM_POINTERUP, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+            WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WNDCLASSEXW, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WindowFromPoint,
         };
 
         /// One pointer message the window was sent, and when.
@@ -3111,6 +3396,9 @@ mod tests {
             const PA_NOACTIVATE: LRESULT = 3;
             if msg == WM_POINTERACTIVATE {
                 return PA_NOACTIVATE;
+            }
+            if msg == WM_POINTERUPDATE {
+                return 0;
             }
             if msg == WM_POINTERDOWN || msg == WM_POINTERUP {
                 // SAFETY: a structure the call fills, for the pointer the
@@ -3266,6 +3554,370 @@ mod tests {
         assert!(
             lifted >= Duration::from_millis(1400),
             "the pen was lifted {lifted:?} after it went down"
+        );
+    }
+
+    /// **Every frame carries every contact the surface holds**: the expander's
+    /// reports for two contacts, through this sink's own slots -- the first
+    /// down, the second down beside it, the first lifted, the second moved --
+    /// as the contacts and flags of each frame, by slot.
+    #[test]
+    fn every_touch_frame_carries_every_contact() {
+        use lowlat_core::control::{Control, op};
+        use lowlat_core::touch::{Touch, flag};
+
+        #[derive(Default)]
+        struct Frames {
+            touches: Touches,
+            frames: Vec<Vec<(u32, POINTER_FLAGS)>>,
+        }
+        impl Sink for Frames {
+            fn emit(&mut self, device: Device, events: &[Event]) {
+                assert_eq!(device, Device::Touch);
+                for event in events {
+                    if event.kind != event::EV_SYN {
+                        self.touches.take(event);
+                        continue;
+                    }
+                    let (frame, count) =
+                        touch_frame(&self.touches.sent, &self.touches.now, (0, 0, 1920, 1080));
+                    self.touches.sent = self.touches.now;
+                    self.frames.push(
+                        frame[..count]
+                            .iter()
+                            .map(|info| {
+                                // SAFETY: a touch frame, as `touch_frame` made it.
+                                let pointer = unsafe { info.Anonymous.touchInfo.pointerInfo };
+                                (pointer.pointerId, pointer.pointerFlags)
+                            })
+                            .collect(),
+                    );
+                }
+            }
+        }
+
+        let mut inject = event::Injector::new(event::Extents::alone(1920, 1080));
+        let mut out = Frames::default();
+        for (id, flags) in [
+            (3, flag::TOUCHING),
+            (7, flag::TOUCHING),
+            (3, flag::LEAVE),
+            (7, flag::TOUCHING),
+        ] {
+            let (a0, a1, a2) = Touch {
+                id,
+                x: 100,
+                y: 100,
+                flags,
+                ..Touch::default()
+            }
+            .arguments();
+            let message = Control {
+                a0,
+                a1,
+                a2,
+                opcode: op::PEN_TOUCH,
+                body: &[],
+            };
+            inject.on_control(&message, &mut out);
+        }
+        let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        assert_eq!(
+            out.frames,
+            vec![
+                vec![(0, contact | POINTER_FLAG_DOWN)],
+                vec![
+                    (0, contact | POINTER_FLAG_UPDATE),
+                    (1, contact | POINTER_FLAG_DOWN)
+                ],
+                vec![(0, POINTER_FLAG_UP), (1, contact | POINTER_FLAG_UPDATE)],
+                vec![(1, contact | POINTER_FLAG_UPDATE)],
+            ]
+        );
+    }
+
+    /// **A contact's frame says what it is doing and no more**: its number is
+    /// its slot's; pressure and the area only while touching, the area centred
+    /// on it where both sides were reported; the orientation where it was.
+    #[test]
+    fn a_contacts_frame_holds_what_it_reported() {
+        let frame = |flags, slot: TouchSlot| {
+            let info = touch_info(4, flags, &slot, (0, 0, 65536, 65536));
+            // SAFETY: a touch frame, as `touch_info` made it.
+            let touch = unsafe { info.Anonymous.touchInfo };
+            (
+                touch.pointerInfo.pointerId,
+                touch.touchMask,
+                (
+                    touch.rcContact.left,
+                    touch.rcContact.top,
+                    touch.rcContact.right,
+                    touch.rcContact.bottom,
+                ),
+                touch.pressure,
+                touch.orientation,
+            )
+        };
+        let touching = TouchSlot {
+            tracking: 1,
+            x: 100,
+            y: 200,
+            pressure: 5000,
+            major: 10,
+            minor: 6,
+            orientation: 400,
+            hovering: false,
+        };
+        let contact = POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_UPDATE;
+        assert_eq!(
+            frame(contact, touching),
+            (
+                4,
+                TOUCH_MASK_PRESSURE | TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION,
+                (95, 197, 105, 203),
+                1024,
+                359
+            )
+        );
+        let unreported = TouchSlot {
+            major: 0,
+            orientation: -1,
+            ..touching
+        };
+        assert_eq!(frame(contact, unreported).1, TOUCH_MASK_PRESSURE);
+        let hovering = POINTER_FLAG_INRANGE | POINTER_FLAG_UPDATE;
+        assert_eq!(
+            frame(hovering, unreported),
+            (4, TOUCH_MASK_NONE, (0, 0, 0, 0), 0, 0)
+        );
+    }
+
+    /// **Two fingers reach a window as touch**: both down on the pixels asked
+    /// and dragged a second and a half, moved only every 600 ms -- longer than
+    /// the system keeps a contact it hears nothing from, so the refresh alone
+    /// holds them between -- neither lifted until it is lifted, the first with
+    /// the second still down; and two more cancelled together as the device
+    /// goes, each seen as cancelled. **They move because the system holds a
+    /// still contact's messages back until it moves or lifts**, and one still
+    /// for most of a second is its own press and hold, never the window's. The
+    /// window is the test's own, over the primary display's centre, and never
+    /// takes the focus.
+    #[test]
+    #[ignore = "puts two fingers on the desk, over a window of the test's own"]
+    fn two_fingers_reach_a_window() {
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::Input::Pointer::{GetPointerInfo, POINTER_FLAG_CANCELED};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG, PM_REMOVE,
+            PeekMessageW, RegisterClassExW, TranslateMessage, UnregisterClassW, WM_POINTERACTIVATE,
+            WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WNDCLASSEXW, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE, WindowFromPoint,
+        };
+
+        /// One pointer message the window was sent, and when.
+        #[derive(Debug, Clone, Copy)]
+        struct Seen {
+            at: Instant,
+            msg: u32,
+            flags: u32,
+            x: i32,
+            y: i32,
+        }
+        static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+        unsafe extern "system" fn window(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            const PA_NOACTIVATE: LRESULT = 3;
+            if msg == WM_POINTERACTIVATE {
+                return PA_NOACTIVATE;
+            }
+            if msg == WM_POINTERUPDATE {
+                return 0;
+            }
+            if msg == WM_POINTERDOWN || msg == WM_POINTERUP {
+                // SAFETY: a structure the call fills, for the pointer the
+                // message names.
+                let mut info: POINTER_INFO = unsafe { core::mem::zeroed() };
+                let id = u32::try_from(wparam & 0xFFFF).unwrap_or(0);
+                if unsafe { GetPointerInfo(id, &mut info) } != 0 {
+                    SEEN.lock().unwrap().push(Seen {
+                        at: Instant::now(),
+                        msg,
+                        flags: info.pointerFlags,
+                        x: info.ptPixelLocation.x,
+                        y: info.ptPixelLocation.y,
+                    });
+                }
+                return 0;
+            }
+            // SAFETY: the system's own handling of everything else.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+
+        let mut devices = Devices::create("touch test").unwrap();
+        let class: Vec<u16> = "lowlat-touch-test\0".encode_utf16().collect();
+        // SAFETY: this module's own instance, a class of the test's own, and
+        // a window of it that the test destroys.
+        let (instance, hwnd) = unsafe {
+            let instance = GetModuleHandleW(core::ptr::null());
+            let class_info = WNDCLASSEXW {
+                cbSize: size::<WNDCLASSEXW>(),
+                style: 0,
+                lpfnWndProc: Some(window),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance,
+                hIcon: core::ptr::null_mut(),
+                hCursor: core::ptr::null_mut(),
+                hbrBackground: core::ptr::null_mut(),
+                lpszMenuName: core::ptr::null(),
+                lpszClassName: class.as_ptr(),
+                hIconSm: core::ptr::null_mut(),
+            };
+            assert_ne!(RegisterClassExW(&class_info), 0);
+            let (cx, cy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_POPUP | WS_VISIBLE,
+                cx / 2 - 160,
+                cy / 2 - 160,
+                320,
+                320,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                instance,
+                core::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            (instance, hwnd)
+        };
+        let pump = |ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            // SAFETY: a message structure the call fills, dispatched on the
+            // thread that owns the window.
+            let mut msg: MSG = unsafe { core::mem::zeroed() };
+            while Instant::now() < until {
+                while unsafe { PeekMessageW(&mut msg, core::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+                {
+                    unsafe {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        pump(300);
+
+        // SAFETY: reads of the system's metrics.
+        let centre = unsafe {
+            (
+                GetSystemMetrics(SM_CXSCREEN) / 2,
+                GetSystemMetrics(SM_CYSCREEN) / 2,
+            )
+        };
+        let fingers = [(centre.0 - 60, centre.1), (centre.0 + 60, centre.1)];
+        for (x, y) in fingers {
+            // SAFETY: which window is at a point.
+            let under = unsafe { WindowFromPoint(POINT { x, y }) };
+            assert_eq!(under, hwnd, "the test's window is not at ({x}, {y})");
+        }
+        let (left, top, width, height) = desktop_now();
+        let aimed = |pixel: i32, origin: i32, extent: i32| {
+            (2 * (pixel - origin) + 1) * 65536 / (2 * extent)
+        };
+        let report = |slot: i32, tracking: i32, (x, y): (i32, i32)| {
+            let event = |kind, code, value| Event { kind, code, value };
+            [
+                event(event::EV_ABS, event::ABS_MT_SLOT, slot),
+                event(event::EV_ABS, event::ABS_MT_TRACKING_ID, tracking),
+                event(
+                    event::EV_ABS,
+                    event::ABS_MT_POSITION_X,
+                    aimed(x, left, width),
+                ),
+                event(
+                    event::EV_ABS,
+                    event::ABS_MT_POSITION_Y,
+                    aimed(y, top, height),
+                ),
+                event(event::EV_ABS, event::ABS_MT_PRESSURE, 512),
+                event(event::EV_ABS, event::ABS_MT_DISTANCE, 0),
+                event(event::EV_SYN, 0, 0),
+            ]
+        };
+
+        let moved = |(x, y): (i32, i32), by: i32| (x, y + by);
+        devices.emit(Device::Touch, &report(0, 1, fingers[0]));
+        devices.emit(Device::Touch, &report(1, 2, fingers[1]));
+        let held = Instant::now();
+        let mut by = 0;
+        while held.elapsed() < Duration::from_millis(1500) {
+            if held.elapsed()
+                >= Duration::from_millis(600) * u32::try_from(by / 20 + 1).unwrap_or(1)
+            {
+                by += 20;
+                devices.emit(Device::Touch, &report(0, 1, moved(fingers[0], by)));
+                devices.emit(Device::Touch, &report(1, 2, moved(fingers[1], by)));
+            }
+            devices.tick();
+            pump(20);
+        }
+        let lifted = Instant::now();
+        devices.emit(Device::Touch, &report(0, -1, moved(fingers[0], by)));
+        pump(100);
+        devices.emit(Device::Touch, &report(1, -1, moved(fingers[1], by)));
+        pump(100);
+        devices.emit(Device::Touch, &report(0, 3, fingers[0]));
+        devices.emit(Device::Touch, &report(1, 4, fingers[1]));
+        devices.emit(Device::Touch, &report(0, 3, moved(fingers[0], 20)));
+        devices.emit(Device::Touch, &report(1, 4, moved(fingers[1], 20)));
+        pump(100);
+        devices.cancel(Device::Touch);
+        pump(300);
+
+        // SAFETY: the test's own window and class, as made above.
+        unsafe {
+            DestroyWindow(hwnd);
+            UnregisterClassW(class.as_ptr(), instance);
+        }
+        let seen = SEEN.lock().unwrap().clone();
+        let kinds: Vec<(u32, bool, (i32, i32))> = seen
+            .iter()
+            .map(|seen| {
+                (
+                    seen.msg,
+                    seen.flags & POINTER_FLAG_CANCELED != 0,
+                    (seen.x, seen.y),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (WM_POINTERDOWN, false, fingers[0]),
+                (WM_POINTERDOWN, false, fingers[1]),
+                (WM_POINTERUP, false, moved(fingers[0], by)),
+                (WM_POINTERUP, false, moved(fingers[1], by)),
+                (WM_POINTERDOWN, false, fingers[0]),
+                (WM_POINTERDOWN, false, fingers[1]),
+                (WM_POINTERUP, true, moved(fingers[0], 20)),
+                (WM_POINTERUP, true, moved(fingers[1], 20)),
+            ],
+            "{seen:?}"
+        );
+        assert!(
+            seen[2].at >= lifted,
+            "the first finger came up before it was lifted: {seen:?}"
         );
     }
 
