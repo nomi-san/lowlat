@@ -1226,6 +1226,15 @@ pixel asked, relative moves and buttons -- so such a game is played with `virtua
     A drag paused for longer than the system keeps a silent contact is held across the pause by
     the refresh.
   - *On Linux* a guest's touch goes nowhere yet; there is no touch surface here.
+- **A guest's characters are typed as no key at all** (*2026-11-27*; the message is
+  [01 §11.1](01-protocol.md)'s): each as it arrives, its press and its release together,
+  whatever the host's keyboard layout, so nothing is held for a release to find. A character
+  needs the keyboard rather than the pointer, and a held guest's goes in only while the
+  application is in front, as a key's press does; one sent while it is not is dropped.
+  - *On Windows* each goes in through the batch input call, every UTF-16 unit pressed and then
+    every one released in one call, **even where keys go through the input driver**, whose
+    keyboard has keys and no characters: the two ways in keep no order between them.
+  - *On Linux* a guest's characters go nowhere yet.
 - **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
   injector.** The SDK invents no permission model beyond them; they arrive from signaling
   ([04 §3](04-signaling.md)). The gate belongs next to the pressed state rather than in the

@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-27 - Characters on the host, on Windows
+
+### Added
+- **A guest's characters are typed as no key at all on Windows** ([05 §7](05-host.md)), read
+  from this host's own message on the pen's opcode ([01 §11.1](01-protocol.md)): one message
+  per character, past U+FFFF too, typed as it arrives with nothing held; the keyboard's
+  permission and, for a guest held to an application, the application in front, as a key's
+  press; through the batch input call even where keys go through the input driver. On Linux
+  they go nowhere yet.
+
+### Checked
+- The layout at its positions, every character read back, and only a character taken; the
+  expansion -- typed with nothing held, the keyboard's permission and not the pointer's, a held
+  guest's only in front, nothing typed for what is no character; the sink's units, pressed then
+  released, for a character below U+10000 and past it; characters typed into a window of the
+  test's own (labelled), clicked to the front, one past U+FFFF among them; characters sent as an
+  application's own messages reaching a host. Each check broken once and caught, one of them
+  live and one on Linux. The expansion allocates nothing (Linux). The Windows bar, where two of
+  the client's decode-thread tests waited forever under the whole run and passed alone -- its
+  unit tests 78 of 78, the two five times in five; the Linux bar on the four crates touched,
+  whose one failure is again a test that needs a `localhost` answering on both families.
+
 ## 2026-11-26 - Touch on the host, on Windows
 
 ### Added

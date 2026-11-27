@@ -576,7 +576,7 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 23 | gamepad state | pad, 0, 0, plus 15-byte body | v1 |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
-| 30 | pen; on this host, touch too | position, pressure and rotation, stream, tilts and flags | v1, on Windows (*2026-11-26*) |
+| 30 | pen; on this host, touch and characters too | position, pressure and rotation, stream, tilts and flags | v1, on Windows (*2026-11-26*) |
 | 31 | pad report | length, pad, product and flags, plus the report | v1 (*Phase 14*) |
 | 35 | diagnostics | bit flags | v1 |
 
@@ -692,6 +692,13 @@ not reported. **The flags are the contact's state, not its changes**: 0x02 touch
 its first message, moving after -- 0x01 gone, lifted; 0x01 with 0x04, cancelled, which ends
 every contact the peer holds; neither, hovering. A release of everything (opcode 24) ends every
 contact too.
+
+**And a character** (*2026-11-27*): a stream byte of `0x90`, its low four bits clear, with the
+code point whole as the first argument -- past U+FFFF too, never 0 or a surrogate's -- and the
+second argument and the third's low bytes zero; a message otherwise is dropped. **One message
+per character**, a sequence as its characters' messages in order. A character is typed as it
+arrives and holds nothing, so a release of everything has nothing of it to end. The stream
+bytes from `0x91` up are reserved, and dropped.
 
 ### §11.2 Sent by the host
 
