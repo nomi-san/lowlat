@@ -486,7 +486,13 @@ const CLIP_TICK_MS: u64 = 200;
 
 /// How long a KDE session's clipboard is waited for at start, and how often it
 /// is asked in that time.
-const CLIP_WAIT_MS: u64 = 30_000;
+///
+/// **Fifteen seconds, about eight times the slowest arrival measured**: on a
+/// Ryzen 7 5800U laptop Klipper came within a second of the shell being ready
+/// at a login, and within two at the first login after a boot. The wait is
+/// what a login on a KDE desktop without Klipper goes without its helper, so
+/// it is kept to what a slow login could need.
+const CLIP_WAIT_MS: u64 = 15_000;
 const CLIP_RETRY_MS: u64 = 500;
 
 /// The desktop's clipboard, waited for where it is on its way.
