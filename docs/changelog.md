@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-28 - Sixteen-bit scanout checked, and its conversion probe reads it whole
+
+### Fixed
+- **The conversion probe reads a sixteen-bit picture whole.** The read-back is sized by the
+  format since 2026-11-26, eight bytes a pixel at sixteen bits a channel, but the probe's
+  comparison still stepped four at a time: it read half of one pixel and half of the next and
+  reported an error of 64 a channel for a conversion that was right.
+
+### Checked
+- **The 2026-11-26 sixteen-bit change on a Ryzen 7 5800U laptop** (its integrated GPU on the open
+  Vulkan driver, Mesa 26.3.1), KDE Plasma 6.8.3 on Wayland with "Prefer color accuracy": the
+  scanout was `AB48` under modifier `0x0200000000401a01`, which capture refused before
+  ("unrecognised pixel format 0x38344241"); now it imports, and the round trip through the
+  conversion comes back within 0.49 a channel, 0.50 over saturated pixels, at 1.5 ms a picture at
+  2880x1800 (2.2 on battery). The probe said 64 a channel for the same conversion before its fix.
+  Not streamed to a guest in that mode here.
+
 ## 2026-11-28 - The clipboard at login waited for 15 s at most
 
 ### Changed
