@@ -565,6 +565,11 @@ shell was up about two seconds before the helper asked once and was refused, ann
 clipboard, and went without one for the whole session; a helper restarted later had it. The
 capabilities are announced once a connection, so the wait comes before them. Elsewhere there is
 no Klipper to wait for and the first answer stands.
+*Amended 2026-11-28:* **at most 15 s.** On a Ryzen 7 5800U laptop with Plasma 6.8.3, Klipper was
+absent at the helper's first ask at every login, and arrived 0.35 to 1.03 s after the shell was
+ready at three logins and 1.19 to 1.76 s at the first after a boot. The wait is what a login on
+a KDE desktop without Klipper goes without its helper -- its modes, layout and screen hold too,
+not just the clipboard -- so it is kept to what a slow login could need.
 
 *Added 2026-11-03 ([impl-plan-windows.md](impl-plan-windows.md) W2.9):* **on Windows copied text
 is a value, not an ownership.** Text put with its bytes stays on the clipboard after the program

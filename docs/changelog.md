@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-11-28 - The clipboard at login waited for 15 s at most
+
+### Changed
+- **The session helper waits at most 15 s for KDE's clipboard at a login, not 30**
+  ([07 §5.1](07-platforms.md)): Klipper arrived within two seconds of the shell even at the first
+  login after a boot, and the wait is what a login on a KDE desktop without Klipper goes without
+  its helper -- its modes, layout and screen hold, not just the clipboard.
+
+### Checked
+- **Plasma 6.8.3 on Wayland, CachyOS, a Ryzen 7 5800U laptop, Plasma Login Manager**: before the
+  2026-11-26 change the helper was refused 9 ms after it started and the session had no
+  clipboard; with it the clipboard answered 0.5 to 1.1 s after the helper started at five logins,
+  one the first after a boot, and copied text crossed both ways from the first guest. Klipper was
+  absent at the helper's first ask every time, and arrived 0.35 to 1.03 s after the shell was
+  ready at three logins and 1.19 to 1.76 s at the first after a boot, bounded by the helper's
+  half-second asks. The cap's own end, a desktop without Klipper, was not run.
+
 ## 2026-11-27 - The pen, touch and characters through a running host
 
 ### Checked
