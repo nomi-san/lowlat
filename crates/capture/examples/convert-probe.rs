@@ -403,8 +403,9 @@ fn to_rgb(luma: &[u8], chroma: &[u8], width: usize, height: usize) -> Vec<u8> {
 /// How far the round trip landed from where it started.
 ///
 /// The source arrives packed four bytes to a pixel in whatever depth it was
-/// captured at; only the top eight bits of each channel are compared, because
-/// that is all the conversion was ever going to keep.
+/// captured at, or eight at sixteen bits a channel; only the top eight bits of
+/// each channel are compared, because that is all the conversion was ever going
+/// to keep.
 fn mean_error(
     source: &[u8],
     rgb: &[u8],
@@ -416,23 +417,35 @@ fn mean_error(
     let mut counted = 0u64;
     let mut vivid_total = 0u64;
     let mut vivid_counted = 0u64;
+    // **Eight bytes a pixel is sixteen bits a channel**, red first: the read
+    // back is sized by the format, so its length says which. Read four bytes at
+    // a time it was half of one pixel and half of the next, and the figure
+    // came out at 64 a channel for a conversion that was right.
+    let wide = source.len() == width * height * 8;
+    let bytes = if wide { 8 } else { 4 };
     for y in 0..height {
         for x in 0..width {
-            let at = (y * width + x) * 4;
-            let Some(quad) = source.get(at..at + 4) else {
+            let at = (y * width + x) * bytes;
+            let Some(pixel) = source.get(at..at + bytes) else {
                 continue;
             };
-            let word = u32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]);
-            // Ten-bit packed and eight-bit byte order both reduce to the same
-            // eight bits a channel, which is what the conversion kept.
-            let (sr, sg, sb) = if width * height * 4 == source.len() && word > 0 {
-                (
-                    ((word & 0x3ff) >> 2) as u8,
-                    ((word >> 10 & 0x3ff) >> 2) as u8,
-                    ((word >> 20 & 0x3ff) >> 2) as u8,
-                )
+            let (sr, sg, sb) = if wide {
+                // The high byte of each channel, which is what the conversion
+                // kept at eight bits.
+                (pixel[1], pixel[3], pixel[5])
             } else {
-                (quad[0], quad[1], quad[2])
+                let word = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+                // Ten-bit packed and eight-bit byte order both reduce to the
+                // same eight bits a channel, which is what the conversion kept.
+                if width * height * 4 == source.len() && word > 0 {
+                    (
+                        ((word & 0x3ff) >> 2) as u8,
+                        ((word >> 10 & 0x3ff) >> 2) as u8,
+                        ((word >> 20 & 0x3ff) >> 2) as u8,
+                    )
+                } else {
+                    (pixel[0], pixel[1], pixel[2])
+                }
             };
             let out = (y * stride + x) * 3;
             let Some(trio) = rgb.get(out..out + 3) else {
